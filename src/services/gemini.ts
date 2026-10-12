@@ -1777,52 +1777,85 @@ export const generateSceneImage = async (
                 return `data:image/png;base64,${imgBytes}`;
             }
         }
-        const response = await withRetry(() => callTextModel(genAI, {
-            model: currentImageModel,
-            contents: { parts: currentParts },
-            config: {
-                responseModalities: ["IMAGE"],
-                ...(aspectRatio !== 'Original' ? {
-                    imageConfig: {
-                        aspectRatio: getAspectRatio(aspectRatio as any),
-                    }
-                } : {}),
-                safetySettings,
-            },
-        }));
+        const maxImageResponseAttempts = 3;
+        let lastFinishReason = 'NO_IMAGE';
 
-        const candidate = response.candidates?.[0];
-        
-        if (candidate?.finishReason === 'SAFETY' || candidate?.finishReason === 'IMAGE_SAFETY') {
-            throw new Error("Image generation was blocked by safety filters.");
-        }
-        if (candidate?.finishReason === 'RECITATION') {
-            throw new Error("Image generation was blocked by recitation filters.");
-        }
-        if (candidate?.finishReason === 'OTHER') {
-            throw new Error("Image generation was blocked for an unknown reason.");
-        }
-        if (candidate?.finishReason === 'IMAGE_OTHER') {
-            throw new Error("IMAGE_OTHER");
-        }
+        for (let attempt = 1; attempt <= maxImageResponseAttempts; attempt++) {
+            const response = await withRetry(() => callTextModel(genAI, {
+                model: currentImageModel,
+                contents: { parts: currentParts },
+                config: {
+                    responseModalities: ["IMAGE"],
+                    ...(aspectRatio !== 'Original' ? {
+                        imageConfig: {
+                            aspectRatio: getAspectRatio(aspectRatio as any),
+                        }
+                    } : {}),
+                    safetySettings,
+                },
+            }));
 
-        const partsList = candidate?.content?.parts || [];
-        for (const part of partsList) {
-            if (part.inlineData) {
-                const base64String = part.inlineData.data;
-                return `data:image/png;base64,${base64String}`;
+            const candidate = response.candidates?.[0];
+            const finishReason = String(candidate?.finishReason || response.promptFeedback?.blockReason || '');
+            const partsList = candidate?.content?.parts || [];
+            const imagePart = partsList.find((part: any) => typeof part?.inlineData?.data === 'string' && part.inlineData.data.length > 0);
+
+            // A successful response may contain thought/text parts as well as image data.
+            if (imagePart?.inlineData?.data) {
+                return `data:image/png;base64,${imagePart.inlineData.data}`;
             }
+
+            if (finishReason === 'SAFETY' || finishReason === 'IMAGE_SAFETY') {
+                throw new Error(`Image generation was blocked by Google's safety filter (${finishReason}).`);
+            }
+            if (finishReason === 'RECITATION' || finishReason === 'IMAGE_RECITATION') {
+                throw new Error(`Image generation was blocked by Google's recitation filter (${finishReason}).`);
+            }
+            if (['BLOCKLIST', 'PROHIBITED_CONTENT', 'IMAGE_PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
+                throw new Error(`Image generation was rejected for prohibited content (${finishReason}).`);
+            }
+
+            // IMAGE_OTHER is a miscellaneous issue, not necessarily a safety block.
+            // NO_IMAGE/text-only responses can occur transiently. Retry the same
+            // request before modifying the prompt or its identity reference images.
+            lastFinishReason = finishReason || (candidate ? 'NO_IMAGE' : 'NO_CANDIDATE');
+            if (attempt < maxImageResponseAttempts) {
+                addLog(
+                    `Gemini returned ${lastFinishReason} without image output. Retrying the same prompt with the same ${referenceParts.length} reference image(s) (attempt ${attempt + 1}/${maxImageResponseAttempts}); no references will be removed.`,
+                    'warning'
+                );
+                await new Promise(resolve => setTimeout(resolve, 800 * attempt));
+                continue;
+            }
+
+            console.warn(`[Gemini Image] No image after ${maxImageResponseAttempts} same-request attempts; finish reason: ${lastFinishReason}.`);
+            throw new Error(`GEMINI_TRANSIENT_IMAGE_FAILURE:${lastFinishReason}`);
         }
 
-        console.error("Image generation response missing inlineData:", JSON.stringify(response, null, 2));
-        throw new Error(`Image generation failed: No image data received. Response: ${JSON.stringify(response)}`);
+        throw new Error(`GEMINI_TRANSIENT_IMAGE_FAILURE:${lastFinishReason}`);
     };
 
     try {
         addLog("Generating image... This may take some time.", 'info');
         return await doGenerate(parts);
     } catch (error: any) {
-        const isQuotaOrAuth = error.message.includes('Quota') || error.message.includes('403') || error.message.includes('Permission Denied') || error.message.includes('429') || error.message.includes('limit');
+        const errorMessage = String(error?.message || error || 'Unknown image generation error');
+
+        // Gemini can return HTTP 200 with IMAGE_OTHER but no image payload.
+        // After retrying the unchanged request, treat this as transient output
+        // failure rather than claiming that Gemini blocked the prompt for safety.
+        if (errorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:')) {
+            const reason = errorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
+            if (referenceParts.length > 0) {
+                throw new Error(
+                    `Gemini image generation (${currentImageModel}) returned ${reason} without an image after three attempts using the same prompt and selected references. This is not by itself proof of a safety block. MV Director preserved all reference images and did not switch to prompt-only generation. Retry this scene; if it persists, shorten the scene prompt or select another reference-capable model.`
+                );
+            }
+            addLog(`Gemini returned ${reason} after three same-request attempts. Trying a prompt-only fallback because no reference images are selected.`, 'warning');
+            return await fallbackToPollinations(sanitizeImagePrompt(prompt) || prompt, aspectRatio, addLog);
+        }
+
+        const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
             if (referenceParts.length > 0) {
                 throw new Error(`Image generation failed for ${currentImageModel} (${error.message || 'authentication/quota error'}). MV Director did not switch to a prompt-only fallback because that would drop the selected reference images and could change the face. Fix the provider credentials/quota or select another reference-capable model.`);
@@ -1830,7 +1863,9 @@ export const generateSceneImage = async (
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
 
-        const isBlocked = error.message === "IMAGE_OTHER" || error.message.includes("safety") || error.message.includes("blocked") || error.message.includes("recitation") || error.message.includes("SAFETY");
+        // Only an explicit safety/prohibited-content reason should trigger prompt sanitization.
+        // IMAGE_OTHER and NO_IMAGE are handled above as retryable generation failures.
+        const isBlocked = /safety|blocked|recitation|prohibited content|blocklist/i.test(errorMessage);
         
         if (isBlocked) {
             const cleanSanitized = sanitizeImagePrompt(prompt);
@@ -1840,8 +1875,20 @@ export const generateSceneImage = async (
                 const fallbackParts1 = [...referenceParts, { text: fullPrompt.replace(prompt, cleanSanitized) }];
                 return await doGenerate(fallbackParts1);
             } catch (fallbackError1: any) {
-                const isBlocked1 = fallbackError1.message === "IMAGE_OTHER" || fallbackError1.message.includes("safety") || fallbackError1.message.includes("blocked") || fallbackError1.message.includes("recitation") || fallbackError1.message.includes("SAFETY");
-                
+                const fallbackErrorMessage = String(fallbackError1?.message || fallbackError1 || 'Unknown retry error');
+                const isTransientFallback = fallbackErrorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:');
+                const isBlocked1 = /safety|blocked|recitation|prohibited content|blocklist/i.test(fallbackErrorMessage);
+
+                if (isTransientFallback && referenceParts.length > 0) {
+                    const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
+                    throw new Error(
+                        `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output on the sanitized retry. All ${referenceParts.length} selected reference part(s) were preserved. Review the scene prompt, or retry/use another reference-capable image model.`
+                    );
+                } else if (isTransientFallback) {
+                    addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
+                    return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
+                }
+
                 if (isBlocked1 && referenceParts.length > 0) {
                     throw new Error(`The model rejected both the original and sanitized prompts with the selected reference images. MV Director did not retry without references because that could change the character's face. Adjust the scene prompt or use another reference-capable image model. Original error: ${fallbackError1.message}`);
                 } else if (isBlocked1) {
