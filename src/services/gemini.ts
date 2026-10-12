@@ -1378,14 +1378,6 @@ export const generateSceneImage = async (
     if (currentImageModel === 'pollinations') {
         return await fallbackToPollinations(prompt, aspectRatio, addLog);
     }
-    if (currentImageModel.startsWith('cloudflare:')) {
-        return await generateImageCloudflare({
-            prompt,
-            aspectRatio: aspectRatio as string,
-            model: currentImageModel.replace('cloudflare:', ''),
-            addLog
-        });
-    }
     if (currentImageModel === 'aihorde') {
         return await generateImageAIHorde({
             prompt,
@@ -1395,7 +1387,6 @@ export const generateSceneImage = async (
     }
     
     addLog("Connecting to image generation service...", 'info');
-    const genAI = getGenAI(apiKey);
     
     // Filter references to only include those relevant to the prompt
     const relevantReferences = references.filter((ref) => {
@@ -1549,6 +1540,37 @@ export const generateSceneImage = async (
         });
     }
     
+    // FLUX.2 uses Cloudflare's multipart endpoint and accepts up to four relevant
+    // reference images. Route it after our normal reference filters so disabled,
+    // unrelated character, and character-sheet assets are not accidentally passed.
+    if (currentImageModel.startsWith('cloudflare:')) {
+        const model = currentImageModel.replace('cloudflare:', '');
+        const isFlux2 = [
+            '@cf/black-forest-labs/flux-2-dev',
+            '@cf/black-forest-labs/flux-2-klein-4b',
+            '@cf/black-forest-labs/flux-2-klein-9b'
+        ].includes(model);
+        const fluxReferences = isFlux2 ? relevantReferences.slice(0, 4) : [];
+        if (isFlux2 && relevantReferences.length > 4) {
+            addLog(`FLUX.2 supports up to 4 reference images; using the first 4 of ${relevantReferences.length} relevant references.`, 'warning');
+        }
+        let cloudflarePrompt = fullPrompt;
+        if (isFlux2 && fluxReferences.length > 0) {
+            const referenceMap = fluxReferences.map((ref, index) =>
+                `Image ${index}: ${ref.description || (ref.roles || []).join(', ') || 'Project reference'}`
+            ).join('\n');
+            cloudflarePrompt += `\n\n**FLUX.2 Reference Image Map**\n${referenceMap}\nUse each supplied image for its described identity, style, or continuity guidance. Keep the new action, framing, and composition controlled by the current scene prompt.`;
+        }
+        return await generateImageCloudflare({
+            prompt: cloudflarePrompt,
+            aspectRatio: aspectRatio as string,
+            model,
+            seed,
+            referenceImages: isFlux2 ? fluxReferences.map(ref => ({ data: ref.data, description: ref.description })) : undefined,
+            addLog
+        });
+    }
+
     // Interleave the reference parts with the main prompt
     const parts: any[] = [...referenceParts, { text: fullPrompt }];
 
@@ -1577,6 +1599,8 @@ export const generateSceneImage = async (
             addLog
         });
     }
+
+    const genAI = getGenAI(apiKey);
 
     const doGenerate = async (currentParts: any[]) => {
         addLog(`Sending request to ${currentImageModel}...`, 'info');
