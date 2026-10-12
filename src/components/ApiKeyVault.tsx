@@ -152,6 +152,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [proxyTest, setProxyTest] = useState<{ kind: 'success' | 'error' | 'testing'; message: string } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -160,6 +161,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       setTextModel(currentTextModel);
       setImageModel(currentImageModel);
       setAuthError(null);
+      setProxyTest(null);
     }
   }, [isOpen, currentKeys, currentSource, currentTextModel, currentImageModel]);
 
@@ -200,6 +202,59 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const handleSave = () => {
     onSave(keys, source, textModel, imageModel);
     onClose();
+  };
+
+  // Tests browser-to-Worker CORS/routing using a deliberately invalid token.
+  // The Worker should answer 401 before contacting Workers AI, so this uses no AI credits.
+  const handleTestCloudflareProxy = async () => {
+    const proxyUrl = String(keys.cloudflareWorkerProxyUrl || '').trim();
+    if (!proxyUrl) {
+      setProxyTest({ kind: 'error', message: 'Enter the Cloudflare Worker Proxy URL first.' });
+      return;
+    }
+    try {
+      const parsed = new URL(proxyUrl);
+      if (parsed.protocol !== 'https:') {
+        setProxyTest({ kind: 'error', message: 'Use the HTTPS workers.dev URL.' });
+        return;
+      }
+    } catch {
+      setProxyTest({ kind: 'error', message: 'The Worker URL is not a valid URL.' });
+      return;
+    }
+
+    setProxyTest({ kind: 'testing', message: 'Testing browser access and CORS preflight…' });
+    try {
+      const response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer mv-director-routing-test-invalid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          action: 'image',
+          model: '@cf/black-forest-labs/flux-1-schnell',
+          input: { prompt: 'routing test only' }
+        }),
+        cache: 'no-store'
+      });
+      if (response.status === 401) {
+        setProxyTest({ kind: 'success', message: 'Connection and CORS are working. The expected HTTP 401 confirms the Worker received the test request. No image was generated.' });
+      } else if (response.status === 403) {
+        setProxyTest({ kind: 'error', message: 'The Worker returned HTTP 403. Check Worker-side access rules or deployment routing.' });
+      } else if (response.status >= 500) {
+        const detail = (await response.text()).slice(0, 180);
+        setProxyTest({ kind: 'error', message: `The Worker responded with HTTP ${response.status}. Check its configuration. ${detail}` });
+      } else {
+        setProxyTest({ kind: 'success', message: `The browser reached the Worker and completed CORS preflight (HTTP ${response.status}). This test does not generate an image.` });
+      }
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setProxyTest({
+        kind: 'error',
+        message: `The browser could not complete the request. This usually means a CORS/preflight, URL, or network issue. Verify the saved Worker URL and retry. Details: ${detail}`
+      });
+    }
   };
 
   return (
@@ -432,6 +487,32 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                   <div className="text-[10px] text-white/40">
                     Cloudflare's REST API may be blocked by browser CORS in the AI Studio iframe. Deploy the included worker proxy and paste its URL here.
                   </div>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTestCloudflareProxy}
+                      disabled={proxyTest?.kind === 'testing'}
+                      className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-2 text-xs font-medium text-white/80 transition-colors hover:bg-white/10 disabled:cursor-wait disabled:opacity-50"
+                    >
+                      {proxyTest?.kind === 'testing' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
+                      Test Worker Connection
+                    </button>
+                    <span className="text-[10px] text-white/35">Uses a dummy token; does not generate an image or use AI credits.</span>
+                  </div>
+                  {proxyTest && (
+                    <div
+                      role="status"
+                      className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
+                        proxyTest.kind === 'success'
+                          ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
+                          : proxyTest.kind === 'error'
+                            ? 'border-rose-500/20 bg-rose-500/10 text-rose-200'
+                            : 'border-white/10 bg-white/[0.04] text-white/60'
+                      }`}
+                    >
+                      {proxyTest.message}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">
