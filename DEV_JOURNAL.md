@@ -1,3 +1,10 @@
+### 188. Browser Direct Navigation and Full-Browser Handoff
+- **User goal:** Make the Browser tab behave more like a normal browser for general internet browsing.
+- **Findings:** The web UI renders arbitrary sites in an iframe. Frame restrictions remain controlled by each website; the /api/proxy endpoint is an HTML fetch-and-rewrite compatibility path and cannot recreate full browser behavior for modern sites.
+- **Changes:** In both AppBrowserModal.tsx and BrowserActivity.tsx, direct website loading is now the default and the HTML proxy is opt-in. Added a reusable full-browser action using Capacitor Browser on native platforms and a separate browser tab on web. Known anti-frame warnings now point users to that action rather than implying proxying will always work.
+- **Constraints:** Do not describe an iframe or the HTML proxy as a full browser or claim it reliably bypasses site security. The native Browser action provides the normal browser surface; it does not keep the external page inside the iframe-based app panel.
+- **Verification:** GitHub source changes were committed; local typecheck, Android APK build completion, and live browsing tests remain to be confirmed.
+
 ### 187. Searchable Settings Model Pickers
 - **User need:** The native model dropdowns in API & Account Settings did not visually match the application's dark UI and were difficult to navigate on mobile.
 - **Change:** Replaced native text/image model selects with an in-app reusable searchable picker that groups all existing option values by provider, preserves option IDs, highlights the selected option, supports Escape and outside-click dismissal, and opens upward when viewport space below the trigger is limited.
