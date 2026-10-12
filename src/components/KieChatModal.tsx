@@ -1247,45 +1247,39 @@ Carefully review the conversation and your previous replies above.
     }
   };
 
-  // Retry / Reload message handler
+  // Regenerate an assistant reply from the exact transcript prefix in this session.
   const handleRetryMessage = async (targetMsgId?: string) => {
     if (!activeSession || isLoading) return;
 
-    let targetIdx = -1;
-    if (targetMsgId) {
-      targetIdx = activeSession.messages.findIndex(m => m.id === targetMsgId);
-    } else {
-      targetIdx = activeSession.messages.length - 1;
-    }
-
+    const targetIdx = targetMsgId
+      ? activeSession.messages.findIndex(m => m.id === targetMsgId)
+      : activeSession.messages.length - 1;
     if (targetIdx < 0) return;
 
     const targetMsg = activeSession.messages[targetIdx];
-    // If target is an assistant or error message, slice history up to before this message
-    // If target is a user message, slice up to and including this user message
-    let precedingMessages = (targetMsg.role === 'assistant' || targetMsg.isError || targetMsg.id.startsWith('err_'))
-      ? activeSession.messages.slice(0, targetIdx)
-      : activeSession.messages.slice(0, targetIdx + 1);
+    if (
+      targetMsg.role !== 'assistant' ||
+      targetMsg.isError ||
+      targetMsg.id.startsWith('err_') ||
+      targetMsg.content.trim().startsWith('⚠️')
+    ) return;
 
+    // Preserve every message before the selected AI response, including its user prompt.
+    const precedingMessages = activeSession.messages.slice(0, targetIdx);
     const lastUserMsg = [...precedingMessages].reverse().find(m => m.role === 'user');
     if (!lastUserMsg) return;
 
-    // Immediately remove the error message from the session
-    setSessions(prev => prev.map(s => {
-      if (s.id === activeSessionId) {
-        return {
-          ...s,
-          messages: precedingMessages,
-        };
-      }
-      return s;
-    }));
-
+    // Do not delete anything if the required credential is missing.
     if (!apiKey.trim()) {
       setShowKeyInput(true);
       return;
     }
 
+    // Truncate only the selected session immediately; all other sessions retain their histories.
+    setSessions(prev => prev.map(s => s.id === activeSessionId
+      ? { ...s, messages: precedingMessages, updatedAt: Date.now() }
+      : s
+    ));
     setIsLoading(true);
 
     const persona = SYSTEM_PERSONAS.find(p => p.id === activeSession.personaId);
@@ -1385,15 +1379,10 @@ Carefully review the conversation and your previous replies above.
         loopSteps,
       };
 
-      setSessions(prev => prev.map(s => {
-        if (s.id === activeSessionId) {
-          return {
-            ...s,
-            messages: [...precedingMessages, botMessage],
-          };
-        }
-        return s;
-      }));
+      setSessions(prev => prev.map(s => s.id === activeSessionId
+        ? { ...s, messages: [...precedingMessages, botMessage], updatedAt: Date.now() }
+        : s
+      ));
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       const errorContent = `⚠️ **Error calling KIE API:**\n\n${err.message || 'Unknown network error. Check your API key and connection.'}`;
@@ -1404,15 +1393,10 @@ Carefully review the conversation and your previous replies above.
         timestamp: Date.now(),
         isError: true,
       };
-      setSessions(prev => prev.map(s => {
-        if (s.id === activeSessionId) {
-          return {
-            ...s,
-            messages: [...precedingMessages, errMessage],
-          };
-        }
-        return s;
-      }));
+      setSessions(prev => prev.map(s => s.id === activeSessionId
+        ? { ...s, messages: [...precedingMessages, errMessage], updatedAt: Date.now() }
+        : s
+      ));
     } finally {
       setIsLoading(false);
       abortControllerRef.current = null;
@@ -2055,11 +2039,16 @@ Carefully review the conversation and your previous replies above.
 
             {/* Messages Scroll Area */}
             <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 sm:p-3.5 space-y-2 sm:space-y-3 custom-scrollbar w-full max-w-full">
-              {activeSession.messages.map((msg) => {
+              {activeSession.messages.map((msg, msgIndex) => {
                 const isUser = msg.role === 'user';
                 const msgContent = typeof msg?.content === 'string' ? msg.content : String(msg?.content ?? '');
                 const isLongMessage = msgContent.length > 280 || (msgContent.match(/\n/g) || []).length >= 5;
                 const isCollapsed = Boolean(collapsedMessageIds[msg.id]);
+                const canRefreshMessage = !isUser &&
+                  !msg.isError &&
+                  !msg.id.startsWith('err_') &&
+                  !msgContent.trim().startsWith('⚠️') &&
+                  activeSession.messages.slice(0, msgIndex).some(previous => previous.role === 'user');
 
                 return (
                   <div
@@ -2121,14 +2110,16 @@ Carefully review the conversation and your previous replies above.
                               )}
                             </button>
                           )}
-                          <button
-                            onClick={() => handleRetryMessage(msg.id)}
-                            disabled={isLoading}
-                            className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-indigo-300 disabled:opacity-30 transition-colors"
-                            title={isUser ? "Retry / Resend message" : "Retry / Regenerate response"}
-                          >
-                            <RotateCcw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
-                          </button>
+                          {canRefreshMessage && (
+                            <button
+                              onClick={() => handleRetryMessage(msg.id)}
+                              disabled={isLoading}
+                              className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-indigo-300 disabled:opacity-30 transition-colors"
+                              title="Regenerate this AI response and remove messages below it"
+                            >
+                              <RotateCcw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
+                            </button>
+                          )}
                           <button
                             onClick={() => handleStartEdit(msg.id, msg.content)}
                             className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-white transition-colors"
