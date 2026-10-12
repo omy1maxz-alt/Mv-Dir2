@@ -32,6 +32,16 @@ Save settings, reload the AI Studio app, select a Cloudflare image model, and tr
 - Do not log tokens or add them to source control.
 - Cloudflare free allocation is measured in Neurons, not a guaranteed count of images. Costs vary by model and output dimensions; check the current Cloudflare AI pricing page.
 
+## Discover Cloudflare models
+
+The Worker also exposes an authenticated catalog endpoint for the current Cloudflare account:
+
+- GET <worker-url>?task=text-generation — filter to text-generation models.
+- GET <worker-url>?task=text-to-image — filter to text-to-image models.
+- GET <worker-url> — return the first 100 non-experimental models.
+
+Include Authorization: Bearer <PROXY_ACCESS_TOKEN>. The Worker queries Cloudflare's official GET /accounts/{account_id}/ai/models/search endpoint. The API token stays in Worker secrets and is never sent to the browser. This endpoint returns catalog metadata; a model still needs a supported request adapter before it should be used for generation. The endpoint requests page 1 with 100 records, so it does not guarantee the entire catalog is included if it grows beyond that page.
+
 ## Supported request actions
 
 - `action: "image"`: forwards prompt and image parameters, including width/height, to the selected `@cf/...` model. Supports image bytes and JSON/base64 responses.
