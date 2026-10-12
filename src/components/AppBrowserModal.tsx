@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Browser } from '@capacitor/browser';
+import { Capacitor } from '@capacitor/core';
 import { 
   X, Globe, ArrowLeft, ArrowRight, RotateCw, Home, Search, 
   Tv, Lock, Maximize2, Minimize2, Bookmark, Copy, 
@@ -209,7 +211,7 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
   const [showUaModal, setShowUaModal] = useState(false);
   const [currentEffectiveUa, setCurrentEffectiveUa] = useState(getEffectiveUserAgent());
   const [copiedUa, setCopiedUa] = useState(false);
-  const [useProxy, setUseProxy] = useState<boolean>(true);
+  const [useProxy, setUseProxy] = useState<boolean>(false);
 
   useEffect(() => {
     const handleUaChange = () => {
@@ -358,16 +360,17 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
 
   const getEffectiveIframeSrc = useCallback((url: string) => {
     if (!url || url === 'mv://newtab' || url === 'about:newtab') return url;
-    // Embed pages explicitly allow framing, keep native
+    // YouTube's approved embed endpoint should remain direct.
     if (url.includes('youtube-nocookie.com/embed/') || url.includes('youtube.com/embed/')) {
       return url;
     }
-    // If proxy enabled or host is known to block framing, route through /api/proxy
-    if (useProxy || currentAnalysis.isKnownBlockedHost) {
+    // Direct navigation is the default. The HTML proxy is an optional compatibility
+    // mode only; it cannot provide full browser behavior for arbitrary modern sites.
+    if (useProxy) {
       return `/api/proxy?url=${encodeURIComponent(url)}`;
     }
     return url;
-  }, [useProxy, currentAnalysis.isKnownBlockedHost]);
+  }, [useProxy]);
 
   // Format any URL or YouTube link with YouTube's approved player configuration
   const formatBrowseUrl = (raw: string): string => {
@@ -870,17 +873,26 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
                 <span className="hidden sm:inline">Proxy: {useProxy ? 'ON' : 'OFF'}</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  if (activeTab.url && activeTab.url !== 'mv://newtab') {
-                    window.open(activeTab.url, '_blank');
-                  }
-                }}
-                className="p-1.5 text-white/50 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
-                title="Pop out in Real Browser Tab"
+                            <button
+              type="button"
+              onClick={async () => {
+              if (!activeTab.url || activeTab.url === 'mv://newtab') return;
+              try {
+              if (Capacitor.isNativePlatform()) {
+              await Browser.open({ url: activeTab.url });
+              } else {
+              window.open(activeTab.url, '_blank', 'noopener,noreferrer');
+              }
+              appendBrowserLog('success', 'Opened page in full browser', activeTab.url);
+              } catch (error: any) {
+              appendBrowserLog('error', 'Could not open full browser', error?.message || String(error));
+              }
+              }}
+              className="p-1.5 text-white/60 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors"
+              title="Open in full browser (normal browsing, sign-in and site navigation)"
+              aria-label="Open in full browser"
               >
-                <ExternalLink className="w-3.5 h-3.5 text-white/70" />
+              <ExternalLink className="w-3.5 h-3.5 text-white/80" />
               </button>
 
               <button
