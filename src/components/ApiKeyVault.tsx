@@ -8,15 +8,7 @@ import type { User } from 'firebase/auth';
 
 type ModelOption = { value: string; label: string };
 type ModelOptionGroup = { label: string; options: ModelOption[] };
-type CloudflareCatalogModel = {
-  id: string;
-  name: string;
-  description: string;
-  task: string;
-  source: string;
-  properties: string[];
-  tags: string[];
-};
+type CloudflareCatalogModel = { id: string; name: string; description: string; task: string; source: string; properties: string[]; tags: string[] };
 
 const SearchableModelPicker: React.FC<{
   label: string;
@@ -163,7 +155,6 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [proxyTest, setProxyTest] = useState<{ kind: 'success' | 'error' | 'testing'; message: string } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -172,7 +163,6 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       setTextModel(currentTextModel);
       setImageModel(currentImageModel);
       setAuthError(null);
-      setProxyTest(null);
     }
   }, [isOpen, currentKeys, currentSource, currentTextModel, currentImageModel]);
 
@@ -187,9 +177,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     }
     let cancelled = false;
     const controller = new AbortController();
-    setCatalogState({ kind: 'loading', message: 'Loading Cloudflare model catalog…' });
-    const baseUrl = proxyUrl.replace(/\/+$/, '');
+    const baseUrl = proxyUrl.endsWith('/') ? proxyUrl.slice(0, -1) : proxyUrl;
     const headers = { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' };
+    setCatalogState({ kind: 'loading', message: 'Loading Cloudflare model catalog…' });
     Promise.all([
       fetch(baseUrl + '?task=text-generation', { headers, signal: controller.signal, cache: 'no-store' }),
       fetch(baseUrl + '?task=text-to-image', { headers, signal: controller.signal, cache: 'no-store' })
@@ -221,6 +211,61 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     return () => unsubscribe();
   }, []);
 
+  const normalizedTask = (model: CloudflareCatalogModel) => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-');
+  const cloudflareTextGroup: ModelOptionGroup = (() => {
+    const supported = cloudflareCatalog.some(model => normalizedTask(model).includes('text-generation') && model.id === '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+    return {
+      label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog)' : ' (Fallback List)'),
+      options: [{ value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: supported ? 'Cloudflare Llama 3.3 70B (available in live catalog)' : 'Cloudflare Llama 3.3 70B (Worker Proxy recommended)' }]
+    };
+  })();
+  const cloudflareImageGroup: ModelOptionGroup = (() => {
+    const known: ModelOption[] = [
+      { value: 'cloudflare:@cf/leonardo/lucid-origin', label: 'Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction' },
+      { value: 'cloudflare:@cf/leonardo/phoenix-1.0', label: 'Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text' },
+      { value: 'cloudflare:@cf/black-forest-labs/flux-1-schnell', label: 'FLUX.1 [schnell] — Fast drafts & iteration' },
+      { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
+      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation' },
+      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' }
+    ];
+    const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-to-image').map(model => model.id));
+    const options = catalogState.kind === 'success'
+      ? known.filter(option => found.has(option.value.slice('cloudflare:'.length)))
+      : known;
+    return { label: 'Cloudflare Workers AI (' + (catalogState.kind === 'success' ? 'Live Catalog' : 'Fallback') + ')', options: options.length ? options : known };
+  })();
+
+  const refreshCloudflareCatalog = async () => {
+    const proxyUrl = String(keys.cloudflareWorkerProxyUrl || '').trim();
+    const proxyToken = String(keys.cloudflareWorkerProxyToken || '').trim();
+    if (!proxyUrl || !proxyToken) {
+      setCatalogState({ kind: 'error', message: 'Enter the Worker URL and proxy access token before refreshing the catalog.' });
+      return;
+    }
+    setCatalogState({ kind: 'loading', message: 'Refreshing Cloudflare model catalog…' });
+    const baseUrl = proxyUrl.endsWith('/') ? proxyUrl.slice(0, -1) : proxyUrl;
+    try {
+      const headers = { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' };
+      const responses = await Promise.all([
+        fetch(baseUrl + '?task=text-generation', { headers, cache: 'no-store' }),
+        fetch(baseUrl + '?task=text-to-image', { headers, cache: 'no-store' })
+      ]);
+      const payloads = await Promise.all(responses.map(async response => ({
+        response, data: await response.json().catch(() => ({}))
+      })));
+      const failed = payloads.find(({ response, data }) => !response.ok || !data.success || !Array.isArray(data.models));
+      if (failed) throw new Error(failed.data.error || 'Cloudflare catalog failed (HTTP ' + failed.response.status + ').');
+      const unique = new Map<string, CloudflareCatalogModel>();
+      payloads.flatMap(item => item.data.models as CloudflareCatalogModel[]).forEach(model => {
+        if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
+      });
+      setCloudflareCatalog(Array.from(unique.values()));
+      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' catalog models. Only known-supported adapters are selectable.' });
+    } catch (error) {
+      setCatalogState({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleGoogleLogin = async () => {
@@ -251,135 +296,6 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const handleSave = () => {
     onSave(keys, source, textModel, imageModel);
     onClose();
-  };
-
-  const normalizedTask = (model: CloudflareCatalogModel) => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-');
-  const cloudflareTextGroup: ModelOptionGroup = (() => {
-    const supportedText = cloudflareCatalog.filter(model => {
-      const task = normalizedTask(model);
-      return task.includes('text-generation') && model.id.toLowerCase().includes('llama') && /llama-3\.3-70b-instruct-fp8-fast/.test(model.id);
-    });
-    const fallback: ModelOption[] = [{ value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Cloudflare Llama 3.3 70B (Worker Proxy recommended)' }];
-    const options = supportedText.map(model => ({
-      value: 'cloudflare-text:' + model.id,
-      label: (model.name || model.id) + (model.description ? ' — ' + model.description.slice(0, 90) : '')
-    }));
-    return { label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog)' : ' (Fallback List)'), options: options.length ? options : fallback };
-  })();
-  const cloudflareImageGroup: ModelOptionGroup = (() => {
-    const supportedTasks = ['text-to-image'];
-    const supportedImages = cloudflareCatalog.filter(model => {
-      const id = model.id.toLowerCase();
-      const task = normalizedTask(model);
-      return supportedTasks.includes(task) && [
-        '@cf/leonardo/lucid-origin',
-        '@cf/leonardo/phoenix-1.0',
-        '@cf/black-forest-labs/flux-1-schnell',
-        '@cf/lykon/dreamshaper-8-lcm',
-        '@cf/stabilityai/stable-diffusion-xl-base-1.0',
-        '@cf/bytedance/stable-diffusion-xl-lightning'
-      ].includes(id);
-    });
-    const existing = [
-      { value: 'cloudflare:@cf/leonardo/lucid-origin', label: 'Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction' },
-      { value: 'cloudflare:@cf/leonardo/phoenix-1.0', label: 'Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text' },
-      { value: 'cloudflare:@cf/black-forest-labs/flux-1-schnell', label: 'FLUX.1 [schnell] — Fast drafts & iteration' },
-      { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
-      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation' },
-      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' }
-    ];
-    const existingById = new Map(existing.map(option => [option.value.slice('cloudflare:'.length), option]));
-    const options = supportedImages.map(model => ({
-      value: 'cloudflare:' + model.id,
-      label: existingById.get(model.id)?.label || (model.name || model.id)
-    }));
-    return { label: 'Cloudflare Workers AI (Live Catalog' + (catalogState.kind === 'success' ? '' : ' / Fallback') + ')', options: options.length ? options : existing };
-  })();
-
-  const refreshCloudflareCatalog = async () => {
-    const proxyUrl = String(keys.cloudflareWorkerProxyUrl || '').trim();
-    const proxyToken = String(keys.cloudflareWorkerProxyToken || '').trim();
-    if (!proxyUrl || !proxyToken) {
-      setCatalogState({ kind: 'error', message: 'Enter the Worker URL and proxy access token before refreshing the catalog.' });
-      return;
-    }
-    setCatalogState({ kind: 'loading', message: 'Refreshing Cloudflare model catalog…' });
-    setCloudflareCatalog([]);
-    const baseUrl = proxyUrl.replace(/\/+$/, '');
-    try {
-      const headers = { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' };
-      const responses = await Promise.all([
-        fetch(baseUrl + '?task=text-generation', { headers, cache: 'no-store' }),
-        fetch(baseUrl + '?task=text-to-image', { headers, cache: 'no-store' })
-      ]);
-      const payloads = await Promise.all(responses.map(async response => ({
-        response,
-        data: await response.json().catch(() => ({}))
-      })));
-      const failed = payloads.find(({ response, data }) => !response.ok || !data.success || !Array.isArray(data.models));
-      if (failed) throw new Error(failed.data.error || 'Cloudflare catalog failed (HTTP ' + failed.response.status + ').');
-      const unique = new Map<string, CloudflareCatalogModel>();
-      payloads.flatMap(item => item.data.models as CloudflareCatalogModel[]).forEach(model => {
-        if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
-      });
-      setCloudflareCatalog(Array.from(unique.values()));
-      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' catalog models. Only known-supported model adapters are selectable.' });
-    } catch (error) {
-      setCatalogState({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
-    }
-  };
-
-  // Tests browser-to-Worker CORS/routing using a deliberately invalid token.
-  // The Worker should answer 401 before contacting Workers AI, so this uses no AI credits.
-  const handleTestCloudflareProxy = async () => {
-    const proxyUrl = String(keys.cloudflareWorkerProxyUrl || '').trim();
-    if (!proxyUrl) {
-      setProxyTest({ kind: 'error', message: 'Enter the Cloudflare Worker Proxy URL first.' });
-      return;
-    }
-    try {
-      const parsed = new URL(proxyUrl);
-      if (parsed.protocol !== 'https:') {
-        setProxyTest({ kind: 'error', message: 'Use the HTTPS workers.dev URL.' });
-        return;
-      }
-    } catch {
-      setProxyTest({ kind: 'error', message: 'The Worker URL is not a valid URL.' });
-      return;
-    }
-
-    setProxyTest({ kind: 'testing', message: 'Testing browser access and CORS preflight…' });
-    try {
-      const response = await fetch(proxyUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer mv-director-routing-test-invalid-token',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          action: 'image',
-          model: '@cf/black-forest-labs/flux-1-schnell',
-          input: { prompt: 'routing test only' }
-        }),
-        cache: 'no-store'
-      });
-      if (response.status === 401) {
-        setProxyTest({ kind: 'success', message: 'Connection and CORS are working. The expected HTTP 401 confirms the Worker received the test request. No image was generated.' });
-      } else if (response.status === 403) {
-        setProxyTest({ kind: 'error', message: 'The Worker returned HTTP 403. Check Worker-side access rules or deployment routing.' });
-      } else if (response.status >= 500) {
-        const detail = (await response.text()).slice(0, 180);
-        setProxyTest({ kind: 'error', message: `The Worker responded with HTTP ${response.status}. Check its configuration. ${detail}` });
-      } else {
-        setProxyTest({ kind: 'success', message: `The browser reached the Worker and completed CORS preflight (HTTP ${response.status}). This test does not generate an image.` });
-      }
-    } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : String(error);
-      setProxyTest({
-        kind: 'error',
-        message: `The browser could not complete the request. This usually means a CORS/preflight, URL, or network issue. Verify the saved Worker URL and retry. Details: ${detail}`
-      });
-    }
   };
 
   return (
@@ -612,55 +528,10 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                   <div className="text-[10px] text-white/40">
                     Cloudflare's REST API may be blocked by browser CORS in the AI Studio iframe. Deploy the included worker proxy and paste its URL here.
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={refreshCloudflareCatalog}
-                      disabled={catalogState.kind === 'loading'}
-                      className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 transition-colors hover:bg-orange-500/15 disabled:cursor-wait disabled:opacity-50"
-                    >
-                      {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
-                      Refresh Model Catalog
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleTestCloudflareProxy}
-                      disabled={proxyTest?.kind === 'testing'}
-                      className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-2 text-xs font-medium text-white/80 transition-colors hover:bg-white/10 disabled:cursor-wait disabled:opacity-50"
-                    >
-                      {proxyTest?.kind === 'testing' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
-                      Test Worker Connection
-                    </button>
-                    <span className="text-[10px] text-white/35">Uses a dummy token; does not generate an image or use AI credits.</span>
-                  </div>
-                  {catalogState.message && (
-                    <div
-                      role="status"
-                      className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
-                        catalogState.kind === 'success'
-                          ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
-                          : catalogState.kind === 'error'
-                            ? 'border-rose-500/20 bg-rose-500/10 text-rose-200'
-                            : 'border-white/10 bg-white/[0.04] text-white/60'
-                      }`}
-                    >
-                      {catalogState.message}
-                    </div>
-                  )}
-                  {proxyTest && (
-                    <div
-                      role="status"
-                      className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
-                        proxyTest.kind === 'success'
-                          ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
-                          : proxyTest.kind === 'error'
-                            ? 'border-rose-500/20 bg-rose-500/10 text-rose-200'
-                            : 'border-white/10 bg-white/[0.04] text-white/60'
-                      }`}
-                    >
-                      {proxyTest.message}
-                    </div>
-                  )}
+                  <button type="button" onClick={refreshCloudflareCatalog} disabled={catalogState.kind === 'loading'} className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-50">
+                    {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />} Refresh Model Catalog
+                  </button>
+                  {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
                 </div>
 
                 <div className="space-y-2">
@@ -725,7 +596,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               value={textModel}
               onChange={setTextModel}
               accent="indigo"
-              groups={[{"label":"Google Gemini Models (Direct / Native)","options":[{"value":"gemini-3.8-pro","label":"Gemini 3.8 Pro (Next Gen Reasoning)"},{"value":"gemini-3.8-flash","label":"Gemini 3.8 Flash (Next Gen Fast)"},{"value":"gemini-3.7-pro","label":"Gemini 3.7 Pro (Ultimate Reasoning)"},{"value":"gemini-3.7-flash","label":"Gemini 3.7 Flash (Latest Fast)"},{"value":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},{"value":"gemini-3.5-flash","label":"Gemini 3.5 Flash (Balanced)"},{"value":"gemini-3.1-pro-preview","label":"Gemini 3.1 Pro (Legacy Reasoning)"},{"value":"gemini-3.1-flash-lite","label":"Gemini 3.1 Flash Lite (Highest Quota)"}], cloudflareTextGroup]},{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},{...cloudflareTextGroup},{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
+              groups={[{"label":"Google Gemini Models (Direct / Native)","options":[{"value":"gemini-3.8-pro","label":"Gemini 3.8 Pro (Next Gen Reasoning)"},{"value":"gemini-3.8-flash","label":"Gemini 3.8 Flash (Next Gen Fast)"},{"value":"gemini-3.7-pro","label":"Gemini 3.7 Pro (Ultimate Reasoning)"},{"value":"gemini-3.7-flash","label":"Gemini 3.7 Flash (Latest Fast)"},{"value":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},{"value":"gemini-3.5-flash","label":"Gemini 3.5 Flash (Balanced)"},{"value":"gemini-3.1-pro-preview","label":"Gemini 3.1 Pro (Legacy Reasoning)"},{"value":"gemini-3.1-flash-lite","label":"Gemini 3.1 Flash Lite (Highest Quota)"}]},{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},{...cloudflareTextGroup},{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
             />
 
             {textModel.startsWith('kie:') && (
@@ -802,7 +673,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               value={imageModel}
               onChange={setImageModel}
               accent="emerald"
-              groups={[{"label":"Google Gemini Direct (Native @google/genai / AI Studio)","options":[{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct Alias)"},{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Legacy Direct GCP)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)"}], cloudflareImageGroup]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{...cloudflareImageGroup},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
+              groups={[{"label":"Google Gemini Direct (Native @google/genai / AI Studio)","options":[{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct Alias)"},{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Legacy Direct GCP)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)"}]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{...cloudflareImageGroup},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
             />
             <div className="text-[10px] text-white/40">
               {imageModel.startsWith('kie:') 
