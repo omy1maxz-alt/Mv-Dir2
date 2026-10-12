@@ -33,14 +33,20 @@ app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
     const body = req.body || {};
     const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || body.accountId || '').toString().trim();
     const apiToken = (process.env.CLOUDFLARE_API_TOKEN || body.apiToken || '').toString().trim();
-    const model = (body.model || '@cf/black-forest-labs/flux-1-schnell').toString().trim();
-    const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+    const action = body.action === 'text' ? 'text' : 'image';
+    const model = (body.model || (action === 'text' ? '@cf/meta/llama-3.3-70b-instruct-fp8-fast' : '@cf/black-forest-labs/flux-1-schnell')).toString().trim();
+    const input = body.input && typeof body.input === 'object' && !Array.isArray(body.input)
+      ? body.input
+      : Object.fromEntries(['prompt', 'width', 'height', 'seed'].filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
 
     if (!accountId || !apiToken) {
       return res.status(400).json({ error: 'Cloudflare credentials are missing. Configure them in API Settings or on the server.' });
     }
-    if (!prompt.trim()) {
+    if (action === 'image' && (typeof input.prompt !== 'string' || !input.prompt.trim())) {
       return res.status(400).json({ error: 'An image prompt is required.' });
+    }
+    if (action === 'text' && !Array.isArray(input.messages) && typeof input.prompt !== 'string') {
+      return res.status(400).json({ error: 'A text prompt or messages array is required for a text model.' });
     }
     if (!/^@?[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
       return res.status(400).json({ error: 'Invalid Cloudflare model identifier.' });
@@ -59,7 +65,7 @@ app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
           'Authorization': `Bearer ${apiToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify(input),
         signal: controller.signal
       });
     } catch (error: any) {
