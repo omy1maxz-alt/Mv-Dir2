@@ -33,8 +33,8 @@ const getDimensionsForHorde = (aspectRatio?: string): { width: number; height: n
 };
 
 /**
- * Generate image via Cloudflare Workers AI (FLUX.1 [schnell] or SDXL)
- * Endpoint: https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}
+ * Image dimensions for common aspect ratios. Cloudflare image models need width/height
+ * in the model input; a prompt alone is not enough for consistent framing.
  */
 const getImageDimensions = (aspectRatio?: string): { width: number; height: number } => {
   switch (aspectRatio) {
