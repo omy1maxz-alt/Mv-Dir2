@@ -68,12 +68,27 @@ function setupCustomMiddlewares(middlewares: any) {
           const body = JSON.parse(rawBody || '{}');
           const accountId = String(body.accountId || '').trim();
           const apiToken = String(body.apiToken || '').trim();
-          const model = String(body.model || '@cf/black-forest-labs/flux-1-schnell').trim();
-          const prompt = typeof body.prompt === 'string' ? body.prompt : '';
-          if (!accountId || !apiToken || !prompt.trim()) {
+          const action = body.action === 'text' ? 'text' : 'image';
+          const model = String(body.model || (action === 'text' ? '@cf/meta/llama-3.3-70b-instruct-fp8-fast' : '@cf/black-forest-labs/flux-1-schnell')).trim();
+          const input = body.input && typeof body.input === 'object' && !Array.isArray(body.input)
+            ? body.input
+            : Object.fromEntries(['prompt', 'width', 'height', 'seed'].filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
+          if (!accountId || !apiToken) {
             res.statusCode = 400;
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ error: 'Cloudflare credentials and image prompt are required.' }));
+            res.end(JSON.stringify({ error: 'Cloudflare credentials are required.' }));
+            return;
+          }
+          if (action === 'image' && (typeof input.prompt !== 'string' || !input.prompt.trim())) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'An image prompt is required.' }));
+            return;
+          }
+          if (action === 'text' && !Array.isArray(input.messages) && typeof input.prompt !== 'string') {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'A text prompt or messages array is required.' }));
             return;
           }
           if (!/^[a-zA-Z0-9_-]+$/.test(accountId) || !/^@?[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
@@ -89,7 +104,7 @@ function setupCustomMiddlewares(middlewares: any) {
             upstream = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`, {
               method: 'POST',
               headers: { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt }),
+              body: JSON.stringify(input),
               signal: controller.signal
             });
           } finally {
