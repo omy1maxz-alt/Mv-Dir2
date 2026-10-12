@@ -1,3 +1,9 @@
+### 189. Cloudflare Worker Browser-Path Diagnostics
+- **Incident:** A single-scene generation attempt surfaced `Could not reach the Cloudflare Worker Proxy ... Failed to fetch` as an `unhandled_rejection`, despite prior terminal tests confirming `OPTIONS` 204 and a dummy-token `POST` 401.
+- **Interpretation:** The live Worker root currently answers GET with its expected HTTP 405 JSON response and CORS headers, so the service is reachable from an external browser check. That alone does not prove that the Google AI Studio iframe's browser request or its saved URL is correct.
+- **Changes:** Added a Settings diagnostic that sends a dummy-token POST to the configured Worker URL. An expected 401 means the browser completed preflight and the Worker handled the request; it cannot consume Workers AI credits. Single-scene UI callbacks now consume the already-logged rejection so it no longer becomes an unhandled rejection. Batch generation still propagates errors to its existing retry/stop logic.
+- **Verification limitation:** Source committed through GitHub. The live in-app diagnostic and Android build still need to be run. If the diagnostic fails, inspect the URL shown in API Vault, browser origin/network conditions, and Worker CORS response; do not rotate secrets or change Worker code before collecting that result.
+
 ### 188. Browser Direct Navigation and Full-Browser Handoff
 - **User goal:** Make the Browser tab behave more like a normal browser for general internet browsing.
 - **Findings:** The web UI renders arbitrary sites in an iframe. Frame restrictions remain controlled by each website; the /api/proxy endpoint is an HTML fetch-and-rewrite compatibility path and cannot recreate full browser behavior for modern sites.
