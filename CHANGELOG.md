@@ -1,4 +1,7 @@
 ### Improved
+- **Browser Internet Navigation**: Both browser surfaces now use direct site loading by default instead of forcing all requests through the HTML proxy. The “Full Browser” action opens Capacitor Browser on native Android/iOS and a separate browser tab on web. Anti-frame warnings now guide users to the full browser for normal navigation, login, and sites that prohibit iframe embedding. Proxy mode remains optional because an HTML proxy cannot fully emulate an unrestricted browser.
+
+### Improved
 - **Searchable Model Pickers**: Replaced the long native Text Generation Model and Image Generation Model dropdowns in API & Account Settings with dark-theme searchable pickers, grouped by provider, with current-model highlighting, keyboard Escape dismissal, outside-click dismissal, and viewport-aware upward opening for mobile.
 
 ### Fixed
