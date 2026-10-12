@@ -558,7 +558,7 @@ function parsePlayerResponseFromHtml(html: string): any | null {
       const char = html[i];
       if (inString) {
         if (escaped) escaped = false;
-        else if (char === '\\\\') escaped = true;
+        else if (char === '\\') escaped = true;
         else if (char === '"') inString = false;
         continue;
       }
@@ -888,15 +888,14 @@ async function getYouTubeCaptionsServerSide(videoId: string, targetLanguage?: st
     const playerPayloads = await fetchYouTubePlayerDataCandidates(videoId);
     let availableTracks = collectYouTubeCaptionTracks(playerPayloads);
     let metadata = playerPayloads.find(payload => payload?.videoDetails) || playerPayloads[0] || {};
-    let fallbackResolved: any = null;
 
     if (!availableTracks.length) {
       availableTracks = await fetchCommunityYouTubeCaptionTracks(videoId);
     }
 
     const videoDetails = metadata?.videoDetails || {};
-    const title = videoDetails.title || fallbackResolved?.title || 'YouTube_Video';
-    const duration = parseInt(videoDetails.lengthSeconds || '0', 10) || fallbackResolved?.duration || 0;
+    const title = videoDetails.title || 'YouTube_Video';
+    const duration = parseInt(videoDetails.lengthSeconds || '0', 10) || 0;
     const thumbnailUrl = videoDetails.thumbnail?.thumbnails?.slice(-1)[0]?.url
       || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
