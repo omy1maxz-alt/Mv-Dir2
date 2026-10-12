@@ -15,6 +15,94 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use('/export', express.static(path.join(__dirname, 'export')));
 
+/**
+ * Same-origin proxy for Cloudflare Workers AI image generation.
+ * If server-level credentials are configured, prefer those over client-supplied keys.
+ * The route intentionally does not log credentials or raw upstream request headers.
+ */
+app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
+  try {
+    const origin = req.headers.origin;
+    const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+    const protocol = forwardedProto || req.protocol;
+    const expectedOrigin = `${protocol}://${req.get('host')}`;
+    if (origin && origin !== expectedOrigin) {
+      return res.status(403).json({ error: 'Cross-origin requests are not allowed for this endpoint.' });
+    }
+
+    const body = req.body || {};
+    const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || body.accountId || '').toString().trim();
+    const apiToken = (process.env.CLOUDFLARE_API_TOKEN || body.apiToken || '').toString().trim();
+    const model = (body.model || '@cf/black-forest-labs/flux-1-schnell').toString().trim();
+    const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+
+    if (!accountId || !apiToken) {
+      return res.status(400).json({ error: 'Cloudflare credentials are missing. Configure them in API Settings or on the server.' });
+    }
+    if (!prompt.trim()) {
+      return res.status(400).json({ error: 'An image prompt is required.' });
+    }
+    if (!/^[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
+      return res.status(400).json({ error: 'Invalid Cloudflare model identifier.' });
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(accountId)) {
+      return res.status(400).json({ error: 'Invalid Cloudflare account ID format.' });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90000);
+    let upstream: globalThis.Response;
+    try {
+      upstream = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ prompt }),
+        signal: controller.signal
+      });
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return res.status(504).json({ error: 'Cloudflare Workers AI request timed out.' });
+      }
+      return res.status(502).json({ error: 'Could not connect to Cloudflare Workers AI. Check server network connectivity and DNS.' });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+    if (!upstream.ok) {
+      const text = (await upstream.text()).slice(0, 1000)
+        .replaceAll(apiToken, '[redacted]')
+        .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
+      return res.status(upstream.status).json({
+        error: `Cloudflare Workers AI rejected the request (HTTP ${upstream.status}).`,
+        details: text
+      });
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'no-store');
+    if (contentType.includes('application/json')) {
+      const data = await upstream.text();
+      return res.status(200).send(data);
+    }
+    if (!contentType.startsWith('image/')) {
+      return res.status(502).json({ error: `Cloudflare returned an unexpected content type: ${contentType}` });
+    }
+    const imageBytes = Buffer.from(await upstream.arrayBuffer());
+    if (!imageBytes.length) {
+      return res.status(502).json({ error: 'Cloudflare returned an empty image response.' });
+    }
+    return res.status(200).send(imageBytes);
+  } catch {
+    // Never return internal exception details that might contain upstream request metadata.
+    return res.status(500).json({ error: 'Cloudflare image proxy encountered an unexpected server error.' });
+  }
+});
+
+
 const PIPED_INSTANCES = [
   'https://api.piped.privacy.com.de',
   'https://pipedapi.tokhmi.xyz',
