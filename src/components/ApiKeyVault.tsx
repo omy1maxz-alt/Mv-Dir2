@@ -1,9 +1,137 @@
 import React, { useState, useEffect } from 'react';
 import { ApiKeys, ApiKeySource } from '@/types';
-import { X, Key, Shield, Check, AlertCircle, LogOut, User as UserIcon, Loader2 } from 'lucide-react';
+import { X, Key, Shield, Check, AlertCircle, LogOut, User as UserIcon, Loader2, Search, SearchX, ChevronDown, ChevronUp, MessageSquareText, Image as ImageIcon, Cpu } from 'lucide-react';
 import { signInWithGoogle, signOutGoogle, listenAuthState, isNativeEnvironment } from '@/services/auth';
 import { APP_ENV } from '@/services/environment';
 import type { User } from 'firebase/auth';
+
+
+type ModelOption = { value: string; label: string };
+type ModelOptionGroup = { label: string; options: ModelOption[] };
+
+const SearchableModelPicker: React.FC<{
+  label: string;
+  value: string;
+  groups: ModelOptionGroup[];
+  onChange: (value: string) => void;
+  accent: 'indigo' | 'emerald';
+}> = ({ label, value, groups, onChange, accent }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const selected = groups.flatMap(group => group.options).find(option => option.value === value);
+  const visibleGroups = groups.map(group => ({
+    ...group,
+    options: group.options.filter(option => `${option.label} ${option.value}`.toLowerCase().includes(query.trim().toLowerCase()))
+  })).filter(group => group.options.length > 0);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setIsOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    requestAnimationFrame(() => searchRef.current?.focus());
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isOpen]);
+
+  const accentText = accent === 'indigo' ? 'text-indigo-300' : 'text-emerald-300';
+  const accentBorder = accent === 'indigo' ? 'focus:border-indigo-400' : 'focus:border-emerald-400';
+  const activeBg = accent === 'indigo' ? 'bg-indigo-500/15' : 'bg-emerald-500/15';
+
+  return (
+    <div className="relative w-full" ref={rootRef}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-label={label}
+        onClick={() => { setIsOpen(open => !open); setQuery(''); }}
+        className={`w-full min-w-0 flex items-center gap-3 rounded-xl border border-white/10 bg-black/40 px-3.5 py-3 text-left transition-colors hover:border-white/20 hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/10 ${isOpen ? accentBorder : ''}`}
+      >
+        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] ${accentText}`}>
+          {label.startsWith('Text') ? <MessageSquareText className="h-4 w-4" /> : <ImageIcon className="h-4 w-4" />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-white">{selected?.label || 'Choose a model'}</span>
+          <span className="mt-0.5 block truncate text-[11px] text-white/45">{selected?.value || 'Select a provider and model'}</span>
+        </span>
+        <span className="shrink-0 text-white/50">{isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 right-0 top-full z-[130] mt-2 overflow-hidden rounded-2xl border border-white/10 bg-[#151515] shadow-2xl shadow-black/60">
+          <div className="border-b border-white/10 bg-[#191919] p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
+              <input
+                ref={searchRef}
+                type="search"
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder={`Search ${label.toLowerCase()}…`}
+                className={`w-full rounded-lg border border-white/10 bg-black/40 py-2.5 pl-9 pr-3 text-sm text-white outline-none placeholder:text-white/30 ${accentBorder}`}
+              />
+            </div>
+            <div className="mt-2 text-[10px] uppercase tracking-[0.14em] text-white/35">
+              {visibleGroups.reduce((count, group) => count + group.options.length, 0)} models • grouped by provider
+            </div>
+          </div>
+          <div role="listbox" aria-label={label} className="max-h-[min(42dvh,360px)] overflow-y-auto overscroll-contain p-2">
+            {visibleGroups.length ? visibleGroups.map(group => (
+              <div key={group.label} className="mb-2 last:mb-0">
+                <div className="sticky top-0 z-10 flex items-center gap-2 bg-[#151515]/95 px-2 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-white/45 backdrop-blur">
+                  <span className={`h-1.5 w-1.5 rounded-full ${group.label.toLowerCase().includes('cloudflare') ? 'bg-orange-400' : group.label.toLowerCase().includes('kie') ? 'bg-indigo-400' : group.label.toLowerCase().includes('google') ? 'bg-emerald-400' : group.label.toLowerCase().includes('horde') ? 'bg-teal-400' : 'bg-white/40'}`} />
+                  <span>{group.label}</span>
+                </div>
+                {group.options.map(option => {
+                  const isSelected = option.value === value;
+                  const provider = group.label.split(/[—(]/)[0].trim();
+                  return (
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      key={option.value}
+                      onClick={() => { onChange(option.value); setIsOpen(false); setQuery(''); }}
+                      className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${isSelected ? activeBg : 'hover:bg-white/[0.05]'}`}
+                    >
+                      <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${isSelected ? 'border-white/15 bg-white/10 text-white' : 'border-white/5 bg-white/[0.03] text-white/35'}`}>
+                        {isSelected ? <Check className="h-3.5 w-3.5" /> : <Cpu className="h-3.5 w-3.5" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className={`block text-xs font-medium leading-relaxed ${isSelected ? 'text-white' : 'text-white/80'}`}>{option.label}</span>
+                        <span className="mt-0.5 block text-[10px] text-white/35">{provider} · {option.value}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )) : (
+              <div className="px-4 py-8 text-center">
+                <SearchX className="mx-auto h-5 w-5 text-white/25" />
+                <div className="mt-2 text-xs text-white/55">No matching models</div>
+                <div className="mt-1 text-[10px] text-white/30">Try a different model name or provider</div>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-[10px] text-white/35">
+            <span>Tap a model to select it</span>
+            <button type="button" onClick={() => setIsOpen(false)} className="rounded-md px-2 py-1 text-white/50 hover:bg-white/5 hover:text-white">Close</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 interface ApiKeyVaultProps {
   isOpen: boolean;
@@ -362,82 +490,13 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                 </span>
               )}
             </div>
-            <select
+            <SearchableModelPicker
+              label="Text Generation Model"
               value={textModel}
-              onChange={(e) => setTextModel(e.target.value)}
-              className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors"
-            >
-              <optgroup label="Google Gemini Models (Direct / Native)" className="bg-[#1a1a1a] text-white font-semibold">
-                <option value="gemini-3.8-pro" className="bg-[#1a1a1a] text-white">Gemini 3.8 Pro (Next Gen Reasoning)</option>
-                <option value="gemini-3.8-flash" className="bg-[#1a1a1a] text-white">Gemini 3.8 Flash (Next Gen Fast)</option>
-                <option value="gemini-3.7-pro" className="bg-[#1a1a1a] text-white">Gemini 3.7 Pro (Ultimate Reasoning)</option>
-                <option value="gemini-3.7-flash" className="bg-[#1a1a1a] text-white">Gemini 3.7 Flash (Latest Fast)</option>
-                <option value="gemini-3.6-flash" className="bg-[#1a1a1a] text-white">Gemini 3.6 Flash</option>
-                <option value="gemini-3.5-flash" className="bg-[#1a1a1a] text-white">Gemini 3.5 Flash (Balanced)</option>
-                <option value="gemini-3.1-pro-preview" className="bg-[#1a1a1a] text-white">Gemini 3.1 Pro (Legacy Reasoning)</option>
-                <option value="gemini-3.1-flash-lite" className="bg-[#1a1a1a] text-white">Gemini 3.1 Flash Lite (Highest Quota)</option>
-              </optgroup>
-
-              <optgroup label="KIE AI — Anthropic Claude" className="bg-[#1a1a1a] text-indigo-300 font-semibold">
-                <option value="kie:claude-sonnet-5-5" className="bg-[#1a1a1a] text-white">KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)</option>
-                <option value="kie:claude-opus-5-5" className="bg-[#1a1a1a] text-white">KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)</option>
-                <option value="kie:claude-haiku-5-5" className="bg-[#1a1a1a] text-white">KIE Claude Haiku 5.5 (1M Context • Ultra Fast)</option>
-                <option value="kie:claude-fable-5-1" className="bg-[#1a1a1a] text-white">KIE Claude Fable 5.1 (Mythos-Class Agentic)</option>
-                <option value="kie:claude-sonnet-5" className="bg-[#1a1a1a] text-white">KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)</option>
-                <option value="kie:claude-opus-5" className="bg-[#1a1a1a] text-white">KIE Claude Opus 5 (Deep Thought & Prose)</option>
-                <option value="kie:claude-sonnet-4-6" className="bg-[#1a1a1a] text-white">KIE Claude Sonnet 4.6 (Clear Writing & Code)</option>
-                <option value="kie:claude-haiku-4-5" className="bg-[#1a1a1a] text-white">KIE Claude Haiku 4.5 (Ultra Fast)</option>
-                <option value="kie:claude-fable-5" className="bg-[#1a1a1a] text-white">KIE Claude Fable 5 (Creative & Scripting)</option>
-              </optgroup>
-
-              <optgroup label="KIE AI — OpenAI & Codex" className="bg-[#1a1a1a] text-indigo-300 font-semibold">
-                <option value="kie:gpt-6-1-sol" className="bg-[#1a1a1a] text-white">KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)</option>
-                <option value="kie:gpt-6-sol" className="bg-[#1a1a1a] text-white">KIE GPT-6 Sol (Frontier Reasoning & Coding)</option>
-                <option value="kie:gpt-6-luna" className="bg-[#1a1a1a] text-white">KIE GPT-6 Luna (High Speed & Scale)</option>
-                <option value="kie:gpt-6-astra" className="bg-[#1a1a1a] text-white">KIE GPT-6 Astra (Frontier Codex)</option>
-                <option value="kie:gpt-5-6-sol" className="bg-[#1a1a1a] text-white">KIE GPT-5.6 Sol (Codex Flagship Tier)</option>
-                <option value="kie:gpt-5-6-terra" className="bg-[#1a1a1a] text-white">KIE GPT-5.6 Terra (Balanced Scale)</option>
-                <option value="kie:gpt-5-6-luna" className="bg-[#1a1a1a] text-white">KIE GPT-5.6 Luna (Fast & Affordable)</option>
-                <option value="kie:gpt-5-5" className="bg-[#1a1a1a] text-white">KIE GPT-5.5 (High Intelligence)</option>
-                <option value="kie:gpt-5-4" className="bg-[#1a1a1a] text-white">KIE GPT-5.4 (Multimodal Reasoning)</option>
-                <option value="kie:gpt-5-2" className="bg-[#1a1a1a] text-white">KIE GPT-5.2 (Multimodal Reasoning)</option>
-                <option value="kie:codex" className="bg-[#1a1a1a] text-white">KIE OpenAI Codex (Code Synthesis)</option>
-              </optgroup>
-
-              <optgroup label="KIE AI — Google Gemini" className="bg-[#1a1a1a] text-indigo-300 font-semibold">
-                <option value="kie:gemini-3.8-flash" className="bg-[#1a1a1a] text-white">KIE Gemini 3.8 Flash (Advanced Coding & Agents)</option>
-                <option value="kie:gemini-3.7-flash" className="bg-[#1a1a1a] text-white">KIE Gemini 3.7 Flash (Hybrid Reasoning)</option>
-                <option value="kie:gemini-3.6-flash" className="bg-[#1a1a1a] text-white">KIE Gemini 3.6 Flash (High Throughput)</option>
-                <option value="kie:gemini-3.5-flash" className="bg-[#1a1a1a] text-white">KIE Gemini 3.5 Flash (Fast Agentic)</option>
-                <option value="kie:gemini-3.1-pro" className="bg-[#1a1a1a] text-white">KIE Gemini 3.1 Pro (Deep Analysis)</option>
-                <option value="kie:gemini-3-pro" className="bg-[#1a1a1a] text-white">KIE Gemini 3 Pro (Deep Reasoning)</option>
-                <option value="kie:gemini-2.5-pro" className="bg-[#1a1a1a] text-white">KIE Gemini 2.5 Pro (Massive Context)</option>
-              </optgroup>
-
-              <optgroup label="KIE AI — xAI, DeepSeek & Moonshot" className="bg-[#1a1a1a] text-indigo-300 font-semibold">
-                <option value="kie:grok-4-7" className="bg-[#1a1a1a] text-white">KIE Grok 4.7 (500K Context • SWE 71% Reasoning)</option>
-                <option value="kie:grok-4-6" className="bg-[#1a1a1a] text-white">KIE Grok 4.6 (Fast Interactive)</option>
-                <option value="kie:grok-4-5" className="bg-[#1a1a1a] text-white">KIE Grok 4.5 (Coding & Logic)</option>
-                <option value="kie:grok-4-3" className="bg-[#1a1a1a] text-white">KIE Grok 4.3 (Speed & Chat)</option>
-                <option value="kie:deepseek-v4-1-flash" className="bg-[#1a1a1a] text-white">KIE DeepSeek V4.1 Flash (Fast Open Reasoning)</option>
-                <option value="kie:deepseek-r1" className="bg-[#1a1a1a] text-white">KIE DeepSeek R1 (Reasoning Engine)</option>
-                <option value="kie:deepseek-v3" className="bg-[#1a1a1a] text-white">KIE DeepSeek V3 (671B MoE)</option>
-                <option value="kie:kimi-k3" className="bg-[#1a1a1a] text-white">KIE Moonshot Kimi K3 (1M Context)</option>
-                <option value="kie:custom" className="bg-[#1a1a1a] text-indigo-400">KIE Custom Model (Specify below)</option>
-              </optgroup>
-
-              <optgroup label="Cloudflare Workers AI — Text Generation" className="bg-[#1a1a1a] text-orange-300 font-semibold">
-                <option value="cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast" className="bg-[#1a1a1a] text-white">Cloudflare Llama 3.3 70B (Worker Proxy recommended)</option>
-              </optgroup>
-
-              <optgroup label="AI Horde — Text Generation (Volunteer Workers)" className="bg-[#1a1a1a] text-teal-300 font-semibold">
-                <option value="aihorde-text" className="bg-[#1a1a1a] text-white">AI Horde Text (Anonymous / priority with personal key)</option>
-              </optgroup>
-
-              <optgroup label="Custom Provider" className="bg-[#1a1a1a] text-white font-semibold">
-                <option value="custom-openai" className="bg-[#1a1a1a] text-indigo-400">Custom OpenAI Provider (Set above)</option>
-              </optgroup>
-            </select>
+              onChange={setTextModel}
+              accent="indigo"
+              groups={[{"label":"Google Gemini Models (Direct / Native)","options":[{"value":"gemini-3.8-pro","label":"Gemini 3.8 Pro (Next Gen Reasoning)"},{"value":"gemini-3.8-flash","label":"Gemini 3.8 Flash (Next Gen Fast)"},{"value":"gemini-3.7-pro","label":"Gemini 3.7 Pro (Ultimate Reasoning)"},{"value":"gemini-3.7-flash","label":"Gemini 3.7 Flash (Latest Fast)"},{"value":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},{"value":"gemini-3.5-flash","label":"Gemini 3.5 Flash (Balanced)"},{"value":"gemini-3.1-pro-preview","label":"Gemini 3.1 Pro (Legacy Reasoning)"},{"value":"gemini-3.1-flash-lite","label":"Gemini 3.1 Flash Lite (Highest Quota)"}]},{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},{"label":"Cloudflare Workers AI — Text Generation","options":[{"value":"cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast","label":"Cloudflare Llama 3.3 70B (Worker Proxy recommended)"}]},{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
+            />
 
             {textModel.startsWith('kie:') && (
               <div className="p-3 rounded-xl bg-indigo-950/20 border border-indigo-500/20 space-y-2 mt-2 animate-in fade-in">
@@ -508,51 +567,13 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                 </span>
               ) : null}
             </div>
-            <select
+            <SearchableModelPicker
+              label="Image Generation Model"
               value={imageModel}
-              onChange={(e) => setImageModel(e.target.value)}
-              className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors"
-            >
-              <optgroup label="Google Gemini Direct (Native @google/genai / AI Studio)" className="bg-[#1a1a1a] text-emerald-400 font-semibold">
-                <option value="gemini-nano-banana-2.1" className="bg-[#1a1a1a] text-white">Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)</option>
-                <option value="gemini-3.1-flash-lite-image" className="bg-[#1a1a1a] text-white">Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)</option>
-                <option value="gemini-3-pro-image" className="bg-[#1a1a1a] text-white">Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)</option>
-                <option value="gemini-3.1-flash-image" className="bg-[#1a1a1a] text-white">Gemini 3.1 Flash Image (AI Studio Direct Alias)</option>
-                <option value="gemini-2.5-flash-image" className="bg-[#1a1a1a] text-white">Gemini 2.5 Flash Image (Legacy Direct GCP)</option>
-                <option value="imagen-3.0-generate-002" className="bg-[#1a1a1a] text-white">Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)</option>
-              </optgroup>
-
-              <optgroup label="KIE AI — Google Nano Banana (Uses Kie AI API Key)" className="bg-[#1a1a1a] text-amber-300 font-semibold">
-                <option value="kie:google/nano-banana-2-1" className="bg-[#1a1a1a] text-white">KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)</option>
-                <option value="kie:google/nano-banana-2" className="bg-[#1a1a1a] text-white">KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)</option>
-                <option value="kie:google/nano-banana-pro" className="bg-[#1a1a1a] text-white">KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)</option>
-                <option value="kie:google/nano-banana" className="bg-[#1a1a1a] text-white">KIE Nano Banana (Gemini 2.5 Flash Image — Fast)</option>
-                <option value="kie:google/nano-banana-2-lite" className="bg-[#1a1a1a] text-white">KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)</option>
-                <option value="kie:google/nano-banana-edit" className="bg-[#1a1a1a] text-white">KIE Nano Banana Edit (Prompt Image Editing)</option>
-              </optgroup>
-
-              <optgroup label="KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)" className="bg-[#1a1a1a] text-indigo-300 font-semibold">
-                <option value="kie:gpt-image-2-5" className="bg-[#1a1a1a] text-white">KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)</option>
-                <option value="kie:grok-imagine-image-2" className="bg-[#1a1a1a] text-white">KIE Grok Imagine Image 2.0 (xAI Generation & Editing)</option>
-              </optgroup>
-
-              <optgroup label="Cloudflare Workers AI (Serverless Edge GPU)" className="bg-[#1a1a1a] text-orange-400 font-semibold">
-                <option value="cloudflare:@cf/leonardo/lucid-origin" className="bg-[#1a1a1a] text-white">Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction</option>
-                <option value="cloudflare:@cf/leonardo/phoenix-1.0" className="bg-[#1a1a1a] text-white">Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text</option>
-                <option value="cloudflare:@cf/black-forest-labs/flux-1-schnell" className="bg-[#1a1a1a] text-white">FLUX.1 [schnell] — Fast drafts & iteration</option>
-                <option value="cloudflare:@cf/lykon/dreamshaper-8-lcm" className="bg-[#1a1a1a] text-white">DreamShaper 8 LCM — Photorealistic / stylized exploration</option>
-                <option value="cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0" className="bg-[#1a1a1a] text-white">Stable Diffusion XL 1.0 — General-purpose image generation</option>
-                <option value="cloudflare:@cf/bytedance/stable-diffusion-xl-lightning" className="bg-[#1a1a1a] text-white">Stable Diffusion XL Lightning — Fast drafts</option>
-              </optgroup>
-
-              <optgroup label="AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)" className="bg-[#1a1a1a] text-teal-400 font-semibold">
-                <option value="aihorde" className="bg-[#1a1a1a] text-white">AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)</option>
-              </optgroup>
-
-              <optgroup label="Free Public Providers (No API Key Required)" className="bg-[#1a1a1a] text-white font-semibold">
-                <option value="pollinations" className="bg-[#1a1a1a] text-white">Pollinations (Free Public API, No Key)</option>
-              </optgroup>
-            </select>
+              onChange={setImageModel}
+              accent="emerald"
+              groups={[{"label":"Google Gemini Direct (Native @google/genai / AI Studio)","options":[{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct Alias)"},{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Legacy Direct GCP)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)"}]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{"label":"Cloudflare Workers AI (Serverless Edge GPU)","options":[{"value":"cloudflare:@cf/leonardo/lucid-origin","label":"Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction"},{"value":"cloudflare:@cf/leonardo/phoenix-1.0","label":"Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text"},{"value":"cloudflare:@cf/black-forest-labs/flux-1-schnell","label":"FLUX.1 [schnell] — Fast drafts & iteration"},{"value":"cloudflare:@cf/lykon/dreamshaper-8-lcm","label":"DreamShaper 8 LCM — Photorealistic / stylized exploration"},{"value":"cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0","label":"Stable Diffusion XL 1.0 — General-purpose image generation"},{"value":"cloudflare:@cf/bytedance/stable-diffusion-xl-lightning","label":"Stable Diffusion XL Lightning — Fast drafts"}]},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
+            />
             <div className="text-[10px] text-white/40">
               {imageModel.startsWith('kie:') 
                 ? "Powered by Kie.ai Image API. Uses your Kie AI API key to generate images without GCP billing."
