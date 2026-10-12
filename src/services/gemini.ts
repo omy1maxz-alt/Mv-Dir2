@@ -1780,24 +1780,68 @@ export const generateSingleImage = async (
     addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
 ): Promise<string> => {
     let activePrompt = prompt.trim();
-    if (currentImageModel === 'pollinations') {
-        if (referenceImage || frameReferenceBase64) {
-            addLog("Pollinations API does not support reference images. Generating using text prompt only.", 'warning');
+
+    // Collect the exact visual assets selected for this single-image task before
+    // choosing a provider. The old early-return branches sent only prompt text to
+    // Cloudflare/KIE and silently lost the selected face/frame.
+    const visualReferences: ReferenceImage[] = [];
+    if (referenceImage && referenceImage.enabled !== false) visualReferences.push(referenceImage);
+    if (frameReferenceBase64) {
+        visualReferences.push({
+            id: '__selected_frame_reference__',
+            data: frameReferenceBase64,
+            description: 'User-selected scene frame. Use for composition, camera framing, pose, lighting, clothing and background; do not replace the separately selected character identity.',
+            roles: ['Frame'] as any,
+            enabled: true
+        });
+    }
+    for (const ref of projectData?.referenceImages || []) {
+        if (ref.enabled !== false && ref.isMasterArt && !visualReferences.some(item => item.id === ref.id)) {
+            visualReferences.push(ref);
+        }
+    }
+    const orderedVisualReferences = sortReferencesForIdentity(visualReferences, projectData);
+
+    if (currentImageModel === 'pollinations' || currentImageModel === 'aihorde') {
+        if (orderedVisualReferences.length > 0) {
+            const provider = currentImageModel === 'aihorde' ? 'AI Horde' : 'Pollinations';
+            throw new Error(`${provider} is prompt-only in MV Director and cannot preserve the selected face/frame reference. No prompt-only fallback was run. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2 for reference-guided generation.`);
+        }
+        if (currentImageModel === 'aihorde') {
+            return await generateImageAIHorde({
+                prompt: activePrompt || "A highly detailed cinematic scene",
+                aspectRatio: aspectRatio as string,
+                addLog
+            });
         }
         return await fallbackToPollinations(activePrompt || "A highly detailed cinematic scene", aspectRatio, addLog);
     }
+
     if (currentImageModel.startsWith('cloudflare:')) {
+        const model = currentImageModel.replace('cloudflare:', '');
+        if (orderedVisualReferences.length > 0 && !isCloudflareFlux2Model(model)) {
+            throw new Error(`The selected Cloudflare model (${model}) does not accept reference images in MV Director. The selected image was not silently ignored; choose Cloudflare FLUX.2 or a Gemini/KIE Nano Banana reference-capable model.`);
+        }
+        const identityReferences = orderedVisualReferences.filter(ref => isCharacterIdentityReference(ref, projectData));
+        if (identityReferences.length > 4) {
+            throw new Error(`Cloudflare FLUX.2 accepts at most four references, but ${identityReferences.length} identity references are selected. Remove unrelated references or use KIE Nano Banana 2/Pro or a Gemini image model.`);
+        }
+        const fluxReferences = isCloudflareFlux2Model(model)
+            ? [...identityReferences, ...orderedVisualReferences.filter(ref => !isCharacterIdentityReference(ref, projectData))].slice(0, 4)
+            : [];
+        const referenceMap = fluxReferences.map((ref, index) =>
+            `Image ${index} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
+        ).join('\\n');
+        const cloudflarePrompt = (activePrompt || "A highly detailed cinematic scene") + (referenceMap
+            ? `\\n\\nReference image map (same order as input_image_0 through input_image_3):\\n${referenceMap}\\n\\nFace identity is controlled by the CHARACTER FACE / IDENTITY reference, not by frame/style references. Preserve the selected person's distinctive facial structure, eyes, nose, lips and skin tone. Use frame references for composition and style references for style only.`
+            : '');
         return await generateImageCloudflare({
-            prompt: activePrompt || "A highly detailed cinematic scene",
+            prompt: cloudflarePrompt,
             aspectRatio: aspectRatio as string,
-            model: currentImageModel.replace('cloudflare:', ''),
-            addLog
-        });
-    }
-    if (currentImageModel === 'aihorde') {
-        return await generateImageAIHorde({
-            prompt: activePrompt || "A highly detailed cinematic scene",
-            aspectRatio: aspectRatio as string,
+            model,
+            referenceImages: isCloudflareFlux2Model(model)
+                ? fluxReferences.map(ref => ({ data: ref.data, description: describeReferenceForImagePrompt(ref, projectData) }))
+                : undefined,
             addLog
         });
     }
@@ -1940,42 +1984,35 @@ Your task is to generate a new scene based EXACTLY on the text description provi
     }
     
     const parts: any[] = [];
-    
-    if (referenceImage) {
-        parts.push({ text: `[Image 1 - EXACT face/identity]:` });
+    let referenceImageIndex = 0;
+    const imageLabels: string[] = [];
+    orderedVisualReferences.forEach(ref => {
+        const isSelectedFace = Boolean(referenceImage && ref.id === referenceImage.id);
+        const isSelectedFrame = ref.id === '__selected_frame_reference__';
+        const isStyle = ref.isMasterArt || referenceRoles(ref).includes('Style');
+        const character = getCharacterForReference(ref, projectData);
+        const label = isSelectedFace
+            ? `[CHARACTER FACE / IDENTITY REFERENCE${character?.name ? `: ${character.name}` : ''}]`
+            : isSelectedFrame
+                ? '[FRAME / COMPOSITION REFERENCE]'
+                : isStyle
+                    ? '[MASTER ART STYLE REFERENCE]'
+                    : `[VISUAL REFERENCE ${referenceImageIndex + 1}]`;
+        imageLabels.push(`Image ${referenceImageIndex} = ${label}: ${describeReferenceForImagePrompt(ref, projectData)}`);
+        parts.push({ text: label + ':' });
         parts.push({
             inlineData: {
-                data: referenceImage.data.split(',')[1],
-                mimeType: getMimeType(referenceImage.data),
+                data: String(ref.data || '').replace(/^data:[^,]*,/, ''),
+                mimeType: getMimeType(ref.data),
             }
         });
-    }
+        referenceImageIndex++;
+    });
 
-    if (frameReferenceBase64 && !referenceImage) {
-        parts.push({ text: `[Image 1 - EXACT pose/clothing/background]:` });
-        parts.push({
-            inlineData: {
-                data: frameReferenceBase64.split(',')[1],
-                mimeType: getMimeType(frameReferenceBase64),
-            }
-        });
+    if (orderedVisualReferences.length > 0) {
+        finalPrompt = finalPrompt.replace(/Image 1/g, '[CHARACTER FACE / IDENTITY REFERENCE]');
+        finalPrompt += `\\n\\n**Selected reference index map (matches images supplied above)**\\n${imageLabels.join('\\n')}\\nFollow reference roles independently: the character identity reference defines who the person is; the frame reference defines the shot/composition; the master art reference defines style. Do not copy a frame's face when a separate character identity reference was selected.`;
     }
-    
-    // Add master art references
-    if (projectData?.referenceImages) {
-        const masterArts = projectData.referenceImages.filter(r => r.isMasterArt && r.enabled !== false);
-        masterArts.forEach((masterRef, idx) => {
-            const imgId = parts.length + 1;
-            parts.push({ text: `[Image ${imgId} - EXACT Master Art Style Reference]: You MUST strictly copy the visual aesthetic, rendering technique, color palette, line work, tone, and texture of this image over the entire generated scene. Ignore any conflicting style words in the text prompt.` });
-            parts.push({
-                inlineData: {
-                    data: masterRef.data.split(',')[1],
-                    mimeType: getMimeType(masterRef.data),
-                }
-            });
-        });
-    }
-
     parts.unshift({ text: finalPrompt });
 
     const isKieImageModel = currentImageModel.startsWith('kie:') || currentImageModel.startsWith('google/nano-banana');
@@ -1995,11 +2032,18 @@ Your task is to generate a new scene based EXACTLY on the text description provi
             throw new Error("Kie AI API Key is required for Nano Banana image generation. Please add your Kie AI API key in Settings -> API Settings.");
         }
 
+        if (orderedVisualReferences.length > 14) {
+            throw new Error('KIE Nano Banana supports up to 14 references in this app. Reduce the selected references so the character face can be included.');
+        }
         return await generateKieImage({
             prompt: finalPrompt,
             model: currentImageModel,
             aspectRatio: aspectRatio as string,
             apiKey: keyToUse,
+            referenceImages: orderedVisualReferences.map(ref => ({
+                data: ref.data,
+                description: describeReferenceForImagePrompt(ref, projectData)
+            })),
             addLog
         });
     }
@@ -2007,6 +2051,9 @@ Your task is to generate a new scene based EXACTLY on the text description provi
     const doGenerate = async (currentParts: any[]) => {
         addLog(`Sending request to ${currentImageModel}...`, 'info');
         if (currentImageModel.startsWith('imagen-')) {
+            if (orderedVisualReferences.length > 0) {
+                throw new Error(`The selected Imagen model (${currentImageModel}) uses a prompt-only request in MV Director and would ignore the selected face/frame images. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2 instead.`);
+            }
             const resp = await withRetry(() => (genAI.models as any).generateImages({
                 model: currentImageModel,
                 prompt: finalPrompt,
@@ -2069,6 +2116,9 @@ Your task is to generate a new scene based EXACTLY on the text description provi
     } catch (error: any) {
         const isQuotaOrAuth = error.message.includes('Quota') || error.message.includes('403') || error.message.includes('Permission Denied') || error.message.includes('429') || error.message.includes('limit');
         if (isQuotaOrAuth) {
+            if (orderedVisualReferences.length > 0) {
+                throw new Error(`Image generation failed for ${currentImageModel} (${error.message || 'authentication/quota error'}). MV Director did not switch to prompt-only fallback because that could change the selected person's face. Fix provider credentials/quota or choose another reference-capable model.`);
+            }
             return await fallbackToPollinations(activePrompt || prompt, aspectRatio, addLog);
         }
 
@@ -2078,9 +2128,15 @@ Your task is to generate a new scene based EXACTLY on the text description provi
             const cleanSanitized = sanitizeImagePrompt(activePrompt || prompt);
             addLog(`Image prompt flagged by model safety filter (${error.message}). Auto-sanitizing trigger keywords...`, 'warning');
             try {
-                const fallbackParts = [{ text: cleanSanitized }];
+                const sanitizedFullPrompt = finalPrompt.replace(activePrompt || prompt, cleanSanitized);
+                const fallbackParts = orderedVisualReferences.length > 0
+                    ? [{ text: sanitizedFullPrompt }, ...parts.filter(part => !part.text || !part.text.startsWith('Generate an image.'))]
+                    : [{ text: cleanSanitized }];
                 return await doGenerate(fallbackParts);
             } catch (fallbackError: any) {
+                if (orderedVisualReferences.length > 0) {
+                    throw new Error(`The image model rejected both the original and sanitized prompt with the selected references. MV Director did not remove the references or switch to a prompt-only generator because that could change the character's face. Adjust the scene prompt or choose another reference-capable model. Original error: ${fallbackError.message}`);
+                }
                 addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
                 return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
             }
