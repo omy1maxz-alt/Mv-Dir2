@@ -603,6 +603,31 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                     )
                                 ) : (
                                     <div className="bg-[#111] border border-white/10 p-5 rounded-2xl space-y-4">
+                                        <div className="flex flex-col gap-2 p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04]">
+                                            <div className="flex flex-col sm:flex-row gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleFetchYoutubeCaptions}
+                                                    disabled={isFetchingYoutubeCaptions || !(youtubeInput.trim() || youtubeUrl.trim())}
+                                                    className="flex-1 px-4 py-2.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 disabled:opacity-50 text-emerald-100 text-xs font-bold rounded-xl flex items-center justify-center gap-2"
+                                                >
+                                                    {isFetchingYoutubeCaptions ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Subtitles className="w-4 h-4" />}
+                                                    {isFetchingYoutubeCaptions ? 'Fetching YouTube CC…' : 'Fetch Native YouTube Captions'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleInspectStreamLinks}
+                                                    disabled={isExtractingDetails || !(youtubeInput.trim() || youtubeUrl.trim())}
+                                                    className="flex-1 px-4 py-2.5 bg-orange-600/15 hover:bg-orange-600/25 border border-orange-500/25 disabled:opacity-50 text-orange-100 text-xs font-bold rounded-xl flex items-center justify-center gap-2"
+                                                >
+                                                    {isExtractingDetails ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link className="w-4 h-4" />}
+                                                    {isExtractingDetails ? 'Inspecting manifests…' : 'Inspect Manifest & Stream Links'}
+                                                </button>
+                                            </div>
+                                            {youtubeCaptionFetchStatus && (
+                                                <div role="status" className="text-[11px] text-white/65 leading-relaxed">{youtubeCaptionFetchStatus}</div>
+                                            )}
+                                        </div>
                                         <div className="flex flex-col sm:flex-row gap-2">
                                             <div className="relative flex-1">
                                                 <Youtube className="w-4 h-4 text-red-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
