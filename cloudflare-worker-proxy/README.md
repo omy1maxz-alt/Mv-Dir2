@@ -45,4 +45,9 @@ Include Authorization: Bearer <PROXY_ACCESS_TOKEN>. The Worker queries Cloudflar
 ## Supported request actions
 
 - `action: "image"`: forwards prompt and image parameters, including width/height, to the selected `@cf/...` model. Supports image bytes and JSON/base64 responses.
+
+- FLUX.2 image models are supported by the authenticated JSON envelope and translated server-side to the required `multipart/form-data` request. The supported IDs are `@cf/black-forest-labs/flux-2-dev`, `@cf/black-forest-labs/flux-2-klein-4b`, and `@cf/black-forest-labs/flux-2-klein-9b`.
+- FLUX.2 reference images are sent in `input_image_0` through `input_image_3`, with a maximum of four images. MV Director resizes them so each image is smaller than 512×512 before sending them.
+- After pulling an app update that adds FLUX.2 support, **redeploy the latest `cloudflare-worker-proxy/worker.js`** in the Cloudflare dashboard. An older deployed Worker will continue forwarding JSON and will reject FLUX.2 reference-image requests.
+
 - `action: "text"`: forwards a text model's input, such as a messages array, and returns the Cloudflare JSON response.
