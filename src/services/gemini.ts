@@ -1634,9 +1634,14 @@ export const generateSceneImage = async (
         if (!keyToUse) {
             throw new Error("Kie AI API Key is required for reference-guided image generation. Add it in Settings -> API Settings.");
         }
-        const kieReferences = sortReferencesForIdentity(relevantReferences, projectData).slice(0, 14);
+        const orderedKieReferences = sortReferencesForIdentity(relevantReferences, projectData);
+        const kieIdentityReferences = orderedKieReferences.filter(ref => isCharacterIdentityReference(ref, projectData));
+        if (kieIdentityReferences.length > 14) {
+            throw new Error(`KIE Nano Banana accepts up to 14 reference images in this app, but ${kieIdentityReferences.length} character identity references are active. Reduce the number of selected characters or choose a provider with a suitable input limit.`);
+        }
+        const kieReferences = orderedKieReferences.slice(0, 14);
         if (relevantReferences.length > kieReferences.length) {
-            addLog('KIE Nano Banana accepts up to 14 reference images here; identity references are prioritized before frame/style references.', 'warning');
+            addLog('KIE Nano Banana supports up to 14 reference images here; identity references are prioritized before frame/style references.', 'warning');
         }
         const referenceMap = kieReferences.map((ref, index) =>
             `Image ${index + 1} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
