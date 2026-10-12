@@ -8,6 +8,15 @@ import type { User } from 'firebase/auth';
 
 type ModelOption = { value: string; label: string };
 type ModelOptionGroup = { label: string; options: ModelOption[] };
+type CloudflareCatalogModel = {
+  id: string;
+  name: string;
+  description: string;
+  task: string;
+  source: string;
+  properties: string[];
+  tags: string[];
+};
 
 const SearchableModelPicker: React.FC<{
   label: string;
@@ -146,6 +155,8 @@ interface ApiKeyVaultProps {
 
 export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, currentKeys, currentSource, currentTextModel, currentImageModel, onSave }) => {
   const [source, setSource] = useState<ApiKeySource>(currentSource);
+  const [cloudflareCatalog, setCloudflareCatalog] = useState<CloudflareCatalogModel[]>([]);
+  const [catalogState, setCatalogState] = useState<{ kind: 'idle' | 'loading' | 'success' | 'error'; message: string }>({ kind: 'idle', message: '' });
   const [keys, setKeys] = useState<ApiKeys>(currentKeys);
   const [textModel, setTextModel] = useState<string>(currentTextModel);
   const [imageModel, setImageModel] = useState<string>(currentImageModel);
@@ -164,6 +175,53 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       setProxyTest(null);
     }
   }, [isOpen, currentKeys, currentSource, currentTextModel, currentImageModel]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const proxyUrl = String(keys.cloudflareWorkerProxyUrl || '').trim();
+    const proxyToken = String(keys.cloudflareWorkerProxyToken || '').trim();
+    if (!proxyUrl || !proxyToken) {
+      setCloudflareCatalog([]);
+      setCatalogState({ kind: 'idle', message: 'Enter the Worker URL and proxy access token, then refresh to load the live catalog.' });
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setCatalogState({ kind: 'loading', message: 'Loading Cloudflare model catalog…' });
+    const baseUrl = proxyUrl.replace(/\\/+$/, '');
+    fetch(baseUrl + '?task=text-generation', {
+      headers: { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' },
+      signal: controller.signal,
+      cache: 'no-store'
+    }).then(async response => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.success || !Array.isArray(data.models)) {
+        throw new Error(data.error || 'Cloudflare text catalog request failed (HTTP ' + response.status + ').');
+      }
+      const textModels = data.models as CloudflareCatalogModel[];
+      const imageResponse = await fetch(baseUrl + '?task=text-to-image', {
+        headers: { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' },
+        signal: controller.signal,
+        cache: 'no-store'
+      });
+      const imageData = await imageResponse.json().catch(() => ({}));
+      if (!imageResponse.ok || !imageData.success || !Array.isArray(imageData.models)) {
+        throw new Error(imageData.error || 'Cloudflare image catalog request failed (HTTP ' + imageResponse.status + ').');
+      }
+      if (cancelled) return;
+      const combined = [...textModels, ...(imageData.models as CloudflareCatalogModel[])];
+      const unique = new Map<string, CloudflareCatalogModel>();
+      combined.forEach(model => {
+        if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
+      });
+      setCloudflareCatalog(Array.from(unique.values()));
+      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' current Cloudflare models from the Worker catalog.' });
+    }).catch(error => {
+      if (cancelled || error?.name === 'AbortError') return;
+      setCatalogState({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
+    });
+    return () => { cancelled = true; controller.abort(); };
+  }, [isOpen, keys.cloudflareWorkerProxyUrl, keys.cloudflareWorkerProxyToken]);
 
   useEffect(() => {
     const unsubscribe = listenAuthState((user) => {
@@ -203,6 +261,38 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     onSave(keys, source, textModel, imageModel);
     onClose();
   };
+
+  const normalizedTask = (model: CloudflareCatalogModel) => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-');
+  const cloudflareTextGroup: ModelOptionGroup = (() => {
+    const supportedText = cloudflareCatalog.filter(model => {
+      const task = normalizedTask(model);
+      return task.includes('text-generation') && model.id.toLowerCase().includes('llama');
+    });
+    const fallback: ModelOption[] = [{ value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Cloudflare Llama 3.3 70B (Worker Proxy recommended)' }];
+    const options = supportedText.map(model => ({
+      value: 'cloudflare-text:' + model.id,
+      label: (model.name || model.id) + (model.description ? ' — ' + model.description.slice(0, 90) : '')
+    }));
+    return { label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog)' : ' (Fallback List)'), options: options.length ? options : fallback };
+  })();
+  const cloudflareImageGroup: ModelOptionGroup = (() => {
+    const supportedTasks = ['text-to-image', 'image-to-image'];
+    const supportedImages = cloudflareCatalog.filter(model => supportedTasks.includes(normalizedTask(model)));
+    const existing = [
+      { value: 'cloudflare:@cf/leonardo/lucid-origin', label: 'Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction' },
+      { value: 'cloudflare:@cf/leonardo/phoenix-1.0', label: 'Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text' },
+      { value: 'cloudflare:@cf/black-forest-labs/flux-1-schnell', label: 'FLUX.1 [schnell] — Fast drafts & iteration' },
+      { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
+      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation' },
+      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' }
+    ];
+    const existingById = new Map(existing.map(option => [option.value.slice('cloudflare:'.length), option]));
+    const options = supportedImages.map(model => ({
+      value: 'cloudflare:' + model.id,
+      label: existingById.get(model.id)?.label || (model.name || model.id) + (model.description ? ' — ' + model.description.slice(0, 90) : '')
+    }));
+    return { label: 'Cloudflare Workers AI (Live Catalog' + (catalogState.kind === 'success' ? '' : ' / Fallback') + ')', options: options.length ? options : existing };
+  })();
 
   // Tests browser-to-Worker CORS/routing using a deliberately invalid token.
   // The Worker should answer 401 before contacting Workers AI, so this uses no AI credits.
@@ -577,7 +667,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               value={textModel}
               onChange={setTextModel}
               accent="indigo"
-              groups={[{"label":"Google Gemini Models (Direct / Native)","options":[{"value":"gemini-3.8-pro","label":"Gemini 3.8 Pro (Next Gen Reasoning)"},{"value":"gemini-3.8-flash","label":"Gemini 3.8 Flash (Next Gen Fast)"},{"value":"gemini-3.7-pro","label":"Gemini 3.7 Pro (Ultimate Reasoning)"},{"value":"gemini-3.7-flash","label":"Gemini 3.7 Flash (Latest Fast)"},{"value":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},{"value":"gemini-3.5-flash","label":"Gemini 3.5 Flash (Balanced)"},{"value":"gemini-3.1-pro-preview","label":"Gemini 3.1 Pro (Legacy Reasoning)"},{"value":"gemini-3.1-flash-lite","label":"Gemini 3.1 Flash Lite (Highest Quota)"}]},{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},{"label":"Cloudflare Workers AI — Text Generation","options":[{"value":"cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast","label":"Cloudflare Llama 3.3 70B (Worker Proxy recommended)"}]},{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
+              groups={[{"label":"Google Gemini Models (Direct / Native)","options":[{"value":"gemini-3.8-pro","label":"Gemini 3.8 Pro (Next Gen Reasoning)"},{"value":"gemini-3.8-flash","label":"Gemini 3.8 Flash (Next Gen Fast)"},{"value":"gemini-3.7-pro","label":"Gemini 3.7 Pro (Ultimate Reasoning)"},{"value":"gemini-3.7-flash","label":"Gemini 3.7 Flash (Latest Fast)"},{"value":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},{"value":"gemini-3.5-flash","label":"Gemini 3.5 Flash (Balanced)"},{"value":"gemini-3.1-pro-preview","label":"Gemini 3.1 Pro (Legacy Reasoning)"},{"value":"gemini-3.1-flash-lite","label":"Gemini 3.1 Flash Lite (Highest Quota)"}]},{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},{...cloudflareTextGroup},{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
             />
 
             {textModel.startsWith('kie:') && (
@@ -654,7 +744,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               value={imageModel}
               onChange={setImageModel}
               accent="emerald"
-              groups={[{"label":"Google Gemini Direct (Native @google/genai / AI Studio)","options":[{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct Alias)"},{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Legacy Direct GCP)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)"}]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{"label":"Cloudflare Workers AI (Serverless Edge GPU)","options":[{"value":"cloudflare:@cf/leonardo/lucid-origin","label":"Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction"},{"value":"cloudflare:@cf/leonardo/phoenix-1.0","label":"Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text"},{"value":"cloudflare:@cf/black-forest-labs/flux-1-schnell","label":"FLUX.1 [schnell] — Fast drafts & iteration"},{"value":"cloudflare:@cf/lykon/dreamshaper-8-lcm","label":"DreamShaper 8 LCM — Photorealistic / stylized exploration"},{"value":"cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0","label":"Stable Diffusion XL 1.0 — General-purpose image generation"},{"value":"cloudflare:@cf/bytedance/stable-diffusion-xl-lightning","label":"Stable Diffusion XL Lightning — Fast drafts"}]},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
+              groups={[{"label":"Google Gemini Direct (Native @google/genai / AI Studio)","options":[{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct Alias)"},{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Legacy Direct GCP)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)"}]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{...cloudflareImageGroup},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
             />
             <div className="text-[10px] text-white/40">
               {imageModel.startsWith('kie:') 
