@@ -349,6 +349,50 @@ import { YouTubeCaptionResponse } from './youtubeCaptionService';
  * Fetches structured YouTube captions via the backend caption retrieval service.
  */
 /** Discovers native timed-caption tracks without waiting for any stream/manifest provider. */
+export interface YouTubeManifestDetails {
+  success: boolean;
+  videoId: string;
+  title?: string;
+  duration?: number;
+  thumbnailUrl?: string;
+  hlsUrl: string | null;
+  dashUrl: string | null;
+  message?: string;
+}
+
+/** Retrieves HLS/DASH manifest URLs through the dedicated backend route, without the legacy stream resolver. */
+export async function fetchYouTubeManifestDetails(rawUrlOrVideoId: string): Promise<YouTubeManifestDetails> {
+  const normalized = normalizeYoutubeUrl(rawUrlOrVideoId);
+  const videoId = normalized.videoId || rawUrlOrVideoId.trim();
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return { success: false, videoId, hlsUrl: null, dashUrl: null, message: 'A valid YouTube URL or video ID is required.' };
+  }
+
+  const response = await fetch(`/api/youtube/manifests?videoId=${encodeURIComponent(videoId)}`, {
+    cache: 'no-store'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    return {
+      success: false,
+      videoId,
+      hlsUrl: null,
+      dashUrl: null,
+      message: data.message || data.error || `Manifest lookup failed (HTTP ${response.status}).`
+    };
+  }
+  return {
+    success: true,
+    videoId,
+    title: data.title,
+    duration: Number(data.duration) || 0,
+    thumbnailUrl: data.thumbnailUrl,
+    hlsUrl: typeof data.hlsUrl === 'string' ? data.hlsUrl : null,
+    dashUrl: typeof data.dashUrl === 'string' ? data.dashUrl : null,
+    message: data.message || ''
+  };
+}
+
 export async function fetchYouTubeCaptionTracks(rawUrlOrVideoId: string): Promise<{
   success: boolean;
   videoId: string;
