@@ -188,7 +188,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     let cancelled = false;
     const controller = new AbortController();
     setCatalogState({ kind: 'loading', message: 'Loading Cloudflare model catalog…' });
-    const baseUrl = proxyUrl.replace(/\\/+$/, '');
+    const baseUrl = proxyUrl.replace(/\/+$/, '');
     fetch(baseUrl + '?task=text-generation', {
       headers: { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' },
       signal: controller.signal,
