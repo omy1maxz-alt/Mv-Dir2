@@ -2871,12 +2871,16 @@ STRICT MANDATORY RULES FOR APP EDIT MODE (PenLine ON):
             }
         }
     }
-    if (newParts.length === 0) newParts.push({ text: "[Empty message]" });
+    // A blank prompt with existing history means "continue from this exact transcript".
+    // Keep the legacy empty-message fallback only when there is no history and no new input.
+    if (newParts.length === 0 && rawContents.length === 0) newParts.push({ text: "[Empty message]" });
 
-    rawContents.push({
-        role: 'user',
-        parts: newParts
-    });
+    if (newParts.length > 0) {
+        rawContents.push({
+            role: 'user',
+            parts: newParts
+        });
+    }
 
     // Proactively prune history, strip stale base64 images, and condense oversized code attachments
     const sanitizedRaw = pruneAndSanitizeStudioContents(rawContents, 650000);
