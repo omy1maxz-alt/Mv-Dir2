@@ -98,7 +98,7 @@ const fitCloudflarePromptToModelLimit = (
   const bodyBudget = maxCharacters - 3; // room for " … "
   const headBudget = Math.floor(bodyBudget * 0.74);
   const tailBudget = bodyBudget - headBudget;
-  let head = characters.slice(0, headBudget).join('').replace(/\\s+\\S*$/, '').trimEnd();
+  let head = characters.slice(0, headBudget).join('').replace(/\s+\S*$/, '').trimEnd();
   let tail = characters.slice(-tailBudget).join('').replace(/^\\S*\\s+/, '').trimStart();
   let shortened = `${head} … ${tail}`;
   if (Array.from(shortened).length > maxCharacters) {
