@@ -1837,9 +1837,9 @@ export const generateSingleImage = async (
             : [];
         const referenceMap = fluxReferences.map((ref, index) =>
             `Image ${index} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
-        ).join('\\n');
+        ).join('\n');
         const cloudflarePrompt = (activePrompt || "A highly detailed cinematic scene") + (referenceMap
-            ? `\\n\\nReference image map (same order as input_image_0 through input_image_3):\\n${referenceMap}\\n\\nFace identity is controlled by the CHARACTER FACE / IDENTITY reference, not by frame/style references. Preserve the selected person's distinctive facial structure, eyes, nose, lips and skin tone. Use frame references for composition and style references for style only.`
+            ? `\n\nReference image map (same order as input_image_0 through input_image_3):\n${referenceMap}\n\nFace identity is controlled by the CHARACTER FACE / IDENTITY reference, not by frame/style references. Preserve the selected person's distinctive facial structure, eyes, nose, lips and skin tone. Use frame references for composition and style references for style only.`
             : '');
         return await generateImageCloudflare({
             prompt: cloudflarePrompt,
@@ -2017,7 +2017,7 @@ Your task is to generate a new scene based EXACTLY on the text description provi
 
     if (orderedVisualReferences.length > 0) {
         finalPrompt = finalPrompt.replace(/Image 1/g, '[CHARACTER FACE / IDENTITY REFERENCE]');
-        finalPrompt += `\\n\\n**Selected reference index map (matches images supplied above)**\\n${imageLabels.join('\\n')}\\nFollow reference roles independently: the character identity reference defines who the person is; the frame reference defines the shot/composition; the master art reference defines style. Do not copy a frame's face when a separate character identity reference was selected.`;
+        finalPrompt += `\n\n**Selected reference index map (matches images supplied above)**\n${imageLabels.join('\n')}\nFollow reference roles independently: the character identity reference defines who the person is; the frame reference defines the shot/composition; the master art reference defines style. Do not copy a frame's face when a separate character identity reference was selected.`;
     }
     parts.unshift({ text: finalPrompt });
 
@@ -3473,9 +3473,9 @@ export const generateMultiSwapImage = async (
             throw new Error(`FLUX.2 supports at most four images. Multi-character swap uses one scene reference plus ${selectedCharacterRefs.length} character identities. Reduce the swap to at most three characters or choose KIE Nano Banana 2/Pro or a Gemini image model.`);
         }
         const fluxRefs = providerRefs.slice(0, 4);
-        const map = fluxRefs.map((ref, index) => `Image ${index} — ${ref.description}`).join('\\n');
+        const map = fluxRefs.map((ref, index) => `Image ${index} — ${ref.description}`).join('\n');
         return await generateImageCloudflare({
-            prompt: `${finalPrompt}\\n\\nReference image map (matches input_image_0 through input_image_3):\\n${map}\\nPreserve every character's identity only from that character's own subject reference. Do not blend faces. Use the first image for scene composition, not identity.`,
+            prompt: `${finalPrompt}\n\nReference image map (matches input_image_0 through input_image_3):\n${map}\nPreserve every character's identity only from that character's own subject reference. Do not blend faces. Use the first image for scene composition, not identity.`,
             aspectRatio: aspectRatio as string,
             model,
             referenceImages: fluxRefs,
@@ -3494,9 +3494,9 @@ export const generateMultiSwapImage = async (
         if (providerRefs.length > 14) {
             throw new Error(`KIE Nano Banana supports up to 14 reference images, but ${providerRefs.length} are selected. Remove some style references and retry.`);
         }
-        const map = providerRefs.map((ref, index) => `Image ${index + 1} — ${ref.description}`).join('\\n');
+        const map = providerRefs.map((ref, index) => `Image ${index + 1} — ${ref.description}`).join('\n');
         return await generateKieImage({
-            prompt: `${finalPrompt}\\n\\nReference image map (same order as image_input):\\n${map}\\nUse each character's corresponding subject reference for that face. Do not average, blend, swap or substitute identities. The scene reference is for composition and pose; character references control identity.`,
+            prompt: `${finalPrompt}\n\nReference image map (same order as image_input):\n${map}\nUse each character's corresponding subject reference for that face. Do not average, blend, swap or substitute identities. The scene reference is for composition and pose; character references control identity.`,
             model: currentImageModel,
             aspectRatio: aspectRatio as string,
             apiKey: keyToUse,
