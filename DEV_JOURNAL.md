@@ -1,3 +1,7 @@
+### 186. Cloudflare SDXL Lightning Input Mapping Follow-up
+- **Finding:** Cloudflare's existing SDXL Lightning choice needs its own `num_steps` parameter mapping; the JSON image adapter originally sent only prompt/width/height.
+- **Change:** Added `num_steps: 4` when `@cf/bytedance/stable-diffusion-xl-lightning` is selected. Verify live output and aspect-ratio behavior before batch use.
+
 ### 185. Cloudflare Workers AI Image Model Expansion
 - **User goal:** Add Cloudflare image models that match MV Director's cinematic storyboard and image-prompt workflow.
 - **Official-source audit:** Cloudflare's current model catalog includes FLUX.1 [schnell], FLUX.2 [dev]/[klein], DreamShaper 8 LCM, Phoenix 1.0, and Lucid Origin. FLUX.2 docs expose multipart input, unlike the current JSON request adapter; keep these models out of the selector until multipart request handling exists.
