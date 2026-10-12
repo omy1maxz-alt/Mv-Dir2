@@ -3321,8 +3321,8 @@ export const generateMultiSwapImage = async (
     apiKey: string | undefined,
     addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
 ): Promise<string> => {
-    if (currentImageModel === 'pollinations') {
-        throw new Error("Pollinations API does not support character swapping. Please select a Gemini image model in Settings.");
+    if (currentImageModel === 'pollinations' || currentImageModel === 'aihorde') {
+        throw new Error(`${currentImageModel === 'aihorde' ? 'AI Horde' : 'Pollinations'} is prompt-only in MV Director and cannot preserve the selected frame/character identity images. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2.`);
     }
     
     addLog("Connecting to image generation service for multi-character swap...", 'info');
@@ -3429,6 +3429,74 @@ export const generateMultiSwapImage = async (
     }
 
     parts.push({ text: finalPrompt });
+
+    // Build the same explicit ordered reference list for every provider adapter.
+    // The scene/frame comes first, followed by each chosen character identity,
+    // then optional master-art references. Each provider receives actual pixels.
+    const selectedCharacterRefs = characterMappings.map((mapping, index) => {
+        const refImage = projectData.referenceImages?.find(ref => ref.id === mapping.charId && ref.enabled !== false);
+        if (!refImage) {
+            throw new Error(`The selected character reference for Character ${index + 1} is missing, disabled, or no longer available. Re-select the reference before generating.`);
+        }
+        const character = projectData.characters?.find(item => item.id === refImage.characterId);
+        return {
+            data: refImage.data,
+            description: `CHARACTER FACE / IDENTITY REFERENCE${character?.name ? ` — ${character.name}` : ''}. Preserve this exact person's face and facial proportions; do not average or blend identity with other references. Scene role: ${mapping.description.trim() || (isSingleSwap ? 'main subject' : `Character ${index + 1}`)}.`
+        };
+    });
+    const masterArtRefs = (projectData.referenceImages || [])
+        .filter(ref => ref.enabled !== false && ref.isMasterArt)
+        .map(ref => ({ data: ref.data, description: `MASTER ART STYLE REFERENCE. Use only for rendering style, palette and texture; not for character identity. ${ref.description || ''}` }));
+    const providerRefs = [
+        { data: frameReferenceBase64, description: 'SCENE / FRAME REFERENCE. Use for composition, camera framing, pose, clothing, lighting and background; ignore the face identity if a character reference is provided.' },
+        ...selectedCharacterRefs,
+        ...masterArtRefs
+    ];
+
+    if (currentImageModel.startsWith('cloudflare:')) {
+        const model = currentImageModel.replace('cloudflare:', '');
+        if (!isCloudflareFlux2Model(model)) {
+            throw new Error(`Cloudflare model ${model} cannot use multi-character reference images in MV Director. Choose FLUX.2 [dev], Klein 4B/9B, or use Gemini/KIE Nano Banana 2/Pro/Edit.`);
+        }
+        if (selectedCharacterRefs.length > 3) {
+            throw new Error(`FLUX.2 supports at most four images. Multi-character swap uses one scene reference plus ${selectedCharacterRefs.length} character identities. Reduce the swap to at most three characters or choose KIE Nano Banana 2/Pro or a Gemini image model.`);
+        }
+        const fluxRefs = providerRefs.slice(0, 4);
+        const map = fluxRefs.map((ref, index) => `Image ${index} — ${ref.description}`).join('\\n');
+        return await generateImageCloudflare({
+            prompt: `${finalPrompt}\\n\\nReference image map (matches input_image_0 through input_image_3):\\n${map}\\nPreserve every character's identity only from that character's own subject reference. Do not blend faces. Use the first image for scene composition, not identity.`,
+            aspectRatio: aspectRatio as string,
+            model,
+            referenceImages: fluxRefs,
+            addLog
+        });
+    }
+
+    if (currentImageModel.startsWith('kie:') || currentImageModel.startsWith('google/nano-banana')) {
+        const keyToUse = customKieApiKey || (typeof window !== 'undefined' ? (() => {
+            try {
+                const saved = localStorage.getItem('mv_api_keys');
+                return saved ? JSON.parse(saved).kie : undefined;
+            } catch { return undefined; }
+        })() : undefined);
+        if (!keyToUse) throw new Error('KIE AI API key is required for character swapping. Add it in Settings → API Settings.');
+        if (providerRefs.length > 14) {
+            throw new Error(`KIE Nano Banana supports up to 14 reference images, but ${providerRefs.length} are selected. Remove some style references and retry.`);
+        }
+        const map = providerRefs.map((ref, index) => `Image ${index + 1} — ${ref.description}`).join('\\n');
+        return await generateKieImage({
+            prompt: `${finalPrompt}\\n\\nReference image map (same order as image_input):\\n${map}\\nUse each character's corresponding subject reference for that face. Do not average, blend, swap or substitute identities. The scene reference is for composition and pose; character references control identity.`,
+            model: currentImageModel,
+            aspectRatio: aspectRatio as string,
+            apiKey: keyToUse,
+            referenceImages: providerRefs,
+            addLog
+        });
+    }
+
+    if (currentImageModel.startsWith('imagen-')) {
+        throw new Error(`The selected Imagen model (${currentImageModel}) uses a prompt-only image request in MV Director and does not support this reference-driven multi-character swap. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2.`);
+    }
 
     const doGenerate = async () => {
         const response = await withRetry(() => callTextModel(genAI, {
