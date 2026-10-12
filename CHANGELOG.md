@@ -1,3 +1,6 @@
+### Improved
+- **Searchable Model Pickers**: Replaced the long native Text Generation Model and Image Generation Model dropdowns in API & Account Settings with dark-theme searchable pickers, grouped by provider, with current-model highlighting, keyboard Escape dismissal, outside-click dismissal, and viewport-aware upward opening for mobile.
+
 ### Fixed
 - **Cloudflare SDXL Lightning Input Compatibility**: Added the model-specific `num_steps` field required by its JSON image input schema, while preserving the existing model identifier and routing behavior.
 
