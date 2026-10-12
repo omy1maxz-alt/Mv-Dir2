@@ -276,7 +276,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
         response, data: await response.json().catch(() => ({}))
       })));
       const failed = payloads.find(({ response, data }) => !response.ok || !data.success || !Array.isArray(data.models));
-      if (failed) throw new Error(failed.data.error || 'Cloudflare catalog failed (HTTP ' + failed.response.status + ').');
+      if (failed) throw new Error(cloudflareCatalogErrorMessage(failed.response.status, failed.data));
       const unique = new Map<string, CloudflareCatalogModel>();
       payloads.flatMap(item => item.data.models as CloudflareCatalogModel[]).forEach(model => {
         if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
