@@ -14,6 +14,7 @@ export interface CloudflareOptions extends ExternalImageOptions {
   apiToken?: string;
   model?: string;
   referenceImages?: CloudflareReferenceImage[];
+  seed?: number;
 }
 
 export interface AIHordeOptions extends ExternalImageOptions {
@@ -92,8 +93,8 @@ const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
     throw new Error('The selected reference image has no usable dimensions.');
   }
 
-  // Cloudflare's multi-reference examples use small reference images (512x512 or less).
-  const scale = Math.min(1, 512 / Math.max(image.naturalWidth, image.naturalHeight));
+  // Cloudflare requires each FLUX.2 reference image to be smaller than 512x512.
+  const scale = Math.min(1, 511 / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
   const height = Math.max(1, Math.round(image.naturalHeight * scale));
   const canvas = document.createElement('canvas');
@@ -243,6 +244,10 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
   const modelInput: Record<string, any> = { prompt, width, height };
   const isMultipartModel = isCloudflareMultipartImageModel(model);
   if (isMultipartModel) {
+    // FLUX.2 supports an optional seed; pass the scene seed when supplied.
+    if (typeof options.seed === 'number' && Number.isFinite(options.seed)) {
+      modelInput.seed = Math.trunc(options.seed);
+    }
     const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim()).slice(0, 4);
     for (let index = 0; index < references.length; index++) {
       modelInput[`input_image_${index}`] = await imageToCloudflareDataUrl(references[index].data);
