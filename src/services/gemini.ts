@@ -1785,7 +1785,16 @@ export const generateSingleImage = async (
     // choosing a provider. The old early-return branches sent only prompt text to
     // Cloudflare/KIE and silently lost the selected face/frame.
     const visualReferences: ReferenceImage[] = [];
-    if (referenceImage && referenceImage.enabled !== false) visualReferences.push(referenceImage);
+    if (referenceImage && referenceImage.enabled !== false) {
+        // The user selected this image specifically as the character reference in this tool.
+        // Do not depend on an optional role tag or characterId to infer that intent.
+        const selectedFaceReference: ReferenceImage = {
+            ...referenceImage,
+            roles: Array.from(new Set([...(referenceImage.roles || []), 'Face'])) as any,
+            isPrimary: true
+        };
+        visualReferences.push(selectedFaceReference);
+    }
     if (frameReferenceBase64) {
         visualReferences.push({
             id: '__selected_frame_reference__',
