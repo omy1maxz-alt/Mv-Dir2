@@ -26,8 +26,8 @@ app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
     const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
     const protocol = forwardedProto || req.protocol;
     const expectedOrigin = `${protocol}://${req.get('host')}`;
-    if (origin && origin !== expectedOrigin) {
-      return res.status(403).json({ error: 'Cross-origin requests are not allowed for this endpoint.' });
+    if (!origin || origin !== expectedOrigin) {
+      return res.status(403).json({ error: 'A same-origin browser request is required for this endpoint.' });
     }
 
     const body = req.body || {};
