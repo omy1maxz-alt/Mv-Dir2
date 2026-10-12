@@ -1,3 +1,6 @@
+### Fixed
+- **Cloudflare Image Generation Network Diagnostics & Same-Origin Proxy**: Added Cloudflare Workers AI proxy handling for Express production deployments and Vite dev/preview; added safe network-vs-HTTP diagnostics, timeout handling, content-type/empty-image validation, and credential redaction. No automatic provider fallback is performed when Cloudflare is selected.
+
 ### Added
 - **Comprehensive Image Generation Model Audit & Google Gemini Direct Expansion (`ApiKeyVault.tsx`, `gemini.ts`, `App.tsx`)**:
   - **Full Gemini Direct Image Lineup**: Expanded the "Google Gemini Direct" options in `ApiKeyVault.tsx` with all official native models from the `@google/genai` SDK and Google AI Studio:

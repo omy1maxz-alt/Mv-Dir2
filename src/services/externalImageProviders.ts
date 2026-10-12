@@ -49,46 +49,115 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
   const accountId = options.accountId || storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '';
   const apiToken = options.apiToken || storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '';
 
-  if (!accountId || !apiToken) {
-    throw new Error(
-      'Cloudflare Account ID and Workers AI API Token are required. Please configure them in Settings -> API Vault.'
-    );
+  const hasClientCredentials = Boolean(accountId && apiToken);
+  if (!hasClientCredentials) {
+    addLog?.('No complete client-side Cloudflare credentials found; checking whether the server has securely configured credentials...', 'info');
   }
 
   addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ prompt })
-  });
+  let response: Response | undefined;
+  let proxyUnavailable = false;
+  try {
+    // Prefer the same-origin server route where this full-stack app is deployed.
+    // Server environment variables can supply credentials without putting them in the browser.
+    const proxyPayload = { accountId, apiToken, model, prompt };
+    let proxyResponse: Response | undefined;
+    try {
+      proxyResponse = await fetch('/api/cloudflare-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(proxyPayload)
+      });
+    } catch {
+      proxyUnavailable = true;
+    }
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Cloudflare Workers AI Error (${response.status}): ${errorText}`);
+    const proxyType = proxyResponse?.headers.get('content-type') || '';
+    const proxyLooksLikeImageApi = Boolean(
+      proxyResponse &&
+      (proxyType.includes('application/json') || proxyType.startsWith('image/'))
+    );
+    // Vite/SPA hosting can answer an unknown API path with index.html (HTTP 200).
+    // Treat HTML or an unknown route as unavailable instead of misreporting it as an image.
+    if (proxyResponse && proxyLooksLikeImageApi && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
+      response = proxyResponse;
+    } else {
+      proxyUnavailable = true;
+    }
+  } catch {
+    proxyUnavailable = true;
+  }
+
+  if (!response) {
+    if (!hasClientCredentials) {
+      throw new Error(
+        'Cloudflare credentials are not available in the client, and the same-origin server proxy did not respond as an image API. Configure CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN on a trusted server, or configure both values in Settings -> API Vault.'
+      );
+    }
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ prompt })
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNetworkFailure = error instanceof TypeError && /fetch/i.test(message);
+      const detail = isNetworkFailure
+        ? 'The browser could not read a response. This commonly indicates a CORS restriction, DNS/network failure, or a blocked request. Check the browser Network/Console panel to distinguish them.'
+        : message;
+      addLog?.(`Cloudflare Workers AI request failed: ${detail}`, 'error');
+      throw new Error(`Cloudflare Workers AI request failed before an HTTP response was available. ${detail}`);
+    }
+  }
+
+  if (!response) {
+    throw new Error(proxyUnavailable
+      ? 'Cloudflare image request could not reach either the same-origin proxy or Cloudflare API.'
+      : 'Cloudflare image request failed without a response.');
   }
 
   const contentType = response.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
-    const data = await response.json();
-    if (data.result?.image) {
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('Cloudflare Workers AI returned invalid JSON.');
+    }
+    if (typeof data.result?.image === 'string' && data.result.image.length > 0) {
       addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
       return `data:image/jpeg;base64,${data.result.image}`;
     }
-    throw new Error(`Cloudflare Workers AI returned unexpected JSON: ${JSON.stringify(data).slice(0, 200)}`);
+    const providerMessage = typeof data.errors?.[0]?.message === 'string'
+      ? data.errors[0].message
+      : 'No result.image field was returned.';
+    throw new Error(`Cloudflare Workers AI returned an unexpected JSON response: ${providerMessage.slice(0, 300)}`);
   }
 
   // Direct binary stream (image/png or image/jpeg)
+  if (!contentType.startsWith('image/')) {
+    const body = (await response.text()).slice(0, 300);
+    throw new Error(`Cloudflare Workers AI returned an unexpected content type (${contentType || 'unknown'}): ${body}`);
+  }
+
   const blob = await response.blob();
+  if (!blob.size) {
+    throw new Error('Cloudflare Workers AI returned an empty image response.');
+  }
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Unable to encode the Cloudflare image response.'));
+    };
+    reader.onerror = () => reject(new Error('Unable to read the Cloudflare image response.'));
     reader.readAsDataURL(blob);
   });
 

@@ -59,6 +59,75 @@ function setupCustomMiddlewares(middlewares: any) {
       return;
     }
 
+    // Cloudflare Workers AI same-origin proxy for Vite dev/preview.
+    if (req.url === '/api/cloudflare-image' && req.method === 'POST') {
+      let rawBody = '';
+      req.on('data', (chunk: any) => { rawBody += chunk; });
+      req.on('end', async () => {
+        try {
+          const body = JSON.parse(rawBody || '{}');
+          const accountId = String(body.accountId || '').trim();
+          const apiToken = String(body.apiToken || '').trim();
+          const model = String(body.model || '@cf/black-forest-labs/flux-1-schnell').trim();
+          const prompt = typeof body.prompt === 'string' ? body.prompt : '';
+          if (!accountId || !apiToken || !prompt.trim()) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'Cloudflare credentials and image prompt are required.' }));
+            return;
+          }
+          if (!/^[a-zA-Z0-9_-]+$/.test(accountId) || !/^@?[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: 'Invalid Cloudflare account ID or model identifier.' }));
+            return;
+          }
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 90000);
+          let upstream: Response;
+          try {
+            upstream = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt }),
+              signal: controller.signal
+            });
+          } finally {
+            clearTimeout(timeout);
+          }
+          const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+          if (!upstream.ok) {
+            const details = (await upstream.text()).slice(0, 1000)
+              .replaceAll(apiToken, '[redacted]')
+              .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
+            res.statusCode = upstream.status;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: `Cloudflare Workers AI rejected the request (HTTP ${upstream.status}).`, details }));
+            return;
+          }
+          if (!contentType.includes('application/json') && !contentType.startsWith('image/')) {
+            res.statusCode = 502;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ error: `Cloudflare returned an unexpected content type: ${contentType}` }));
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Cache-Control', 'no-store');
+          if (contentType.includes('application/json')) {
+            res.end(await upstream.text());
+          } else {
+            res.end(Buffer.from(await upstream.arrayBuffer()));
+          }
+        } catch (error: any) {
+          res.statusCode = error?.name === 'AbortError' ? 504 : 502;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: error?.name === 'AbortError' ? 'Cloudflare Workers AI request timed out.' : 'Could not connect to Cloudflare Workers AI from the development server.' }));
+        }
+      });
+      return;
+    }
+
     // 2. Agent Bridge Endpoints
     if (req.url === '/api/agent-bridge' && req.method === 'POST') {
       let body = '';
