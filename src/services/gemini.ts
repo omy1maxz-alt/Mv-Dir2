@@ -2214,52 +2214,451 @@ Your task is to generate a new scene based EXACTLY on the text description provi
                 return `data:image/png;base64,${imgBytes}`;
             }
         }
-        const response = await withRetry(() => callTextModel(genAI, {
-            model: currentImageModel,
-            contents: { parts: currentParts },
-            config: {
-                responseModalities: ["IMAGE"],
-                ...(aspectRatio !== 'Original' ? {
-                    imageConfig: {
-                        aspectRatio: getAspectRatio(aspectRatio as any),
-                    }
-                } : {}),
-                safetySettings,
-            },
-        }));
+        const maxImageResponseAttempts = 3;
+        let lastFinishReason = 'NO_IMAGE';
 
-        const candidate = response.candidates?.[0];
-        
-        if (candidate?.finishReason === 'SAFETY' || candidate?.finishReason === 'IMAGE_SAFETY') {
-            throw new Error("Image generation was blocked by safety filters.");
-        }
-        if (candidate?.finishReason === 'RECITATION') {
-            throw new Error("Image generation was blocked by recitation filters.");
-        }
-        if (candidate?.finishReason === 'OTHER') {
-            throw new Error("Image generation was blocked for an unknown reason.");
-        }
-        if (candidate?.finishReason === 'IMAGE_OTHER') {
-            throw new Error("IMAGE_OTHER");
-        }
+        for (let attempt = 1; attempt <= maxImageResponseAttempts; attempt++) {
+            const response = await withRetry(() => callTextModel(genAI, {
+                model: currentImageModel,
+                contents: { parts: currentParts },
+                config: {
+                    responseModalities: ["IMAGE"],
+                    ...(aspectRatio !== 'Original' ? {
+                        imageConfig: {
+                            aspectRatio: getAspectRatio(aspectRatio as any),
+                        }
+                    } : {}),
+                    safetySettings,
+                },
+            }));
 
-        const partsList = candidate?.content?.parts || [];
-        for (const part of partsList) {
-            if (part.inlineData) {
-                const base64String = part.inlineData.data;
-                return `data:image/png;base64,${base64String}`;
+            const candidate = response.candidates?.[0];
+            const finishReason = String(candidate?.finishReason || response.promptFeedback?.blockReason || '');
+            const partsList = candidate?.content?.parts || [];
+            const imagePart = partsList.find((part: any) =>
+                typeof part?.inlineData?.data === 'string' && part.inlineData.data.length > 0
+            );
+            if (imagePart?.inlineData?.data) {
+                return `data:image/png;base64,${imagePart.inlineData.data}`;
+            }
+
+            // Keep policy-related reasons separate. IMAGE_OTHER and responses
+            // without image bytes can be transient despite returning HTTP 200.
+            if (finishReason === 'SAFETY' || finishReason === 'IMAGE_SAFETY') {
+                throw new Error("Image generation was blocked by safety filters.");
+            }
+            if (finishReason === 'RECITATION' || finishReason === 'IMAGE_RECITATION') {
+                throw new Error("Image generation was blocked by recitation filters.");
+            }
+            if (['BLOCKLIST', 'PROHIBITED_CONTENT', 'IMAGE_PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
+                throw new Error(`Image generation was rejected for prohibited content (${finishReason}).`);
+            }
+            if (finishReason === 'OTHER') {
+                throw new Error("Image generation was blocked for an unknown reason.");
+            }
+
+            lastFinishReason = finishReason || (candidate ? 'NO_IMAGE' : 'NO_CANDIDATE');
+            if (attempt < maxImageResponseAttempts) {
+                addLog(
+                    `Gemini returned ${lastFinishReason} without image output. Retrying the same single-image request with the same ${orderedVisualReferences.length} reference image(s) (attempt ${attempt + 1}/${maxImageResponseAttempts}); no references will be removed.`,
+                    'warning'
+                );
+                await new Promise(resolve => setTimeout(resolve, 800 * attempt));
             }
         }
 
-        console.error("Image generation response missing inlineData:", JSON.stringify(response, null, 2));
-        throw new Error(`Image generation failed: No image data received. Response: ${JSON.stringify(response)}`);
+        console.warn(`[Gemini Single Image] No image after ${maxImageResponseAttempts} same-request attempts; finish reason: ${lastFinishReason}.`);
+        throw new Error(`GEMINI_TRANSIENT_IMAGE_FAILURE:${lastFinishReason}`);
+
+    };
+
+    try {
+        addLog("Generating image... This may take some time.", 'info');
+        return await doGenerate(parts);
+export const generateSingleImage = async (
+    prompt: string,
+    aspectRatio: AspectRatio,
+    referenceImage: ReferenceImage | null,
+    frameReferenceBase64: string | null,
+    projectData: ProjectData,
+    apiKey: string | undefined,
+    addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
+): Promise<string> => {
+    let activePrompt = prompt.trim();
+
+    // Collect the exact visual assets selected for this single-image task before
+    // choosing a provider. The old early-return branches sent only prompt text to
+    // Cloudflare/KIE and silently lost the selected face/frame.
+    const visualReferences: ReferenceImage[] = [];
+    if (referenceImage && referenceImage.enabled !== false) {
+        // The user selected this image specifically as the character reference in this tool.
+        // Do not depend on an optional role tag or characterId to infer that intent.
+        const selectedFaceReference: ReferenceImage = {
+            ...referenceImage,
+            roles: Array.from(new Set([...(referenceImage.roles || []), 'Face'])) as any,
+            isPrimary: true
+        };
+        visualReferences.push(selectedFaceReference);
+    }
+    if (frameReferenceBase64) {
+        visualReferences.push({
+            id: '__selected_frame_reference__',
+            data: frameReferenceBase64,
+            description: 'User-selected scene frame. Use for composition, camera framing, pose, lighting, clothing and background; do not replace the separately selected character identity.',
+            roles: ['Frame'] as any,
+            enabled: true
+        });
+    }
+    for (const ref of projectData?.referenceImages || []) {
+        if (ref.enabled !== false && ref.isMasterArt && !visualReferences.some(item => item.id === ref.id)) {
+            visualReferences.push(ref);
+        }
+    }
+    const orderedVisualReferences = sortReferencesForIdentity(visualReferences, projectData);
+
+    if (currentImageModel === 'pollinations' || currentImageModel === 'aihorde') {
+        if (orderedVisualReferences.length > 0) {
+            const provider = currentImageModel === 'aihorde' ? 'AI Horde' : 'Pollinations';
+            throw new Error(`${provider} is prompt-only in MV Director and cannot preserve the selected face/frame reference. No prompt-only fallback was run. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2 for reference-guided generation.`);
+        }
+        if (currentImageModel === 'aihorde') {
+            return await generateImageAIHorde({
+                prompt: activePrompt || "A highly detailed cinematic scene",
+                aspectRatio: aspectRatio as string,
+                addLog
+            });
+        }
+        return await fallbackToPollinations(activePrompt || "A highly detailed cinematic scene", aspectRatio, addLog);
+    }
+
+    if (currentImageModel.startsWith('cloudflare:')) {
+        const model = currentImageModel.replace('cloudflare:', '');
+        if (orderedVisualReferences.length > 0 && !isCloudflareFlux2Model(model)) {
+            throw new Error(`The selected Cloudflare model (${model}) does not accept reference images in MV Director. The selected image was not silently ignored; choose Cloudflare FLUX.2 or a Gemini/KIE Nano Banana reference-capable model.`);
+        }
+        const identityReferences = orderedVisualReferences.filter(ref => isCharacterIdentityReference(ref, projectData));
+        if (identityReferences.length > 4) {
+            throw new Error(`Cloudflare FLUX.2 accepts at most four references, but ${identityReferences.length} identity references are selected. Remove unrelated references or use KIE Nano Banana 2/Pro or a Gemini image model.`);
+        }
+        const fluxReferences = isCloudflareFlux2Model(model)
+            ? [...identityReferences, ...orderedVisualReferences.filter(ref => !isCharacterIdentityReference(ref, projectData))].slice(0, 4)
+            : [];
+        const referenceMap = fluxReferences.map((ref, index) =>
+            `Image ${index} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
+        ).join('\n');
+        const cloudflarePrompt = (activePrompt || "A highly detailed cinematic scene") + (referenceMap
+            ? `\n\nReference image map (same order as input_image_0 through input_image_3):\n${referenceMap}\n\nFace identity is controlled by the CHARACTER FACE / IDENTITY reference, not by frame/style references. Preserve the selected person's distinctive facial structure, eyes, nose, lips and skin tone. Use frame references for composition and style references for style only.`
+            : '');
+        return await generateImageCloudflare({
+            prompt: cloudflarePrompt,
+            aspectRatio: aspectRatio as string,
+            model,
+            referenceImages: isCloudflareFlux2Model(model)
+                ? fluxReferences.map(ref => ({ data: ref.data, description: describeReferenceForImagePrompt(ref, projectData) }))
+                : undefined,
+            addLog
+        });
+    }
+
+    addLog("Preparing reference-guided image generation...", 'info');
+
+    // If the prompt is a JSON string (e.g. from analyzeImageToJson), format it into a cohesive paragraph
+    try {
+        if (activePrompt.startsWith('{') && activePrompt.endsWith('}')) {
+            const parsed = JSON.parse(extractJSON(activePrompt));
+            let formattedPrompt = "";
+            if (parsed.subject) formattedPrompt += `Subject: ${parsed.subject}\n`;
+            if (parsed.environment) formattedPrompt += `Environment: ${parsed.environment}\n`;
+            if (parsed.lighting) formattedPrompt += `Lighting: ${parsed.lighting}\n`;
+            if (parsed.composition) formattedPrompt += `Composition: ${parsed.composition}\n`;
+            if (parsed.style) formattedPrompt += `Style: ${parsed.style}\n`;
+            if (parsed.mood) formattedPrompt += `Mood: ${parsed.mood}\n`;
+            if (parsed.colors) formattedPrompt += `Colors: ${parsed.colors}\n`;
+            if (parsed.masterArtStyle) formattedPrompt += `Master Art Style: ${parsed.masterArtStyle}\n`;
+            
+            if (formattedPrompt.trim()) {
+                activePrompt = formattedPrompt.trim();
+            } else {
+                // Not standard layout, flatten arbitrary JSON
+                const flattenJson = (obj: any, indent = 0): string => {
+                    let text = "";
+                    for (const key in obj) {
+                        if (typeof obj[key] === 'object' && obj[key] !== null) {
+                            text += `${"  ".repeat(indent)}${key}:\n${flattenJson(obj[key], indent + 1)}`;
+                        } else {
+                            text += `${"  ".repeat(indent)}${key}: ${obj[key]}\n`;
+                        }
+                    }
+                    return text;
+                };
+                activePrompt = flattenJson(parsed).trim();
+            }
+            
+            // If the subject contains excessive facial details, we try to rely on the Character Reference image instead.
+            addLog("Parsed JSON prompt into formatted text for better generation.", 'info');
+        }
+    } catch (e) {
+        // Not JSON or invalid JSON, ignore and use as-is
+    }
+    
+    if (!activePrompt && frameReferenceBase64) {
+        // Auto-describe the frame if no prompt was provided.
+        // This provides the image generation model with a concrete textual description of the scene.
+        addLog("No prompt provided. Analyzing frame reference to generate a scene description...", 'info');
+        try {
+            const analysisAI = getGenAI(apiKey);
+            const visionResponse = await callTextModel(analysisAI, {
+                model: currentTextModel,
+                contents: [
+                    {
+                        inlineData: {
+                            data: frameReferenceBase64.split(',')[1],
+                            mimeType: getMimeType(frameReferenceBase64),
+                        }
+                    },
+                    "Conduct a rigorous, pixel-perfect visual analysis of this image to serve as a strict structural blueprint. Describe: 1. Subject Pose & Geometry: EXACT position of the head, hands, arms, and fingers (e.g. 'right hand covering the right eye', 'fingers spread', etc.). Focus heavily on replicating the exact body posture and hand placement. 2. Clothing & Accessories: Specific garments, fabrics, colors, rings, bracelets, nail polish. 3. Lighting & Composition: Camera framing (e.g. close-up), light direction, shadows. 4. Background details. DO NOT describe the person's face or identity. Keep it highly descriptive."
+                ],
+                config: {
+                    safetySettings,
+                }
+            });
+            activePrompt = visionResponse.text?.trim() || "";
+            addLog(`Auto-generated scene description: ${activePrompt}`, 'success');
+        } catch (e) {
+            console.error("Failed to auto-describe frame:", e);
+            addLog("Failed to auto-describe frame reference. Proceeding with empty prompt.", 'warning');
+        }
+    }
+
+    let finalPrompt = "Generate an image. Do not output any conversational text, only the image.\n\n";
+
+    if (frameReferenceBase64 && referenceImage) {
+        finalPrompt += `CRITICAL INSTRUCTION: ORGANIC CHARACTER SYNTHESIS
+Your task is to generate a new scene based EXACTLY on the text description provided below (composition, pose, clothing, lighting), but featuring the distinct person from the provided Reference Image (Image 1).
+- CRITICAL: Blend the subject naturally into the scene. Make it look like an authentic, cohesive photograph.
+- DO NOT copy the original pose, clothing, or background from Image 1.
+- Image 1 defines the SUBJECT'S IDENTITY (facial features like eyes, nose, mouth). The text prompt below defines the POSE, CLOTHING, HAIR STYLE, and SCENE.
+- IGNORE any conflicting names, genders, or facial descriptions in the text prompt below. ALWAYS prioritize Image 1 for the face/identity, but ALLOW their hair style and makeup to match the text prompt!\n\n`;
+    } else if (frameReferenceBase64) {
+        finalPrompt += `Task: You are provided with a frame reference image below. Recreate this scene exactly.\n\n`;
+    } else if (referenceImage) {
+        finalPrompt += `Task: You are provided with a character reference image below. Generate an organic, cohesive image featuring this character. CRITICAL: You MUST replace whatever subject is described in the text prompt with the character from Image 1, NO MATTER WHAT IS WRITTEN. Ignore conflicting names, genders, ages, or physical descriptions in the text.\n\n`;
+    }
+
+    if (referenceImage) {
+        finalPrompt += `**Image 1 Details:**\n`;
+        if (referenceImage.description) {
+            finalPrompt += `- Context: ${referenceImage.description}\n`;
+        }
+        if (referenceImage.focusTags && referenceImage.focusTags.length > 0) {
+            finalPrompt += `- CRITICAL FOCUS: You MUST strictly copy these specific elements from the character reference: ${referenceImage.focusTags.join(', ')}.\n`;
+        }
+        
+        // Include character DNA if linked
+        if (referenceImage.characterId && projectData?.characters) {
+            const character = projectData.characters.find(c => c.id === referenceImage.characterId);
+            if (character) {
+                finalPrompt += `- Character Name: ${character.name}\n`;
+                if (character.description.bodyType) finalPrompt += `- Body Type: ${character.description.bodyType}\n`;
+                if (character.description.height) finalPrompt += `- Height: ${character.description.height}\n`;
+                if (character.description.weight) finalPrompt += `- Weight: ${character.description.weight}\n`;
+                // We omit clothing style here if we have a frame reference, to force it to use the frame's clothing
+                if (!frameReferenceBase64 && character.description.clothingStyle) {
+                    finalPrompt += `- Clothing Style: ${character.description.clothingStyle}\n`;
+                }
+            }
+        }
+        finalPrompt += `\n`;
+    }
+
+    if (activePrompt) {
+        if (referenceImage) {
+            finalPrompt += `Image Description to Generate:\n${activePrompt}\n\n`;
+            finalPrompt += `CRITICAL OVERRIDE: You MUST replace the subject described in the text above with the person from Image 1. If the text above describes a different person, age, gender, or name, COMPLETELY IGNORE IT and use Image 1. Always prioritize Image 1 for the subject's face and identity. HOWEVER, you MUST strictly follow the camera framing, distance (e.g. Extreme Close-Up), body posture, and specific hand placement (e.g. hands touching the face) described in the text above. Do not default to a standard zoomed-out portrait if a tight framing or unique pose is requested. You MUST also follow the HAIR STYLE and MAKEUP described in the text, adapting the character's overall styling to perfectly match the current scene.\n\n`;
+        } else {
+            finalPrompt += `Image Description to Generate: ${activePrompt}\n\n`;
+        }
+    }
+
+    const isRealistic = (projectData.artStyle || '').toLowerCase().match(/(realistic|photo|cinematic|film|iphone|camera|live action|realism)/) || activePrompt.toLowerCase().match(/(realistic|photo|cinematic|film|iphone|camera|live action|realism)/);
+    if (isRealistic) {
+        finalPrompt += `**REALISM & ANTI-SLOP OVERRIDE:**
+- **Skin & Texture:** Avoid an overly plastic CGI look, but keep the skin naturally smooth, clean, and flattering.
+- **Lighting & Framing:** Use cinematic, flattering natural lighting.
+- **Expression:** Avoid stiff, posed, direct-to-camera stares. Use slightly averted gazes and natural, subtle expressions.
+- **Overall:** Prioritize a highly natural but aesthetically pleasing photographic style.\n\n`;
+    }
+
+    if (aspectRatio === '2.35:1') {
+        finalPrompt += `**ASPECT RATIO INSTRUCTION:** The requested aspect ratio is 2.35:1 (Cinematic Widescreen). Please compose the image so that it can be cropped to 2.35:1 without losing important subjects. Keep the main action vertically centered.\n\n`;
+    } else if (aspectRatio === '14:9') {
+        finalPrompt += `**ASPECT RATIO INSTRUCTION:** The requested aspect ratio is 14:9. Please compose the image so that it can be cropped to 14:9 without losing important subjects. Keep the main action horizontally centered.\n\n`;
+    } else if (aspectRatio === '8:15') {
+        finalPrompt += `**ASPECT RATIO INSTRUCTION:** The requested aspect ratio is 8:15. Please compose the image so that it can be cropped to 8:15 without losing important subjects. Keep the main action vertically centered.\n\n`;
+    }
+    
+    const parts: any[] = [];
+    let referenceImageIndex = 0;
+    const imageLabels: string[] = [];
+    orderedVisualReferences.forEach(ref => {
+        const isSelectedFace = Boolean(referenceImage && ref.id === referenceImage.id);
+        const isSelectedFrame = ref.id === '__selected_frame_reference__';
+        const isStyle = ref.isMasterArt || referenceRoles(ref).includes('Style');
+        const character = getCharacterForReference(ref, projectData);
+        const label = isSelectedFace
+            ? `[CHARACTER FACE / IDENTITY REFERENCE${character?.name ? `: ${character.name}` : ''}]`
+            : isSelectedFrame
+                ? '[FRAME / COMPOSITION REFERENCE]'
+                : isStyle
+                    ? '[MASTER ART STYLE REFERENCE]'
+                    : `[VISUAL REFERENCE ${referenceImageIndex + 1}]`;
+        imageLabels.push(`Image ${referenceImageIndex} = ${label}: ${describeReferenceForImagePrompt(ref, projectData)}`);
+        parts.push({ text: label + ':' });
+        parts.push({
+            inlineData: {
+                data: String(ref.data || '').replace(/^data:[^,]*,/, ''),
+                mimeType: getMimeType(ref.data),
+            }
+        });
+        referenceImageIndex++;
+    });
+
+    if (orderedVisualReferences.length > 0) {
+        finalPrompt = finalPrompt.replace(/Image 1/g, '[CHARACTER FACE / IDENTITY REFERENCE]');
+        finalPrompt += `\n\n**Selected reference index map (matches images supplied above)**\n${imageLabels.join('\n')}\nFollow reference roles independently: the character identity reference defines who the person is; the frame reference defines the shot/composition; the master art reference defines style. Do not copy a frame's face when a separate character identity reference was selected.`;
+    }
+    parts.unshift({ text: finalPrompt });
+
+    const isKieImageModel = currentImageModel.startsWith('kie:') || currentImageModel.startsWith('google/nano-banana');
+    if (isKieImageModel) {
+        const keyToUse = customKieApiKey || (typeof window !== 'undefined' ? (() => {
+            try {
+                const stored = localStorage.getItem('mv_api_keys');
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    return parsed.kie;
+                }
+            } catch {}
+            return undefined;
+        })() : undefined);
+
+        if (!keyToUse) {
+            throw new Error("Kie AI API Key is required for Nano Banana image generation. Please add your Kie AI API key in Settings -> API Settings.");
+        }
+
+        if (orderedVisualReferences.length > 14) {
+            throw new Error('KIE Nano Banana supports up to 14 references in this app. Reduce the selected references so the character face can be included.');
+        }
+        return await generateKieImage({
+            prompt: finalPrompt,
+            model: currentImageModel,
+            aspectRatio: aspectRatio as string,
+            apiKey: keyToUse,
+            referenceImages: orderedVisualReferences.map(ref => ({
+                data: ref.data,
+                description: describeReferenceForImagePrompt(ref, projectData)
+            })),
+            addLog
+        });
+    }
+
+    const genAI = getGenAI(apiKey);
+    
+    const doGenerate = async (currentParts: any[]) => {
+        addLog(`Sending request to ${currentImageModel}...`, 'info');
+        if (currentImageModel.startsWith('imagen-')) {
+            if (orderedVisualReferences.length > 0) {
+                throw new Error(`The selected Imagen model (${currentImageModel}) uses a prompt-only request in MV Director and would ignore the selected face/frame images. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2 instead.`);
+            }
+            const resp = await withRetry(() => (genAI.models as any).generateImages({
+                model: currentImageModel,
+                prompt: finalPrompt,
+                config: {
+                    numberOfImages: 1,
+                    ...(aspectRatio !== 'Original' ? {
+                        aspectRatio: getAspectRatio(aspectRatio as any),
+                    } : {}),
+                }
+            }));
+            const imgBytes = (resp as any)?.generatedImages?.[0]?.image?.imageBytes;
+            if (imgBytes) {
+                return `data:image/png;base64,${imgBytes}`;
+            }
+        }
+        const maxImageResponseAttempts = 3;
+        let lastFinishReason = 'NO_IMAGE';
+
+        for (let attempt = 1; attempt <= maxImageResponseAttempts; attempt++) {
+            const response = await withRetry(() => callTextModel(genAI, {
+                model: currentImageModel,
+                contents: { parts: currentParts },
+                config: {
+                    responseModalities: ["IMAGE"],
+                    ...(aspectRatio !== 'Original' ? {
+                        imageConfig: {
+                            aspectRatio: getAspectRatio(aspectRatio as any),
+                        }
+                    } : {}),
+                    safetySettings,
+                },
+            }));
+
+            const candidate = response.candidates?.[0];
+            const finishReason = String(candidate?.finishReason || response.promptFeedback?.blockReason || '');
+            const partsList = candidate?.content?.parts || [];
+            const imagePart = partsList.find((part: any) =>
+                typeof part?.inlineData?.data === 'string' && part.inlineData.data.length > 0
+            );
+            if (imagePart?.inlineData?.data) {
+                return `data:image/png;base64,${imagePart.inlineData.data}`;
+            }
+
+            // Keep policy-related reasons separate. IMAGE_OTHER and responses
+            // without image bytes can be transient despite returning HTTP 200.
+            if (finishReason === 'SAFETY' || finishReason === 'IMAGE_SAFETY') {
+                throw new Error("Image generation was blocked by safety filters.");
+            }
+            if (finishReason === 'RECITATION' || finishReason === 'IMAGE_RECITATION') {
+                throw new Error("Image generation was blocked by recitation filters.");
+            }
+            if (['BLOCKLIST', 'PROHIBITED_CONTENT', 'IMAGE_PROHIBITED_CONTENT', 'SPII'].includes(finishReason)) {
+                throw new Error(`Image generation was rejected for prohibited content (${finishReason}).`);
+            }
+            if (finishReason === 'OTHER') {
+                throw new Error("Image generation was blocked for an unknown reason.");
+            }
+
+            lastFinishReason = finishReason || (candidate ? 'NO_IMAGE' : 'NO_CANDIDATE');
+            if (attempt < maxImageResponseAttempts) {
+                addLog(
+                    `Gemini returned ${lastFinishReason} without image output. Retrying the same single-image request with the same ${orderedVisualReferences.length} reference image(s) (attempt ${attempt + 1}/${maxImageResponseAttempts}); no references will be removed.`,
+                    'warning'
+                );
+                await new Promise(resolve => setTimeout(resolve, 800 * attempt));
+            }
+        }
+
+        console.warn(`[Gemini Single Image] No image after ${maxImageResponseAttempts} same-request attempts; finish reason: ${lastFinishReason}.`);
+        throw new Error(`GEMINI_TRANSIENT_IMAGE_FAILURE:${lastFinishReason}`);
+
     };
 
     try {
         addLog("Generating image... This may take some time.", 'info');
         return await doGenerate(parts);
     } catch (error: any) {
-        const isQuotaOrAuth = error.message.includes('Quota') || error.message.includes('403') || error.message.includes('Permission Denied') || error.message.includes('429') || error.message.includes('limit');
+        const errorMessage = String(error?.message || error || 'Unknown image generation error');
+        if (errorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:')) {
+            const reason = errorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
+            if (orderedVisualReferences.length > 0) {
+                throw new Error(
+                    `Gemini single-image generation (${currentImageModel}) returned ${reason} without an image after three attempts using the same prompt and selected references. MV Director preserved all reference images and did not switch to prompt-only generation. Retry this image; if it persists, shorten the prompt or select another reference-capable model.`
+                );
+            }
+            addLog(`Gemini returned ${reason} after three same-request attempts. Using the creative fallback because no reference images are selected.`, 'warning');
+            return await fallbackToPollinations(sanitizeImagePrompt(activePrompt || prompt) || activePrompt || prompt, aspectRatio, addLog);
+        }
+        const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
             if (orderedVisualReferences.length > 0) {
                 throw new Error(`Image generation failed for ${currentImageModel} (${error.message || 'authentication/quota error'}). MV Director did not switch to prompt-only fallback because that could change the selected person's face. Fix provider credentials/quota or choose another reference-capable model.`);
@@ -2267,7 +2666,7 @@ Your task is to generate a new scene based EXACTLY on the text description provi
             return await fallbackToPollinations(activePrompt || prompt, aspectRatio, addLog);
         }
 
-        const isBlocked = error.message === "IMAGE_OTHER" || error.message.includes("safety") || error.message.includes("blocked") || error.message.includes("recitation") || error.message.includes("SAFETY");
+        const isBlocked = errorMessage.includes("safety") || errorMessage.includes("blocked") || errorMessage.includes("recitation") || errorMessage.includes("SAFETY");
         
         if (isBlocked) {
             const cleanSanitized = sanitizeImagePrompt(activePrompt || prompt);
@@ -2279,6 +2678,17 @@ Your task is to generate a new scene based EXACTLY on the text description provi
                     : [{ text: cleanSanitized }];
                 return await doGenerate(fallbackParts);
             } catch (fallbackError: any) {
+                const fallbackErrorMessage = String(fallbackError?.message || fallbackError || 'Unknown retry error');
+                if (fallbackErrorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:')) {
+                    const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
+                    if (orderedVisualReferences.length > 0) {
+                        throw new Error(
+                            `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output after three retries of the sanitized prompt. All ${orderedVisualReferences.length} selected reference image(s) were preserved. Retry this image or select another reference-capable model.`
+                        );
+                    }
+                    addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
+                    return await fallbackToPollinations(cleanSanitized || activePrompt || prompt, aspectRatio, addLog);
+                }
                 if (orderedVisualReferences.length > 0) {
                     throw new Error(`The image model rejected both the original and sanitized prompt with the selected references. MV Director did not remove the references or switch to a prompt-only generator because that could change the character's face. Adjust the scene prompt or choose another reference-capable model. Original error: ${fallbackError.message}`);
                 }
