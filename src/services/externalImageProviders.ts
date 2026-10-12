@@ -24,6 +24,9 @@ const getDimensionsForHorde = (aspectRatio?: string): { width: number; height: n
     case '9:16': return { width: 448, height: 768 };
     case '4:3': return { width: 640, height: 480 };
     case '3:4': return { width: 480, height: 640 };
+    case '2.35:1': return { width: 832, height: 352 };
+    case '14:9': return { width: 640, height: 416 };
+    case '8:15': return { width: 384, height: 704 };
     case '1:1':
     default: return { width: 512, height: 512 };
   }
@@ -346,9 +349,11 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
 
   addLog?.(`AI Horde Job queued (ID: ${jobId.slice(0, 8)}...). Polling worker status...`, 'info');
 
-  // Poll status
-  const maxAttempts = 60; // Up to ~2 minutes
+  // Volunteer capacity varies. Allow a longer queue window and never fetch status
+  // as if the job had completed when the polling window has expired.
+  const maxAttempts = 180; // Up to ~6 minutes
   let attempts = 0;
+  let completed = false;
 
   while (attempts < maxAttempts) {
     await new Promise((r) => setTimeout(r, 2000));
@@ -358,29 +363,40 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
       const checkRes = await fetch(`https://aihorde.net/api/v2/generate/check/${jobId}`, {
         headers: { 'Client-Agent': 'mv-director:1.0:web' }
       });
-      if (checkRes.ok) {
-        const checkData = await checkRes.json();
-        if (checkData.done) {
-          break;
+      if (!checkRes.ok) {
+        if (attempts % 10 === 0) {
+          addLog?.(`AI Horde status check returned HTTP ${checkRes.status}; retrying...`, 'warning');
         }
-        if (checkData.faulted) {
-          throw new Error('AI Horde job reported a fault/error during rendering.');
-        }
-        if (checkData.queue_position !== undefined && checkData.queue_position > 0) {
-          if (attempts % 5 === 0) {
-            addLog?.(
-              `AI Horde Queue Position: #${checkData.queue_position} (Estimated wait: ${Math.round(checkData.wait_time || 0)}s)...`,
-              'info'
-            );
-          }
-        }
+        continue;
+      }
+
+      const checkData = await checkRes.json();
+      if (checkData.faulted) {
+        throw new Error('AI Horde job reported a fault during rendering. Try another model or retry.');
+      }
+      if (checkData.done) {
+        completed = true;
+        break;
+      }
+      if (checkData.queue_position !== undefined && attempts % 5 === 0) {
+        addLog?.(
+          checkData.queue_position > 0
+            ? `AI Horde queue position: #${checkData.queue_position} (estimated wait: ${Math.round(checkData.wait_time || 0)}s)...`
+            : 'AI Horde worker is processing the image...',
+          'info'
+        );
       }
     } catch (e: any) {
       if (e.message?.includes('fault')) throw e;
+      // A transient poll failure is retried; do not resubmit the paid/queued job.
     }
   }
 
-  // Fetch final status
+  if (!completed) {
+    throw new Error(`AI Horde image job ${jobId.slice(0, 8)} is still queued or processing after 6 minutes. It was not resubmitted. Retry later to avoid duplicate jobs.`);
+  }
+
+  // Fetch final status only after the check endpoint confirms completion.
   const statusRes = await fetch(`https://aihorde.net/api/v2/generate/status/${jobId}`, {
     headers: { 'Client-Agent': 'mv-director:1.0:web' }
   });
@@ -402,11 +418,18 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
   if (imgData.startsWith('http://') || imgData.startsWith('https://')) {
     addLog?.('Fetching rendered image from AI Horde storage...', 'info');
     const imgFetch = await fetch(imgData);
+    if (!imgFetch.ok) {
+      throw new Error(`Failed to download AI Horde image (HTTP ${imgFetch.status}).`);
+    }
     const blob = await imgFetch.blob();
+    if (!blob.size) throw new Error('AI Horde returned an empty image download.');
     return await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') resolve(reader.result);
+        else reject(new Error('Unable to encode the AI Horde image.'));
+      };
+      reader.onerror = () => reject(new Error('Unable to read the AI Horde image.'));
       reader.readAsDataURL(blob);
     });
   }
@@ -415,5 +438,12 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
     return imgData;
   }
 
-  return `data:image/webp;base64,${imgData}`;
+  // AI Horde normally returns base64-encoded image bytes. Detect common formats
+  // so the browser does not try to decode a PNG/JPEG as WebP.
+  const mime = imgData.startsWith('iVBOR') ? 'image/png'
+    : imgData.startsWith('/9j/') ? 'image/jpeg'
+    : imgData.startsWith('R0lGOD') ? 'image/gif'
+    : imgData.startsWith('UklGR') ? 'image/webp'
+    : 'image/png';
+  return `data:${mime};base64,${imgData}`;
 }
