@@ -78,6 +78,40 @@ const isCloudflareMultipartImageModel = (model: string) =>
   || model === '@cf/black-forest-labs/flux-2-klein-4b'
   || model === '@cf/black-forest-labs/flux-2-klein-9b';
 
+/**
+ * FLUX.1 [schnell] has a documented 2,048-character prompt limit.
+ * Preserve both the start (scene/subject) and end (style/quality constraints)
+ * when shortening an oversized MV Director scene prompt.
+ */
+const fitCloudflarePromptToModelLimit = (
+  rawPrompt: string,
+  model: string,
+  addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
+): string => {
+  const maxCharacters = model === '@cf/black-forest-labs/flux-1-schnell' ? 2048 : null;
+  const prompt = String(rawPrompt || '').trim();
+  if (!maxCharacters) return prompt;
+
+  const characters = Array.from(prompt);
+  if (characters.length <= maxCharacters) return prompt;
+
+  const bodyBudget = maxCharacters - 3; // room for " … "
+  const headBudget = Math.floor(bodyBudget * 0.74);
+  const tailBudget = bodyBudget - headBudget;
+  let head = characters.slice(0, headBudget).join('').replace(/\\s+\\S*$/, '').trimEnd();
+  let tail = characters.slice(-tailBudget).join('').replace(/^\\S*\\s+/, '').trimStart();
+  let shortened = `${head} … ${tail}`;
+  if (Array.from(shortened).length > maxCharacters) {
+    shortened = Array.from(shortened).slice(0, maxCharacters).join('').trimEnd();
+  }
+
+  addLog?.(
+    `FLUX.1 [schnell] supports prompts up to 2,048 characters. Condensed this scene prompt from ${characters.length} to ${Array.from(shortened).length} characters to prevent Cloudflare HTTP 400.`,
+    'warning'
+  );
+  return shortened;
+};
+
 const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
   const trimmed = String(source || '').trim();
   if (!trimmed) throw new Error('A reference image has no image data.');
@@ -241,7 +275,8 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
 
   // These model IDs use distinct input contracts. Keep this shared adapter limited
   // to the JSON-schema image models so prompts/aspect ratios remain predictable.
-  const modelInput: Record<string, any> = { prompt, width, height };
+  const cloudflarePrompt = fitCloudflarePromptToModelLimit(prompt, model, addLog);
+  const modelInput: Record<string, any> = { prompt: cloudflarePrompt, width, height };
   const isMultipartModel = isCloudflareMultipartImageModel(model);
   if (isMultipartModel) {
     // FLUX.2 supports an optional seed; pass the scene seed when supplied.
