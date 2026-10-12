@@ -742,7 +742,49 @@ app.post(['/api/youtube/extract', '/api/resolve-stream'], async (req: Request, r
       return res.status(400).json({ error: 'Valid YouTube URL or videoId is required.' });
     }
 
-    const result = await resolveYouTubeVideoServerSide(videoId);
+    const [result, playerPayloads] = await Promise.all([
+      resolveYouTubeVideoServerSide(videoId),
+      fetchYouTubePlayerDataCandidates(videoId)
+    ]);
+
+    // Merge metadata from multiple YouTube player clients. Caption tracks and
+    // manifest URLs can differ by client, and are useful even when a stream
+    // resolver only found progressive URLs.
+    const playerTracks = collectYouTubeCaptionTracks(playerPayloads);
+    for (const payload of playerPayloads) {
+      const streamingData = payload?.streamingData;
+      if (!result.dashUrl && streamingData?.dashManifestUrl) result.dashUrl = streamingData.dashManifestUrl;
+      if (!result.hlsUrl && streamingData?.hlsManifestUrl) result.hlsUrl = streamingData.hlsManifestUrl;
+      if (!result.title || result.title === 'YouTube_Video') result.title = payload?.videoDetails?.title || result.title;
+      if (!result.duration && payload?.videoDetails?.lengthSeconds) {
+        result.duration = parseInt(payload.videoDetails.lengthSeconds, 10) || result.duration;
+      }
+      if (payload?.videoDetails?.thumbnail?.thumbnails?.length && !result.thumbnailUrl) {
+        result.thumbnailUrl = payload.videoDetails.thumbnail.thumbnails.slice(-1)[0].url;
+      }
+    }
+    if (!Array.isArray(result.subtitles) || result.subtitles.length === 0) {
+      result.subtitles = playerTracks;
+    }
+    if (!Array.isArray(result.formats)) result.formats = [];
+    if (result.hlsUrl && !result.formats.some((format: StreamFormatItem) => format.url === result.hlsUrl)) {
+      result.formats.push({
+        id: `hls-manifest-${videoId}`,
+        type: 'combined',
+        label: 'HLS Manifest (m3u8)',
+        mimeType: 'application/vnd.apple.mpegurl',
+        url: result.hlsUrl
+      });
+    }
+    if (result.dashUrl && !result.formats.some((format: StreamFormatItem) => format.url === result.dashUrl)) {
+      result.formats.push({
+        id: `dash-manifest-${videoId}`,
+        type: 'combined',
+        label: 'DASH Manifest (mpd)',
+        mimeType: 'application/dash+xml',
+        url: result.dashUrl
+      });
+    }
     return res.json(result);
   } catch (err: any) {
     console.error('[Backend Extract Error]', err);
