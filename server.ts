@@ -742,10 +742,11 @@ app.post(['/api/youtube/extract', '/api/resolve-stream'], async (req: Request, r
       return res.status(400).json({ error: 'Valid YouTube URL or videoId is required.' });
     }
 
-    const [result, playerPayloads] = await Promise.all([
+    const [resolvedResult, playerPayloads] = await Promise.all([
       resolveYouTubeVideoServerSide(videoId),
       fetchYouTubePlayerDataCandidates(videoId)
     ]);
+    const result: any = resolvedResult;
 
     // Merge metadata from multiple YouTube player clients. Caption tracks and
     // manifest URLs can differ by client, and are useful even when a stream
