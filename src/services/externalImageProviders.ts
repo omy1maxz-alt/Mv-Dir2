@@ -296,7 +296,7 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
       addLog?.(`Preparing ${references.length} reference image(s) for FLUX.2 multipart editing (max 4, resized to 512px).`, 'info');
     }
   } else if ((options.referenceImages || []).length > 0) {
-    addLog?.(`The selected Cloudflare model (${model}) accepts prompt-only input in this adapter; reference images are not sent. Choose a FLUX.2 model to use reference images.`, 'warning');
+    throw new Error(`The selected Cloudflare model (${model}) has no reference-image input in this adapter. MV Director will not discard the selected face/frame images. Choose FLUX.2 [dev], Klein 4B/9B, or a Gemini/KIE reference-capable model.`);
   }
   if (model === '@cf/black-forest-labs/flux-1-schnell') {
     // FLUX.1 schnell only accepts prompt/steps; dimensions are not in its schema.
