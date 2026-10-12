@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
     Subtitles, Youtube, ChevronDown, Sparkles, AlertCircle, FileText, Download, Play, Pause, 
-    Video, FileAudio, Upload, Layers, Globe, Languages, Link, Check, RefreshCw, Info, ListFilter, 
+    Video, FileAudio, Upload, Layers, Globe, Languages, Link, Check, Copy, RefreshCw, Info, ListFilter, 
     ExternalLink
 } from 'lucide-react';
 import ReactPlayer from 'react-player';
@@ -20,6 +20,7 @@ import {
     downloadYouTubeMediaStream, 
     extractYouTubeMediaDetails, 
     fetchYouTubeCaptions,
+    fetchYouTubeManifestDetails,
     ExtractedMediaDetails, 
     YouTubeQualityOption, 
     DownloadStreamProgress 
@@ -219,6 +220,8 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
     const [isFetchingYoutubeCaptions, setIsFetchingYoutubeCaptions] = useState(false);
     const [youtubeCaptionFetchStatus, setYoutubeCaptionFetchStatus] = useState<string | null>(null);
+    const [isFetchingYoutubeManifests, setIsFetchingYoutubeManifests] = useState(false);
+    const [youtubeManifestResult, setYoutubeManifestResult] = useState<Awaited<ReturnType<typeof fetchYouTubeManifestDetails>> | null>(null);
 
     // Uses the server-side caption endpoint; never inspect the cross-origin iframe DOM.
     const handleFetchYoutubeCaptions = async () => {
@@ -259,6 +262,38 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
             setYoutubeCaptionFetchStatus(err?.message || 'Native caption retrieval failed.');
         } finally {
             setIsFetchingYoutubeCaptions(false);
+        }
+    };
+
+    const handleFetchYoutubeManifests = async () => {
+        const targetUrl = youtubeInput.trim() || youtubeUrl.trim();
+        if (!targetUrl) {
+            setError('Please enter a valid YouTube URL first.');
+            return;
+        }
+        setIsFetchingYoutubeManifests(true);
+        setYoutubeManifestResult(null);
+        setYoutubeCaptionFetchStatus('Checking YouTube player clients and manifest providers…');
+        try {
+            const result = await fetchYouTubeManifestDetails(targetUrl);
+            setYoutubeManifestResult(result);
+            setYoutubeCaptionFetchStatus(result.message || (result.hlsUrl || result.dashUrl
+                ? 'Manifest URLs discovered.'
+                : 'No manifest URLs were exposed for this video.'));
+        } catch (err: any) {
+            setYoutubeCaptionFetchStatus(err?.message || 'Manifest lookup failed.');
+        } finally {
+            setIsFetchingYoutubeManifests(false);
+        }
+    };
+
+    const handleCopyYoutubeManifest = async (url: string, type: 'HLS' | 'DASH') => {
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await navigator.clipboard.writeText(url);
+            setYoutubeCaptionFetchStatus(`${type} manifest URL copied.`);
+        } catch {
+            setYoutubeCaptionFetchStatus('Clipboard access is unavailable. Select the displayed URL and copy it manually.');
         }
     };
 
@@ -662,16 +697,46 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    onClick={handleInspectStreamLinks}
-                                                    disabled={isExtractingDetails || !(youtubeInput.trim() || youtubeUrl.trim())}
+                                                    onClick={handleFetchYoutubeManifests}
+                                                    disabled={isFetchingYoutubeManifests || !(youtubeInput.trim() || youtubeUrl.trim())}
                                                     className="flex-1 px-4 py-2.5 bg-orange-600/15 hover:bg-orange-600/25 border border-orange-500/25 disabled:opacity-50 text-orange-100 text-xs font-bold rounded-xl flex items-center justify-center gap-2"
                                                 >
-                                                    {isExtractingDetails ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link className="w-4 h-4" />}
-                                                    {isExtractingDetails ? 'Inspecting manifests…' : 'Inspect Manifest & Stream Links'}
+                                                    {isFetchingYoutubeManifests ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link className="w-4 h-4" />}
+                                                    {isFetchingYoutubeManifests ? 'Looking up manifests…' : 'Get HLS/DASH Manifest'}
                                                 </button>
                                             </div>
                                             {youtubeCaptionFetchStatus && (
                                                 <div role="status" className="text-[11px] text-white/65 leading-relaxed">{youtubeCaptionFetchStatus}</div>
+                                            )}
+                                            {youtubeManifestResult && (
+                                                <div className="rounded-xl border border-white/10 bg-black/30 p-3 space-y-2">
+                                                    <div className="text-xs font-semibold text-white/80 truncate">{youtubeManifestResult.title || 'YouTube Manifest Results'}</div>
+                                                    {youtubeManifestResult.hlsUrl && (
+                                                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.04] p-2 space-y-1">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-300">HLS Manifest (.m3u8)</span>
+                                                                <button type="button" onClick={() => void handleCopyYoutubeManifest(youtubeManifestResult.hlsUrl!, 'HLS')} className="inline-flex shrink-0 items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[10px] text-white/75 hover:bg-white/10">
+                                                                    <Copy className="w-3 h-3" /> Copy URL
+                                                                </button>
+                                                            </div>
+                                                            <a href={youtubeManifestResult.hlsUrl} target="_blank" rel="noreferrer" className="block max-h-20 overflow-y-auto break-all text-[10px] leading-relaxed text-white/60">{youtubeManifestResult.hlsUrl}</a>
+                                                        </div>
+                                                    )}
+                                                    {youtubeManifestResult.dashUrl && (
+                                                        <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.04] p-2 space-y-1">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <span className="text-[10px] font-bold uppercase tracking-wide text-sky-300">DASH Manifest (.mpd)</span>
+                                                                <button type="button" onClick={() => void handleCopyYoutubeManifest(youtubeManifestResult.dashUrl!, 'DASH')} className="inline-flex shrink-0 items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[10px] text-white/75 hover:bg-white/10">
+                                                                    <Copy className="w-3 h-3" /> Copy URL
+                                                                </button>
+                                                            </div>
+                                                            <a href={youtubeManifestResult.dashUrl} target="_blank" rel="noreferrer" className="block max-h-20 overflow-y-auto break-all text-[10px] leading-relaxed text-white/60">{youtubeManifestResult.dashUrl}</a>
+                                                        </div>
+                                                    )}
+                                                    {!youtubeManifestResult.hlsUrl && !youtubeManifestResult.dashUrl && (
+                                                        <div className="text-[11px] text-white/55">No HLS/DASH URL was returned. Some ordinary videos expose only temporary progressive/adaptive stream URLs, and manifest availability varies by player/session.</div>
+                                                    )}
+                                                </div>
                                             )}
                                         </div>
                                         <div className="flex flex-col sm:flex-row gap-2">
