@@ -268,7 +268,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                   <span className="text-orange-400 font-semibold">Cloudflare Workers AI (Optional)</span>
                 </div>
                 <div className="text-xs text-white/50">
-                  Run FLUX.1 [schnell] and SDXL serverlessly on Cloudflare's global edge GPU network (10,000 free Neurons/day).
+                  Generate cinematic storyboard images with Cloudflare Workers AI. Model availability and usage cost depend on your Cloudflare account and the selected model; check current Neuron usage in Cloudflare Dashboard.
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-medium text-white/70">Cloudflare Account ID</label>
@@ -537,9 +537,12 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               </optgroup>
 
               <optgroup label="Cloudflare Workers AI (Serverless Edge GPU)" className="bg-[#1a1a1a] text-orange-400 font-semibold">
-                <option value="cloudflare:@cf/black-forest-labs/flux-1-schnell" className="bg-[#1a1a1a] text-white">Cloudflare FLUX.1 [schnell] (12B Flow Transformer • Fast Edge)</option>
-                <option value="cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0" className="bg-[#1a1a1a] text-white">Cloudflare SDXL 1.0 (Stable Diffusion XL)</option>
-                <option value="cloudflare:@cf/bytedance/stable-diffusion-xl-lightning" className="bg-[#1a1a1a] text-white">Cloudflare SDXL Lightning (Sub-Second Turbo)</option>
+                <option value="cloudflare:@cf/leonardo/lucid-origin" className="bg-[#1a1a1a] text-white">Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction</option>
+                <option value="cloudflare:@cf/leonardo/phoenix-1.0" className="bg-[#1a1a1a] text-white">Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text</option>
+                <option value="cloudflare:@cf/black-forest-labs/flux-1-schnell" className="bg-[#1a1a1a] text-white">FLUX.1 [schnell] — Fast drafts & iteration</option>
+                <option value="cloudflare:@cf/lykon/dreamshaper-8-lcm" className="bg-[#1a1a1a] text-white">DreamShaper 8 LCM — Photorealistic / stylized exploration</option>
+                <option value="cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0" className="bg-[#1a1a1a] text-white">Stable Diffusion XL 1.0 — General-purpose image generation</option>
+                <option value="cloudflare:@cf/bytedance/stable-diffusion-xl-lightning" className="bg-[#1a1a1a] text-white">Stable Diffusion XL Lightning — Fast drafts</option>
               </optgroup>
 
               <optgroup label="AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)" className="bg-[#1a1a1a] text-teal-400 font-semibold">
