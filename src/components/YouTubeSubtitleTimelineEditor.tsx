@@ -10,7 +10,8 @@ import { BulkTextToolsModal } from "./BulkTextToolsModal";
 import { ExportModal } from "./ExportModal";
 import { FrameTranslateModal } from "./FrameTranslateModal";
 import { generateYouTubeSRT } from '../services/gemini_srt';
-import { normalizeYoutubeUrl, downloadYouTubeMediaStream } from '../services/youtube';
+import { normalizeYoutubeUrl, downloadYouTubeMediaStream, fetchYouTubeCaptions, extractYouTubeMediaDetails } from '../services/youtube';
+import { segmentsToSrt } from '../services/youtubeCaptionService';
 import { syncSubtitleTranslations, translateSingleLine, fixSubtitleWithAgenticVideo, fixSubtitleWithAudio, uploadVideoToGemini, fixSubtitleWithFrame, getEffectiveGeminiApiKey } from '../services/gemini';
 import { captureScreenFrame } from '../utils/frameCapture';
 import { splitSingleBlockBySentences, splitSentences } from '../utils/subtitleParser';
@@ -264,6 +265,8 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
     const [youtubeInputVal, setYoutubeInputVal] = useState(youtubeUrl || '');
     const [youtubeError, setYoutubeError] = useState(false);
     const [isPlayerReady, setIsPlayerReady] = useState(false);
+    const [isFetchingYoutubeAssets, setIsFetchingYoutubeAssets] = useState(false);
+    const [youtubeAssetReport, setYoutubeAssetReport] = useState<{ title: string; message: string; hlsUrl: string | null; dashUrl: string | null } | null>(null);
     const lastAutoPlayTriggerRef = useRef<number>(0);
 
     const ytContainerId = useMemo(() => `yt_iframe_${Math.random().toString(36).substring(2, 9)}`, []);
@@ -608,6 +611,78 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
     }, [playbackRate]);
 
     const [isGeneratingYtSubtitles, setIsGeneratingYtSubtitles] = useState(false);
+
+    const handleFetchYouTubeAssets = async () => {
+        if (!effectiveYoutubeUrl || isFetchingYoutubeAssets) return;
+        setIsFetchingYoutubeAssets(true);
+        setSnapNotification("Fetching official YouTube captions and inspecting available manifest links...");
+        try {
+            const [captionResult, mediaResult] = await Promise.allSettled([
+                fetchYouTubeCaptions(effectiveYoutubeUrl, 'English'),
+                extractYouTubeMediaDetails(effectiveYoutubeUrl)
+            ]);
+
+            const captionData = captionResult.status === 'fulfilled' ? captionResult.value : null;
+            const mediaData = mediaResult.status === 'fulfilled' ? mediaResult.value : null;
+            const hlsUrl = mediaData?.hlsUrl || null;
+            const dashUrl = mediaData?.dashUrl || null;
+            const reportMessages: string[] = [];
+            let loadedCount = 0;
+
+            if (captionData?.success && (captionData.rawSrt || captionData.segments?.length)) {
+                const rawSrt = captionData.rawSrt || segmentsToSrt(captionData.segments || []);
+                const parsed = parseSrt(rawSrt);
+                if (parsed.length > 0) {
+                    setBlocksAndNotify(parsed);
+                    loadedCount = parsed.length;
+                    reportMessages.push(`Loaded ${parsed.length} timed cues from native YouTube captions (${captionData.language || 'source language'}).`);
+                } else {
+                    reportMessages.push("YouTube returned caption data, but no valid timed cues could be parsed.");
+                }
+            } else if (captionResult.status === 'rejected') {
+                const error = captionResult.reason;
+                reportMessages.push(`Caption retrieval failed: ${error instanceof Error ? error.message : String(error)}`);
+            } else {
+                reportMessages.push(captionData?.message || "No accessible official YouTube caption track was returned. Use Generate Subtitle for AI audio transcription.");
+            }
+
+            if (mediaData) {
+                reportMessages.push(
+                    hlsUrl || dashUrl
+                        ? `Manifest discovery completed: ${[hlsUrl ? 'HLS' : '', dashUrl ? 'DASH' : ''].filter(Boolean).join(' + ')}.`
+                        : "No HLS/DASH manifest URL was returned by the available YouTube providers for this video; direct media formats may still be available."
+                );
+            } else if (mediaResult.status === 'rejected') {
+                const error = mediaResult.reason;
+                reportMessages.push(`Manifest inspection failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+
+            setYoutubeAssetReport({
+                title: mediaData?.title || captionData?.title || 'YouTube source inspection',
+                message: reportMessages.join(' '),
+                hlsUrl,
+                dashUrl
+            });
+            setSnapNotification(loadedCount > 0
+                ? `Fetched ${loadedCount} native YouTube subtitle cues. Manifest details are shown below the toolbar.`
+                : "YouTube source inspection finished. See the result panel below the toolbar.");
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            setSnapNotification(`Could not fetch YouTube captions or manifests: ${detail}`);
+        } finally {
+            setIsFetchingYoutubeAssets(false);
+        }
+    };
+
+    const copyYouTubeManifestUrl = async (url: string, label: string) => {
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable in this browser.');
+            await navigator.clipboard.writeText(url);
+            setSnapNotification(`${label} manifest URL copied.`);
+        } catch {
+            setSnapNotification(`Copy unavailable. The full ${label} URL is displayed in the manifest panel.`);
+        }
+    };
 
     const handleGenerateYouTubeSubtitles = async () => {
         if (!effectiveYoutubeUrl) return;
@@ -2145,6 +2220,23 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                         {effectiveYoutubeUrl && (
                             <button
                                 type="button"
+                                onClick={handleFetchYouTubeAssets}
+                                disabled={isFetchingYoutubeAssets}
+                                className="shrink-0 px-2.5 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm bg-white/5 hover:bg-white/10 disabled:opacity-50 text-white/90 border-white/10 font-bold text-xs cursor-pointer animate-in fade-in"
+                                title="Fetch official YouTube caption tracks and inspect HLS/DASH manifest URLs without reading the cross-origin iframe"
+                            >
+                                {isFetchingYoutubeAssets ? (
+                                    <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                    <Scan className="w-3.5 h-3.5 text-emerald-300" />
+                                )}
+                                <span className="whitespace-nowrap">{isFetchingYoutubeAssets ? "Fetching..." : "Fetch CC + Manifest"}</span>
+                            </button>
+                        )}
+
+                        {effectiveYoutubeUrl && (
+                            <button
+                                type="button"
                                 onClick={handleGenerateYouTubeSubtitles}
                                 disabled={isGeneratingYtSubtitles}
                                 className="shrink-0 px-2.5 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm bg-gradient-to-r from-red-600 to-indigo-600 hover:from-red-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold text-xs cursor-pointer animate-in fade-in"
@@ -2219,6 +2311,40 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                     </div>
                 </div>
             </div>
+
+            {effectiveYoutubeUrl && youtubeAssetReport && (
+                <div className="mx-2 mb-2 shrink-0 rounded-xl border border-white/10 bg-black/35 p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 text-xs font-semibold text-white/85 truncate">{youtubeAssetReport.title}</div>
+                        <button type="button" onClick={() => setYoutubeAssetReport(null)} className="shrink-0 rounded-md p-1 text-white/45 hover:bg-white/10 hover:text-white" title="Dismiss manifest report">
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    </div>
+                    <div className="text-[11px] leading-relaxed text-white/60">{youtubeAssetReport.message}</div>
+                    {youtubeAssetReport.hlsUrl && (
+                        <div className="rounded-lg border border-white/10 bg-black/35 p-2 space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-300">HLS Manifest (.m3u8)</span>
+                                <button type="button" onClick={() => void copyYouTubeManifestUrl(youtubeAssetReport.hlsUrl!, 'HLS')} className="inline-flex shrink-0 items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[10px] text-white/70 hover:bg-white/10 hover:text-white">
+                                    <Copy className="h-3 w-3" /> Copy URL
+                                </button>
+                            </div>
+                            <a href={youtubeAssetReport.hlsUrl} target="_blank" rel="noreferrer" className="block max-h-16 overflow-y-auto break-all text-[10px] leading-relaxed text-white/50 hover:text-white/80">{youtubeAssetReport.hlsUrl}</a>
+                        </div>
+                    )}
+                    {youtubeAssetReport.dashUrl && (
+                        <div className="rounded-lg border border-white/10 bg-black/35 p-2 space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-sky-300">DASH Manifest (.mpd)</span>
+                                <button type="button" onClick={() => void copyYouTubeManifestUrl(youtubeAssetReport.dashUrl!, 'DASH')} className="inline-flex shrink-0 items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-[10px] text-white/70 hover:bg-white/10 hover:text-white">
+                                    <Copy className="h-3 w-3" /> Copy URL
+                                </button>
+                            </div>
+                            <a href={youtubeAssetReport.dashUrl} target="_blank" rel="noreferrer" className="block max-h-16 overflow-y-auto break-all text-[10px] leading-relaxed text-white/50 hover:text-white/80">{youtubeAssetReport.dashUrl}</a>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Selected Block Action Bar */}
             {selectedBlock && (
