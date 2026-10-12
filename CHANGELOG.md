@@ -1,3 +1,6 @@
+### Fixed
+- **Cloudflare SDXL Lightning Input Compatibility**: Added the model-specific `num_steps` field required by its JSON image input schema, while preserving the existing model identifier and routing behavior.
+
 ### Added
 - **Cloudflare Workers AI Image Model Expansion**: Expanded the image-model selector with curated Cloudflare text-to-image options that fit MV Director's cinematic storyboard workflow: Lucid Origin, Phoenix 1.0, FLUX.1 [schnell], DreamShaper 8 LCM, SDXL 1.0, and SDXL Lightning. Added model-specific JSON input parameters for prompt adherence, dimensions, and supported step counts. Kept multipart FLUX.2 models out of the JSON-only path pending a dedicated multipart adapter. Existing saved model IDs and the Cloudflare Worker proxy contract remain unchanged.
 
