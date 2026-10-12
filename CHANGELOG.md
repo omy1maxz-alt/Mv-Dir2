@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Improved
+- **Cloudflare FLUX.2 Models & Multi-Reference Generation**: Added FLUX.2 [dev], Klein 4B, and Klein 9B to the image-model picker. The scene generator now passes relevant project references (up to four), creates an index-to-description prompt map, and forwards the scene seed when present. Reference images are resized to below 512×512.
+- **Cloudflare Model POST Body Compatibility**: Kept the app-to-proxy model request as an authenticated `POST`, then added model-aware translation in both `cloudflare-worker-proxy/worker.js` and the Express backend. Standard models continue receiving JSON; FLUX.2 requests are forwarded upstream as `multipart/form-data` with binary `input_image_0`–`input_image_3` parts. No browser-side Cloudflare API token is required when using the Worker.
+- **Deployment Requirement**: The updated Worker source must be redeployed in Cloudflare for FLUX.2 through the Worker proxy to work. The currently deployed Worker is not automatically changed by a GitHub commit.
+
+### Compatibility note
+- Cloudflare text models with vision were not added to the ordinary text-model selector in this change. Their model-specific image-input schema needs a separate adapter; exposing them through the current text-only message adapter could silently omit the image content.
+
+
 ### Fixed
 - **YouTube Caption Retrieval in Caption Tab**: Added a dedicated native YouTube caption fetch action that uses a lightweight backend caption-track endpoint independently of stream/manifest resolution. The app imports timed caption cues into the subtitle editor and reports when native captions are unavailable, without accessing the cross-origin YouTube iframe DOM.
 - **Text Model Picker Build Failure**: Corrected the malformed JSX model-group array insertion that caused the production build to fail in `ApiKeyVault.tsx`.
