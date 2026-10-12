@@ -1,3 +1,9 @@
+### 187. Searchable Settings Model Pickers
+- **User need:** The native model dropdowns in API & Account Settings did not visually match the application's dark UI and were difficult to navigate on mobile.
+- **Change:** Replaced native text/image model selects with an in-app reusable searchable picker that groups all existing option values by provider, preserves option IDs, highlights the selected option, supports Escape and outside-click dismissal, and opens upward when viewport space below the trigger is limited.
+- **Constraints:** Preserve the existing onSave flow and all model routes; picker selection updates only local modal state until the user taps Save Settings. Check keyboard behavior and ensure the modal's overflow does not clip the absolute menu.
+- **Verification:** Repository source was updated through GitHub; local typecheck, visual/mobile rendering, and Actions result still need confirmation.
+
 ### 186. Cloudflare SDXL Lightning Input Mapping Follow-up
 - **Finding:** Cloudflare's existing SDXL Lightning choice needs its own `num_steps` parameter mapping; the JSON image adapter originally sent only prompt/width/height.
 - **Change:** Added `num_steps: 4` when `@cf/bytedance/stable-diffusion-xl-lightning` is selected. Verify live output and aspect-ratio behavior before batch use.
