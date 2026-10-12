@@ -529,6 +529,11 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                     Cloudflare's REST API may be blocked by browser CORS in the AI Studio iframe. Deploy the included worker proxy and paste its URL here.
                   </div>
                   <button type="button" onClick={refreshCloudflareCatalog} disabled={catalogState.kind === 'loading'} className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-50">
+                    {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                    Refresh Model Catalog
+                  </button>
+                  {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
+                  <button type="button" onClick={refreshCloudflareCatalog} disabled={catalogState.kind === 'loading'} className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-50">
                     {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />} Refresh Model Catalog
                   </button>
                   {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
