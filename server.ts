@@ -42,7 +42,7 @@ app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
     if (!prompt.trim()) {
       return res.status(400).json({ error: 'An image prompt is required.' });
     }
-    if (!/^[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
+    if (!/^@?[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
       return res.status(400).json({ error: 'Invalid Cloudflare model identifier.' });
     }
     if (!/^[a-zA-Z0-9_-]+$/.test(accountId)) {
