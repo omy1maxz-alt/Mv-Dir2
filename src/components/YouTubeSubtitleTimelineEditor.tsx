@@ -734,6 +734,7 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
         }
 
         setLocalYoutubeUrl(clean);
+        setYoutubeAssetReport(null);
         setYoutubeError(false);
         setIsPlaying(true);
         if (onYoutubeUrlChange) {
