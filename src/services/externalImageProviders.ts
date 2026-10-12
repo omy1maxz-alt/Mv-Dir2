@@ -169,12 +169,32 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
   const proxyToken = String(storedKeys.cloudflareWorkerProxyToken || '').trim();
   const { width, height } = getImageDimensions(options.aspectRatio);
 
+  // These model IDs use distinct input contracts. Keep this shared adapter limited
+  // to the JSON-schema image models so prompts/aspect ratios remain predictable.
+  const modelInput: Record<string, any> = { prompt, width, height };
+  if (model === '@cf/black-forest-labs/flux-1-schnell') {
+    // FLUX.1 schnell only accepts prompt/steps; dimensions are not in its schema.
+    delete modelInput.width;
+    delete modelInput.height;
+    modelInput.steps = 4;
+  } else if (model === '@cf/leonardo/lucid-origin') {
+    modelInput.width = Math.min(width, 2500);
+    modelInput.height = Math.min(height, 2500);
+    modelInput.steps = 30;
+  } else if (model === '@cf/leonardo/phoenix-1.0') {
+    modelInput.width = Math.min(width, 2048);
+    modelInput.height = Math.min(height, 2048);
+    modelInput.num_steps = 25;
+  } else if (model === '@cf/lykon/dreamshaper-8-lcm') {
+    modelInput.num_steps = 8;
+  }
+
   addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
 
   const response = await postCloudflareModel({
     action: 'image',
     model,
-    input: { prompt, width, height },
+    input: modelInput,
     accountId,
     apiToken,
     proxyUrl,
