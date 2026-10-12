@@ -49,28 +49,21 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
   const accountId = options.accountId || storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '';
   const apiToken = options.apiToken || storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '';
 
-  if (!accountId || !apiToken) {
-    throw new Error(
-      'Cloudflare Account ID and Workers AI API Token are required. Please configure them in Settings -> API Vault.'
-    );
+  const hasClientCredentials = Boolean(accountId && apiToken);
+  if (!hasClientCredentials) {
+    addLog?.('No complete client-side Cloudflare credentials found; checking whether the server has securely configured credentials...', 'info');
   }
 
   addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
 
-  let response: Response;
+  let response: Response | undefined;
+  let proxyUnavailable = false;
   try {
-    // Prefer the same-origin server route where the full-stack app is deployed.
-    // AI Studio sandboxes that do not run this project's Express server will return
-    // a route-unavailable response; in that case, use the direct call once for a
-    // clear CORS/network diagnostic rather than silently switching providers.
-    const proxyPayload = {
-      accountId,
-      apiToken,
-      model,
-      prompt
-    };
+    // Prefer the same-origin server route where this full-stack app is deployed.
+    // Server environment variables can supply credentials without putting them in the browser.
+    const proxyPayload = { accountId, apiToken, model, prompt };
     let proxyResponse: Response | undefined;
     try {
       proxyResponse = await fetch('/api/cloudflare-image', {
@@ -79,12 +72,32 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
         body: JSON.stringify(proxyPayload)
       });
     } catch {
-      // Relative routes may be unavailable in hosted preview/sandbox runtimes.
+      proxyUnavailable = true;
     }
 
-    if (proxyResponse && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
+    const proxyType = proxyResponse?.headers.get('content-type') || '';
+    const proxyLooksLikeImageApi = Boolean(
+      proxyResponse &&
+      (proxyType.includes('application/json') || proxyType.startsWith('image/'))
+    );
+    // Vite/SPA hosting can answer an unknown API path with index.html (HTTP 200).
+    // Treat HTML or an unknown route as unavailable instead of misreporting it as an image.
+    if (proxyResponse && proxyLooksLikeImageApi && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
       response = proxyResponse;
     } else {
+      proxyUnavailable = true;
+    }
+  } catch {
+    proxyUnavailable = true;
+  }
+
+  if (!response) {
+    if (!hasClientCredentials) {
+      throw new Error(
+        'Cloudflare credentials are not available in the client, and the same-origin server proxy did not respond as an image API. Configure CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN on a trusted server, or configure both values in Settings -> API Vault.'
+      );
+    }
+    try {
       response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -93,24 +106,21 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
         },
         body: JSON.stringify({ prompt })
       });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNetworkFailure = error instanceof TypeError && /fetch/i.test(message);
+      const detail = isNetworkFailure
+        ? 'The browser could not read a response. This commonly indicates a CORS restriction, DNS/network failure, or a blocked request. Check the browser Network/Console panel to distinguish them.'
+        : message;
+      addLog?.(`Cloudflare Workers AI request failed: ${detail}`, 'error');
+      throw new Error(`Cloudflare Workers AI request failed before an HTTP response was available. ${detail}`);
     }
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    const isNetworkFailure = error instanceof TypeError && /fetch/i.test(message);
-    const detail = isNetworkFailure
-      ? 'The browser could not read a response. This commonly indicates a CORS restriction, DNS/network failure, or a blocked request. Check the browser Network/Console panel to distinguish them.'
-      : message;
-    addLog?.(`Cloudflare Workers AI request failed: ${detail}`, 'error');
-    throw new Error(`Cloudflare Workers AI request failed before an HTTP response was available. ${detail}`);
   }
 
-  if (!response.ok) {
-    const errorText = (await response.text()).slice(0, 1000);
-    // Do not include any credential material in diagnostic text.
-    const safeErrorText = errorText
-      .replaceAll(apiToken, '[redacted]')
-      .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
-    throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${safeErrorText || response.statusText || 'Request rejected'}`);
+  if (!response) {
+    throw new Error(proxyUnavailable
+      ? 'Cloudflare image request could not reach either the same-origin proxy or Cloudflare API.'
+      : 'Cloudflare image request failed without a response.');
   }
 
   const contentType = response.headers.get('content-type') || '';
