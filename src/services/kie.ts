@@ -269,8 +269,63 @@ export interface KieImageOptions {
     aspectRatio?: string;
     apiKey: string;
     referenceImageUrls?: string[];
+    referenceImages?: Array<{ data: string; description?: string }>;
     addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
 }
+
+const uploadKieReferenceImage = async (source: string, apiKey: string, index: number): Promise<string> => {
+    const trimmed = String(source || '').trim();
+    if (!trimmed) throw new Error(`Character reference image ${index + 1} is empty.`);
+    const dataUrl = trimmed.startsWith('data:')
+        ? trimmed
+        : `data:image/png;base64,${trimmed}`;
+    const mimeMatch = dataUrl.match(/^data:(image\/[A-Za-z0-9.+-]+);base64,/);
+    if (!mimeMatch) throw new Error(`Character reference image ${index + 1} is not a supported base64 image data URL.`);
+    const extension = mimeMatch[1].split('/')[1].replace(/[^A-Za-z0-9]/g, '') || 'png';
+    const uniqueName = `mv-ref-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+
+    let response: Response;
+    try {
+        response = await fetch('https://kieai.redpandaai.co/api/file-base64-upload', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                base64Data: dataUrl,
+                uploadPath: 'mv-director/character-references',
+                fileName: uniqueName
+            })
+        });
+    } catch (error: any) {
+        throw new Error(`Could not upload character reference ${index + 1} to KIE AI: ${error?.message || String(error)}`);
+    }
+
+    const raw = await response.text();
+    let payload: any = {};
+    try { payload = JSON.parse(raw); } catch {}
+    const downloadUrl = payload?.data?.downloadUrl || payload?.data?.data?.downloadUrl || payload?.result?.downloadUrl;
+    if (!response.ok || payload?.success === false || !downloadUrl || typeof downloadUrl !== 'string') {
+        const detail = payload?.msg || payload?.message || payload?.error || raw.slice(0, 500);
+        throw new Error(`KIE AI could not upload character reference ${index + 1} (HTTP ${response.status}): ${detail || 'No downloadable image URL returned.'}`);
+    }
+    return downloadUrl;
+};
+
+const resolveKieReferenceUrls = async (options: KieImageOptions): Promise<string[]> => {
+    const suppliedUrls = (options.referenceImageUrls || []).filter(url => typeof url === 'string' && /^https?:\/\//i.test(url.trim()));
+    if (suppliedUrls.length) return suppliedUrls.slice(0, 14);
+    const images = (options.referenceImages || []).filter(image => typeof image?.data === 'string' && image.data.trim()).slice(0, 14);
+    if (!images.length) return [];
+    options.addLog?.(`Uploading ${images.length} reference image(s) to KIE AI so the selected model can use the actual image pixels, not only their descriptions...`, 'info');
+    const urls: string[] = [];
+    for (let index = 0; index < images.length; index++) {
+        urls.push(await uploadKieReferenceImage(images[index].data, options.apiKey, index));
+    }
+    options.addLog?.(`Uploaded ${urls.length} reference image(s) for KIE AI image generation.`, 'success');
+    return urls;
+};
 
 export const generateKieImage = async (options: KieImageOptions): Promise<string> => {
     const rawModel = options.model?.replace(/^kie:/, '') || 'google/nano-banana-2-1';
@@ -291,9 +346,19 @@ export const generateKieImage = async (options: KieImageOptions): Promise<string
         }
     };
 
-    if (options.referenceImageUrls && options.referenceImageUrls.length > 0) {
-        reqBody.input.image = options.referenceImageUrls[0];
-        reqBody.input.images = options.referenceImageUrls;
+    const referenceUrls = await resolveKieReferenceUrls(options);
+    if (referenceUrls.length > 0) {
+        const normalizedModel = cleanModel.toLowerCase();
+        if (normalizedModel.includes('nano-banana-edit')) {
+            // KIE's Nano Banana Edit contract names its image list image_urls.
+            reqBody.input.image_urls = referenceUrls;
+        } else if (normalizedModel.includes('nano-banana-2') || normalizedModel.includes('nano-banana-pro')) {
+            // KIE's Nano Banana 2 / Pro contract names reference inputs image_input.
+            reqBody.input.image_input = referenceUrls;
+        } else {
+            throw new Error(`The selected KIE model (${cleanModel}) does not expose a documented reference-image input in this app. Choose KIE Nano Banana 2/Pro or Nano Banana Edit to preserve the selected face reference.`);
+        }
+        options.addLog?.(`Sending ${referenceUrls.length} visual reference image(s) to KIE AI (${cleanModel}).`, 'info');
     }
 
     const res = await fetch("https://api.kie.ai/api/v1/jobs/createTask", {
