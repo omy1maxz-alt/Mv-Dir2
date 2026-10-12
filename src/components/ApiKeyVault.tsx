@@ -213,6 +213,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     });
     return () => { cancelled = true; controller.abort(); };
   }, [isOpen, keys.cloudflareWorkerProxyUrl, keys.cloudflareWorkerProxyToken]);
+
+  useEffect(() => {
+    const unsubscribe = listenAuthState((user) => {
       setAuthUser(user);
     });
     return () => unsubscribe();
