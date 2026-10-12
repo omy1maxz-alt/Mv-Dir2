@@ -177,6 +177,8 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     delete modelInput.width;
     delete modelInput.height;
     modelInput.steps = 4;
+  } else if (model === '@cf/stabilityai/stable-diffusion-xl-lightning') {
+    modelInput.num_steps = 4;
   } else if (model === '@cf/leonardo/lucid-origin') {
     modelInput.width = Math.min(width, 2500);
     modelInput.height = Math.min(height, 2500);
