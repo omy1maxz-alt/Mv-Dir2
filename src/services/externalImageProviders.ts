@@ -288,7 +288,10 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     if (typeof options.seed === 'number' && Number.isFinite(options.seed)) {
       modelInput.seed = Math.trunc(options.seed);
     }
-    const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim()).slice(0, 4);
+    const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
+    if (references.length > 4) {
+      throw new Error(`Cloudflare FLUX.2 accepts at most four reference images, but ${references.length} were supplied. Reduce references before generation; the adapter will not silently drop any selected face.`);
+    }
     for (let index = 0; index < references.length; index++) {
       modelInput[`input_image_${index}`] = await imageToCloudflareDataUrl(references[index].data);
     }
