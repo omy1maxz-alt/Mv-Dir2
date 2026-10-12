@@ -1855,8 +1855,7 @@ export const generateSingleImage = async (
         });
     }
 
-    addLog("Connecting to image generation service...", 'info');
-    const genAI = getGenAI(apiKey);
+    addLog("Preparing reference-guided image generation...", 'info');
 
     // If the prompt is a JSON string (e.g. from analyzeImageToJson), format it into a cohesive paragraph
     try {
@@ -1902,7 +1901,8 @@ export const generateSingleImage = async (
         // This provides the image generation model with a concrete textual description of the scene.
         addLog("No prompt provided. Analyzing frame reference to generate a scene description...", 'info');
         try {
-            const visionResponse = await callTextModel(genAI, {
+            const analysisAI = getGenAI(apiKey);
+            const visionResponse = await callTextModel(analysisAI, {
                 model: currentTextModel,
                 contents: [
                     {
@@ -2057,6 +2057,8 @@ Your task is to generate a new scene based EXACTLY on the text description provi
         });
     }
 
+    const genAI = getGenAI(apiKey);
+    
     const doGenerate = async (currentParts: any[]) => {
         addLog(`Sending request to ${currentImageModel}...`, 'info');
         if (currentImageModel.startsWith('imagen-')) {
