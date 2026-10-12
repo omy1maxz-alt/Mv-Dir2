@@ -1,3 +1,7 @@
+### Fixed
+- **YouTube Caption Tab Cross-Origin Retrieval**: Caption fetching now runs independently on the server instead of relying on access to the cross-origin YouTube iframe. The backend tries Android, iOS, and web player metadata, extracts caption track URLs, retries JSON3 for YouTube timed-text tracks, and falls back to a small set of Piped/Invidious caption providers in parallel.
+- **YouTube Manifest Inspection**: Stream extraction merges HLS and DASH manifest metadata across player clients and exposes manifest links as selectable formats when supplied by YouTube. The Caption tab now has **Fetch CC + Manifest** to load native caption cues without Gemini and display/copy any returned `.m3u8` / `.mpd` URL. If YouTube/provider responses do not expose a manifest for a video, the UI reports that rather than fabricating a link.
+- **TinyFish Key Requirement**: No TinyFish key is needed for this implementation. The optional TinyFish platform key authenticates its separate web-agent/browser APIs; it was not added to browser-side app storage.
 - **Live Cloudflare Model Catalog**: Added an authenticated catalog endpoint to the existing Worker proxy and a refresh/status action in API & Account Settings. The settings panel queries Cloudflare's model catalog for text-generation and text-to-image tasks through the Worker, keeps the API token server-side, and preserves known model options when discovery is unavailable. Discovery does not automatically enable arbitrary model IDs; current selectors remain limited to known-supported adapters.
 
 ### Fixed
