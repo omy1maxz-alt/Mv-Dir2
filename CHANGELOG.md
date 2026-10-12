@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### Fixed
+- **YouTube Caption Retrieval in Caption Tab**: Added a dedicated native YouTube caption fetch action that uses a lightweight backend caption-track endpoint independently of stream/manifest resolution. The app imports timed caption cues into the subtitle editor and reports when native captions are unavailable, without accessing the cross-origin YouTube iframe DOM.
+- **Text Model Picker Build Failure**: Corrected the malformed JSX model-group array insertion that caused the production build to fail in `ApiKeyVault.tsx`.
+
+### Improved
+- **YouTube Caption Track Discovery**: Server-side caption track inventory now has a dedicated route with InnerTube client candidates and community-provider fallback. The existing stream inspection endpoint still reports available HLS/DASH manifests when providers return them; a manifest is not guaranteed for every video/client/session.
+
 ### Fixed
 - **YouTube Caption Tab Cross-Origin Retrieval**: Caption fetching now runs independently on the server instead of relying on access to the cross-origin YouTube iframe. The backend tries Android, iOS, and web player metadata, extracts caption track URLs, retries JSON3 for YouTube timed-text tracks, and falls back to a small set of Piped/Invidious caption providers in parallel.
 - **YouTube Manifest Inspection**: Stream extraction merges HLS and DASH manifest metadata across player clients and exposes manifest links as selectable formats when supplied by YouTube. The Caption tab now has **Fetch CC + Manifest** to load native caption cues without Gemini and display/copy any returned `.m3u8` / `.mpd` URL. If YouTube/provider responses do not expose a manifest for a video, the UI reports that rather than fabricating a link.
