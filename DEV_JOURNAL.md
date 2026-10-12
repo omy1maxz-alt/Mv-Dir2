@@ -1,3 +1,10 @@
+### 183. Cloudflare Workers AI Fetch Failure Diagnostics and Same-Origin Routing
+- **Observed failure:** AI Studio browser report showed an unhandled `TypeError: Failed to fetch` in `generateImageCloudflare`. That error alone does not prove CORS; it can also represent DNS, transport, sandbox policy, or browser request blocking.
+- **Root-path findings:** Cloudflare image calls were sent directly from the browser to the Cloudflare API. The app also has an Express server for standalone production and Vite dev/preview middleware, so a same-origin proxy can avoid exposing Cloudflare's endpoint to browser CORS enforcement in those deployments.
+- **Changes:** Added a same-origin `/api/cloudflare-image` route to Express and Vite dev/preview; added bounded upstream timeout, input validation, response media-type and empty-body validation, separation of network errors from HTTP status errors, and credential redaction from upstream diagnostics.
+- **Credential note:** The API Vault's user-supplied token remains browser-held unless server environment variables `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are configured on a trusted deployment. Server-configured credentials take precedence. Do not enable an unauthenticated public endpoint with server credentials on an untrusted deployment.
+- **Fallback policy:** The selected Cloudflare provider remains selected when a request fails; no silent automatic switch to another image provider is performed.
+- **Verification limitation:** Source-level changes were committed for CI validation, but live Cloudflare image rendering, AI Studio sandbox route availability, and local npm/typecheck execution were not verified by the repository connector.
 # Dev Journal - MV Director
 
 ## Technical Constraints & Patterns
