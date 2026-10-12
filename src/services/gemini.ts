@@ -1753,6 +1753,7 @@ export const generateSceneImage = async (
 
     // Interleave the reference parts with the main prompt
     const parts: any[] = [...referenceParts, { text: fullPrompt }];
+    const referenceImageCount = referenceParts.filter((part: any) => Boolean(part?.inlineData)).length;
 
     const genAI = getGenAI(apiKey);
 
@@ -1821,7 +1822,7 @@ export const generateSceneImage = async (
             lastFinishReason = finishReason || (candidate ? 'NO_IMAGE' : 'NO_CANDIDATE');
             if (attempt < maxImageResponseAttempts) {
                 addLog(
-                    `Gemini returned ${lastFinishReason} without image output. Retrying the same prompt with the same ${referenceParts.length} reference image(s) (attempt ${attempt + 1}/${maxImageResponseAttempts}); no references will be removed.`,
+                    `Gemini returned ${lastFinishReason} without image output. Retrying the same prompt with the same ${referenceImageCount} reference image(s) (attempt ${attempt + 1}/${maxImageResponseAttempts}); no references will be removed.`,
                     'warning'
                 );
                 await new Promise(resolve => setTimeout(resolve, 800 * attempt));
@@ -1882,7 +1883,7 @@ export const generateSceneImage = async (
                 if (isTransientFallback && referenceParts.length > 0) {
                     const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
                     throw new Error(
-                        `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output on the sanitized retry. All ${referenceParts.length} selected reference part(s) were preserved. Review the scene prompt, or retry/use another reference-capable image model.`
+                        `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output on the sanitized retry. All ${referenceImageCount} selected reference image(s) were preserved. Review the scene prompt, or retry/use another reference-capable image model.`
                     );
                 } else if (isTransientFallback) {
                     addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
