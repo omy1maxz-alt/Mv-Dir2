@@ -990,6 +990,92 @@ async function getYouTubeCaptionsServerSide(videoId: string, targetLanguage?: st
 }
 
 // Lightweight subtitle-track inventory endpoint. It intentionally does not invoke the slower stream resolver.
+async function fetchCommunityYouTubeManifestCandidates(videoId: string): Promise<Array<{ source: string; hlsUrl: string | null; dashUrl: string | null }>> {
+  const attempts = [
+    ...PIPED_INSTANCES.slice(0, 4).map(instance => async () => {
+      const response = await fetchWithTimeout(`${instance}/streams/${encodeURIComponent(videoId)}`, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }
+      }, 4500);
+      if (!response.ok) return null;
+      const data = await response.json();
+      return {
+        source: instance,
+        hlsUrl: typeof data.hls === 'string' && data.hls ? data.hls : null,
+        dashUrl: typeof data.dash === 'string' && data.dash ? data.dash : null
+      };
+    }),
+    ...INVIDIOUS_INSTANCES.slice(0, 4).map(instance => async () => {
+      const response = await fetchWithTimeout(`${instance}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }
+      }, 4500);
+      if (!response.ok) return null;
+      const data = await response.json();
+      return {
+        source: instance,
+        hlsUrl: typeof data.hlsUrl === 'string' && data.hlsUrl ? data.hlsUrl : null,
+        dashUrl: typeof data.dashUrl === 'string' && data.dashUrl ? data.dashUrl : null
+      };
+    })
+  ];
+  const results = await Promise.all(attempts.map(async attempt => {
+    try { return await attempt(); } catch { return null; }
+  }));
+  return results.filter((item): item is { source: string; hlsUrl: string | null; dashUrl: string | null } => !!item);
+}
+
+// Fast HLS/DASH discovery avoids waiting for the legacy stream downloader's sequential fallbacks.
+app.all('/api/youtube/manifests', async (req: Request, res: Response) => {
+  try {
+    const rawUrl = (req.query.url as string) || (req.body?.url as string) || '';
+    const rawVideoId = (req.query.videoId as string) || (req.query.v as string) || (req.body?.videoId as string) || '';
+    const videoId = rawVideoId || extractVideoId(rawUrl);
+    if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      return res.status(400).json({ success: false, videoId: videoId || '', hlsUrl: null, dashUrl: null, message: 'A valid YouTube URL or video ID is required.' });
+    }
+
+    const [playerPayloads, community] = await Promise.all([
+      fetchYouTubePlayerDataCandidates(videoId),
+      fetchCommunityYouTubeManifestCandidates(videoId)
+    ]);
+    const playerData = playerPayloads.map(payload => payload?.streamingData || {});
+    const hlsUrl = playerData.map(streaming => streaming.hlsManifestUrl).find((url: unknown) => typeof url === 'string' && url)
+      || community.map(item => item.hlsUrl).find(url => !!url)
+      || null;
+    const dashUrl = playerData.map(streaming => streaming.dashManifestUrl).find((url: unknown) => typeof url === 'string' && url)
+      || community.map(item => item.dashUrl).find(url => !!url)
+      || null;
+    const metadata = playerPayloads.find(payload => payload?.videoDetails) || playerPayloads[0] || {};
+    const title = metadata?.videoDetails?.title || 'YouTube_Video';
+    const duration = parseInt(metadata?.videoDetails?.lengthSeconds || '0', 10) || 0;
+    const thumbnailUrl = metadata?.videoDetails?.thumbnail?.thumbnails?.slice(-1)[0]?.url
+      || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+    return res.json({
+      success: true,
+      videoId,
+      title,
+      duration,
+      thumbnailUrl,
+      hlsUrl,
+      dashUrl,
+      sources: {
+        playerClients: playerPayloads.length,
+        communityProviders: community.length
+      },
+      message: hlsUrl || dashUrl
+        ? 'Available manifest URLs were discovered. Signed URLs may expire and are not guaranteed for every video.'
+        : 'No HLS/DASH manifest URL was exposed by the available YouTube player clients or fallback providers. This does not mean timed captions are unavailable.'
+    });
+  } catch (error: any) {
+    return res.status(502).json({
+      success: false,
+      hlsUrl: null,
+      dashUrl: null,
+      message: error?.message || 'YouTube manifest lookup failed.'
+    });
+  }
+});
+
 app.all('/api/youtube/caption-tracks', async (req: Request, res: Response) => {
   try {
     const rawUrl = (req.query.url as string) || (req.body?.url as string) || '';
