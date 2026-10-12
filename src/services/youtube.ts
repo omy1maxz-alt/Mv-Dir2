@@ -348,6 +348,45 @@ import { YouTubeCaptionResponse } from './youtubeCaptionService';
 /**
  * Fetches structured YouTube captions via the backend caption retrieval service.
  */
+/** Discovers native timed-caption tracks without waiting for any stream/manifest provider. */
+export async function fetchYouTubeCaptionTracks(rawUrlOrVideoId: string): Promise<{
+  success: boolean;
+  videoId: string;
+  title?: string;
+  duration?: number;
+  thumbnailUrl?: string;
+  tracks: SubtitleTrackInfo[];
+  message?: string;
+}> {
+  const normalized = normalizeYoutubeUrl(rawUrlOrVideoId);
+  const videoId = normalized.videoId || rawUrlOrVideoId.trim();
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return { success: false, videoId, tracks: [], message: 'A valid YouTube URL or video ID is required.' };
+  }
+
+  const response = await fetch(`/api/youtube/caption-tracks?videoId=${encodeURIComponent(videoId)}`, {
+    cache: 'no-store'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !Array.isArray(data.tracks)) {
+    return {
+      success: false,
+      videoId,
+      tracks: [],
+      message: data.message || data.error || `Caption track lookup failed (HTTP ${response.status}).`
+    };
+  }
+  return {
+    success: true,
+    videoId,
+    title: data.title,
+    duration: data.duration,
+    thumbnailUrl: data.thumbnailUrl,
+    tracks: data.tracks,
+    message: data.tracks.length ? undefined : 'No native YouTube caption tracks were found for this video.'
+  };
+}
+
 export async function fetchYouTubeCaptions(
   rawUrlOrVideoId: string,
   targetLang?: string
