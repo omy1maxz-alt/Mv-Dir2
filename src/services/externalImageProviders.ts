@@ -59,36 +59,95 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
 
   const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ prompt })
-  });
+  let response: Response;
+  try {
+    // Prefer the same-origin server route where the full-stack app is deployed.
+    // AI Studio sandboxes that do not run this project's Express server will return
+    // a route-unavailable response; in that case, use the direct call once for a
+    // clear CORS/network diagnostic rather than silently switching providers.
+    const proxyPayload = {
+      accountId,
+      apiToken,
+      model,
+      prompt
+    };
+    let proxyResponse: Response | undefined;
+    try {
+      proxyResponse = await fetch('/api/cloudflare-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(proxyPayload)
+      });
+    } catch {
+      // Relative routes may be unavailable in hosted preview/sandbox runtimes.
+    }
+
+    if (proxyResponse && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
+      response = proxyResponse;
+    } else {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ prompt })
+      });
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const isNetworkFailure = error instanceof TypeError && /fetch/i.test(message);
+    const detail = isNetworkFailure
+      ? 'The browser could not read a response. This commonly indicates a CORS restriction, DNS/network failure, or a blocked request. Check the browser Network/Console panel to distinguish them.'
+      : message;
+    addLog?.(`Cloudflare Workers AI request failed: ${detail}`, 'error');
+    throw new Error(`Cloudflare Workers AI request failed before an HTTP response was available. ${detail}`);
+  }
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Cloudflare Workers AI Error (${response.status}): ${errorText}`);
+    const errorText = (await response.text()).slice(0, 1000);
+    // Do not include any credential material in diagnostic text.
+    const safeErrorText = errorText
+      .replaceAll(apiToken, '[redacted]')
+      .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
+    throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${safeErrorText || response.statusText || 'Request rejected'}`);
   }
 
   const contentType = response.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
-    const data = await response.json();
-    if (data.result?.image) {
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('Cloudflare Workers AI returned invalid JSON.');
+    }
+    if (typeof data.result?.image === 'string' && data.result.image.length > 0) {
       addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
       return `data:image/jpeg;base64,${data.result.image}`;
     }
-    throw new Error(`Cloudflare Workers AI returned unexpected JSON: ${JSON.stringify(data).slice(0, 200)}`);
+    const providerMessage = typeof data.errors?.[0]?.message === 'string'
+      ? data.errors[0].message
+      : 'No result.image field was returned.';
+    throw new Error(`Cloudflare Workers AI returned an unexpected JSON response: ${providerMessage.slice(0, 300)}`);
   }
 
   // Direct binary stream (image/png or image/jpeg)
+  if (!contentType.startsWith('image/')) {
+    const body = (await response.text()).slice(0, 300);
+    throw new Error(`Cloudflare Workers AI returned an unexpected content type (${contentType || 'unknown'}): ${body}`);
+  }
+
   const blob = await response.blob();
+  if (!blob.size) {
+    throw new Error('Cloudflare Workers AI returned an empty image response.');
+  }
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result as string);
-    reader.onerror = reject;
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Unable to encode the Cloudflare image response.'));
+    };
+    reader.onerror = () => reject(new Error('Unable to read the Cloudflare image response.'));
     reader.readAsDataURL(blob);
   });
 
