@@ -1,4 +1,9 @@
 ### Fixed
+- **AI Studio Cloudflare Proxy Compatibility + External Text Providers**: Added a deployable Cloudflare Worker proxy configuration to avoid direct browser-to-Cloudflare REST CORS failures in the hosted Google AI Studio iframe. Image requests now include model dimensions, Worker proxy requests use a separate proxy access token, and the Cloudflare request path supports image and text payloads.
+- **Cloudflare / AI Horde Text Routing**: Added optional Cloudflare Workers AI and AI Horde text selections while retaining the existing Gemini, Kie AI, and Custom OpenAI paths. Both new external text adapters return a response through the shared text-model dispatcher.
+- **AI Horde Queue and Image Response Reliability**: Extended image/text queue polling to six minutes, avoids fetching completion status before the service reports the job as done, improves transient polling diagnostics, checks remote image download status, and detects common image formats from returned base64 data.
+
+### Fixed
 - **Cloudflare Image Generation Network Diagnostics & Same-Origin Proxy**: Added Cloudflare Workers AI proxy handling for Express production deployments and Vite dev/preview; added safe network-vs-HTTP diagnostics, timeout handling, content-type/empty-image validation, and credential redaction. No automatic provider fallback is performed when Cloudflare is selected.
 
 ### Added
