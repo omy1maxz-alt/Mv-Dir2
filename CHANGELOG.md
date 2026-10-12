@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **FLUX.1 [schnell] Prompt Length**: Enforced Cloudflare's documented 2,048-character prompt limit before submission. Oversized prompts are shortened at safe word boundaries while preserving both the scene description at the beginning and quality/style constraints at the end; the app logs a warning with the original and resulting lengths.
+
+### Fixed
 - **Cloudflare Worker Deployment Diagnosis**: API Settings now explains that “Use POST for model requests” is evidence of an outdated deployed Worker when the catalog GET request returns HTTP 405. The duplicate Refresh Model Catalog button/status was removed. FLUX.2 errors that explicitly indicate a missing multipart request now point to the Worker redeploy fix.
 
 ### Improved
