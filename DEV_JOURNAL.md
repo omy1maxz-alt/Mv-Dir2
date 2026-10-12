@@ -1,3 +1,11 @@
+### 199. Image-Model-Aware AI Director Prompting
+- **User request:** Make the AI Director aware of the selected image generator and adapt prompt style to that model family.
+- **Change:** Added a shared selected-model prompt profile in `gemini.ts`. The Director system prompt uses it for new and continued plans; scene prompt enhancement uses the same profile. The profile covers Gemini/Nano Banana, KIE Nano Banana/GPT Image/Grok Imagine and other KIE models, Cloudflare FLUX.2, FLUX.1 [schnell], Leonardo Lucid/Phoenix, SDXL/DreamShaper, Imagen, and prompt-only routes.
+- **Guidance differences:** FLUX.1 [schnell] is kept concise under its 2,048-character limit; FLUX.2 uses descriptive natural language and leaves reference-index mapping to the adapter; diffusion models get compact visual-first descriptors; Gemini/Nano Banana gets precise natural-language instructions and clear reference roles; unknown models use a safe generic visual prompt.
+- **Guardrails:** Does not alter API request schemas or invent support for separate negative prompts. The user's concept, art style, face/reference preservation, still-image requirements, and separate motion prompt are kept intact.
+- **Observability:** New-plan and continuation logs identify the active image prompt profile.
+- **Verification:** GitHub Actions build was triggered for the source change. A green build verifies compilation only; render quality must be checked with each selected provider in the running app.
+ 
 ### 198. Character Reference Image Pipeline and Face-Preservation Fix
 - **User issue:** Image generation sometimes created a different face even after a character reference image was selected.
 - **Root causes confirmed in source:** The story-scene path filtered some unlinked face refs too aggressively; KIE generation received prompt text but no reference pixels; the single-image Cloudflare path did not include `referenceImages`; and the single-image tool skipped the frame reference whenever a character image was also selected. Imagen, Pollinations, and AI Horde paths could not use the selected references through this app's current adapters, while quota/safety fallback paths could retry as prompt-only generation and silently change the face.
