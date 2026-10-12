@@ -1,4 +1,7 @@
 ### Added
+- **Cloudflare Workers AI Image Model Expansion**: Expanded the image-model selector with curated Cloudflare text-to-image options that fit MV Director's cinematic storyboard workflow: Lucid Origin, Phoenix 1.0, FLUX.1 [schnell], DreamShaper 8 LCM, SDXL 1.0, and SDXL Lightning. Added model-specific JSON input parameters for prompt adherence, dimensions, and supported step counts. Kept multipart FLUX.2 models out of the JSON-only path pending a dedicated multipart adapter. Existing saved model IDs and the Cloudflare Worker proxy contract remain unchanged.
+
+### Added
 - **Cloudflare Workers AI Image Model Expansion**: Expanded the image-model selector with curated Cloudflare text-to-image options that fit MV Director's prompt-and-aspect-ratio workflow: Lucid Origin, Phoenix 1.0, FLUX.1 [schnell], DreamShaper 8 LCM, SDXL 1.0, and SDXL Lightning. Added provider-aware input parameters for models whose official schemas differ. Kept multipart FLUX.2 models out of the JSON-only path pending a dedicated multipart adapter. Existing saved model IDs and the Cloudflare Worker proxy contract remain unchanged.
 
 ### Fixed
