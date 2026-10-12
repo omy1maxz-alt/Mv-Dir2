@@ -33,94 +33,154 @@ const getDimensionsForHorde = (aspectRatio?: string): { width: number; height: n
  * Generate image via Cloudflare Workers AI (FLUX.1 [schnell] or SDXL)
  * Endpoint: https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}
  */
-export async function generateImageCloudflare(options: CloudflareOptions): Promise<string> {
-  const { prompt, addLog } = options;
-  const model = options.model || '@cf/black-forest-labs/flux-1-schnell';
-
-  const storedKeys = (() => {
-    try {
-      const s = localStorage.getItem('mv_api_keys');
-      return s ? JSON.parse(s) : {};
-    } catch {
-      return {};
-    }
-  })();
-
-  const accountId = options.accountId || storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '';
-  const apiToken = options.apiToken || storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '';
-
-  const hasClientCredentials = Boolean(accountId && apiToken);
-  if (!hasClientCredentials) {
-    addLog?.('No complete client-side Cloudflare credentials found; checking whether the server has securely configured credentials...', 'info');
+const getImageDimensions = (aspectRatio?: string): { width: number; height: number } => {
+  switch (aspectRatio) {
+    case '16:9': return { width: 1024, height: 576 };
+    case '9:16': return { width: 576, height: 1024 };
+    case '4:3': return { width: 768, height: 576 };
+    case '3:4': return { width: 576, height: 768 };
+    case '2.35:1': return { width: 1024, height: 448 };
+    case '14:9': return { width: 896, height: 576 };
+    case '8:15': return { width: 512, height: 960 };
+    case '1:1':
+    default: return { width: 768, height: 768 };
   }
+};
 
-  addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
-
-  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
-
-  let response: Response | undefined;
-  let proxyUnavailable = false;
+const readStoredProviderKeys = (): Record<string, any> => {
   try {
-    // Prefer the same-origin server route where this full-stack app is deployed.
-    // Server environment variables can supply credentials without putting them in the browser.
-    const proxyPayload = { accountId, apiToken, model, prompt };
-    let proxyResponse: Response | undefined;
-    try {
-      proxyResponse = await fetch('/api/cloudflare-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(proxyPayload)
-      });
-    } catch {
-      proxyUnavailable = true;
-    }
-
-    const proxyType = proxyResponse?.headers.get('content-type') || '';
-    const proxyLooksLikeImageApi = Boolean(
-      proxyResponse &&
-      (proxyType.includes('application/json') || proxyType.startsWith('image/'))
-    );
-    // Vite/SPA hosting can answer an unknown API path with index.html (HTTP 200).
-    // Treat HTML or an unknown route as unavailable instead of misreporting it as an image.
-    if (proxyResponse && proxyLooksLikeImageApi && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
-      response = proxyResponse;
-    } else {
-      proxyUnavailable = true;
-    }
+    const s = localStorage.getItem('mv_api_keys');
+    return s ? JSON.parse(s) : {};
   } catch {
-    proxyUnavailable = true;
+    return {};
   }
+};
 
-  if (!response) {
-    if (!hasClientCredentials) {
+const responseErrorText = async (response: Response, tokenToRedact?: string): Promise<string> => {
+  const text = (await response.text()).slice(0, 1200);
+  return tokenToRedact
+    ? text.replaceAll(tokenToRedact, '[redacted]').replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
+    : text.replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
+};
+
+const postCloudflareModel = async (args: {
+  action: 'image' | 'text';
+  model: string;
+  input: Record<string, any>;
+  accountId: string;
+  apiToken: string;
+  proxyUrl?: string;
+  proxyToken?: string;
+}): Promise<Response> => {
+  const { action, model, input, accountId, apiToken, proxyUrl, proxyToken } = args;
+
+  // A user-configured Worker is the reliable browser-to-server route inside
+  // the Google AI Studio iframe. Its own CORS response allows the hosted UI origin.
+  if (proxyUrl) {
+    if (!proxyToken) {
+      throw new Error('Cloudflare Worker Proxy URL is configured, but its Proxy Access Token is missing.');
+    }
+    let response: Response;
+    try {
+      response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${proxyToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ action, model, input })
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        'Cloudflare credentials are not available in the client, and the same-origin server proxy did not respond as an image API. Configure CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN on a trusted server, or configure both values in Settings -> API Vault.'
+        `Could not reach the Cloudflare Worker Proxy. Verify the Worker URL, that it is deployed, and that its CORS preflight allows this app. ${message}`
       );
     }
-    try {
-      response = await fetch(endpoint, {
+    if (!response.ok) {
+      const errorText = await responseErrorText(response, proxyToken);
+      throw new Error(`Cloudflare Worker Proxy Error (HTTP ${response.status}): ${errorText || response.statusText}`);
+    }
+    return response;
+  }
+
+  // First use the same-origin route in deployments that run this repository's
+  // Express/Vite server. AI Studio's hosted preview usually does not run these routes.
+  let proxyResponse: Response | undefined;
+  try {
+    proxyResponse = await fetch('/api/cloudflare-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, accountId, apiToken, model, input, ...input })
+    });
+  } catch {
+    // Continue to the direct request below only if client credentials are available.
+  }
+
+  const proxyType = proxyResponse?.headers.get('content-type') || '';
+  const looksLikeApiResponse = Boolean(
+    proxyResponse && (proxyType.includes('application/json') || proxyType.startsWith('image/'))
+  );
+  if (proxyResponse && looksLikeApiResponse && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
+    return proxyResponse;
+  }
+
+  if (!accountId || !apiToken) {
+    throw new Error(
+      'Cloudflare credentials or a working proxy are missing. In Google AI Studio, deploy the included Cloudflare Worker Proxy, then configure its URL and access token in Settings -> API Vault.'
+    );
+  }
+
+  try {
+    return await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`,
+      {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ prompt })
-      });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isNetworkFailure = error instanceof TypeError && /fetch/i.test(message);
-      const detail = isNetworkFailure
-        ? 'The browser could not read a response. This commonly indicates a CORS restriction, DNS/network failure, or a blocked request. Check the browser Network/Console panel to distinguish them.'
-        : message;
-      addLog?.(`Cloudflare Workers AI request failed: ${detail}`, 'error');
-      throw new Error(`Cloudflare Workers AI request failed before an HTTP response was available. ${detail}`);
-    }
+        body: JSON.stringify(input)
+      }
+    );
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Cloudflare Workers AI could not be reached from this browser. The direct Cloudflare API request is likely blocked by browser CORS in the AI Studio iframe; DNS/network blocking can produce the same error. Deploy the included Worker Proxy and set its URL and access token in API Vault. Details: ${message}`
+    );
   }
+};
 
-  if (!response) {
-    throw new Error(proxyUnavailable
-      ? 'Cloudflare image request could not reach either the same-origin proxy or Cloudflare API.'
-      : 'Cloudflare image request failed without a response.');
+/**
+ * Generate image via Cloudflare Workers AI. In Google AI Studio, configure the
+ * included Cloudflare Worker Proxy because browser calls to api.cloudflare.com
+ * can fail CORS preflight in the hosted iframe.
+ */
+export async function generateImageCloudflare(options: CloudflareOptions): Promise<string> {
+  const { prompt, addLog } = options;
+  const model = options.model || '@cf/black-forest-labs/flux-1-schnell';
+  const storedKeys = readStoredProviderKeys();
+
+  const accountId = options.accountId || storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '';
+  const apiToken = options.apiToken || storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '';
+  const proxyUrl = String(storedKeys.cloudflareWorkerProxyUrl || '').trim();
+  const proxyToken = String(storedKeys.cloudflareWorkerProxyToken || '').trim();
+  const { width, height } = getImageDimensions(options.aspectRatio);
+
+  addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
+
+  const response = await postCloudflareModel({
+    action: 'image',
+    model,
+    input: { prompt, width, height },
+    accountId,
+    apiToken,
+    proxyUrl,
+    proxyToken
+  });
+
+  if (!response.ok) {
+    const errorText = await responseErrorText(response, apiToken || proxyToken);
+    throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${errorText || response.statusText || 'Request rejected'}`);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -131,38 +191,97 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     } catch {
       throw new Error('Cloudflare Workers AI returned invalid JSON.');
     }
-    if (typeof data.result?.image === 'string' && data.result.image.length > 0) {
+
+    const encodedImage = typeof data.result?.image === 'string'
+      ? data.result.image
+      : typeof data.result === 'string'
+        ? data.result
+        : '';
+    if (encodedImage) {
       addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
-      return `data:image/jpeg;base64,${data.result.image}`;
+      return `data:image/png;base64,${encodedImage}`;
     }
+
     const providerMessage = typeof data.errors?.[0]?.message === 'string'
       ? data.errors[0].message
-      : 'No result.image field was returned.';
+      : typeof data.error === 'string'
+        ? data.error
+        : 'No image data was returned.';
     throw new Error(`Cloudflare Workers AI returned an unexpected JSON response: ${providerMessage.slice(0, 300)}`);
   }
 
-  // Direct binary stream (image/png or image/jpeg)
   if (!contentType.startsWith('image/')) {
     const body = (await response.text()).slice(0, 300);
     throw new Error(`Cloudflare Workers AI returned an unexpected content type (${contentType || 'unknown'}): ${body}`);
   }
 
   const blob = await response.blob();
-  if (!blob.size) {
-    throw new Error('Cloudflare Workers AI returned an empty image response.');
-  }
+  if (!blob.size) throw new Error('Cloudflare Workers AI returned an empty image response.');
+
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') resolve(reader.result);
-      else reject(new Error('Unable to encode the Cloudflare image response.'));
-    };
+    reader.onloadend = () => typeof reader.result === 'string'
+      ? resolve(reader.result)
+      : reject(new Error('Unable to encode the Cloudflare image response.'));
     reader.onerror = () => reject(new Error('Unable to read the Cloudflare image response.'));
     reader.readAsDataURL(blob);
   });
 
   addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
   return base64;
+}
+
+/**
+ * Run a Cloudflare Workers AI text model using the current text-generation request.
+ */
+export async function generateTextCloudflare(options: {
+  model: string;
+  input: Record<string, any>;
+  addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+}): Promise<string> {
+  const storedKeys = readStoredProviderKeys();
+  const accountId = String(storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '');
+  const apiToken = String(storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '');
+  const proxyUrl = String(storedKeys.cloudflareWorkerProxyUrl || '').trim();
+  const proxyToken = String(storedKeys.cloudflareWorkerProxyToken || '').trim();
+
+  const response = await postCloudflareModel({
+    action: 'text',
+    model: options.model,
+    input: options.input,
+    accountId,
+    apiToken,
+    proxyUrl,
+    proxyToken
+  });
+
+  if (!response.ok) {
+    const errorText = await responseErrorText(response, apiToken || proxyToken);
+    throw new Error(`Cloudflare Text Generation Error (HTTP ${response.status}): ${errorText || response.statusText}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const body = (await response.text()).slice(0, 300);
+    throw new Error(`Cloudflare text model returned unexpected content type (${contentType || 'unknown'}): ${body}`);
+  }
+
+  const data = await response.json();
+  const result = data.result;
+  const text = typeof result?.response === 'string'
+    ? result.response
+    : typeof result?.text === 'string'
+      ? result.text
+      : typeof result === 'string'
+        ? result
+        : typeof data.response === 'string'
+          ? data.response
+          : '';
+  if (!text) {
+    const detail = typeof data.errors?.[0]?.message === 'string' ? data.errors[0].message : 'No text field was returned.';
+    throw new Error(`Cloudflare text model returned an empty response: ${detail.slice(0, 300)}`);
+  }
+  return text;
 }
 
 /**
