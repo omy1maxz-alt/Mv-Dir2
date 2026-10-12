@@ -884,7 +884,7 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                     : 'bg-white/5 hover:bg-white/10 text-white/50'
                 }`}
-                title={useProxy ? 'In-App Web Proxy Active (Bypasses X-Frame-Options)' : 'Direct Web Connection'}
+                title={useProxy ? 'HTML proxy active; some modern sites may not work fully' : 'Direct connection for sites that allow iframe embedding'}
               >
                 <Shield className={`w-3.5 h-3.5 ${useProxy ? 'text-emerald-400' : 'text-white/40'}`} />
                 <span className="hidden sm:inline">Proxy: {useProxy ? 'ON' : 'OFF'}</span>
@@ -893,11 +893,12 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
                             <button
                 type="button"
                 onClick={() => void openInFullBrowser()}
-                className="p-1.5 text-white/60 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors"
+                className="p-1.5 px-2 text-white/60 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors flex items-center gap-1.5"
                 title="Open in full browser (normal browsing, sign-in and site navigation)"
                 aria-label="Open in full browser"
               >
                 <ExternalLink className="w-3.5 h-3.5 text-white/80" />
+                <span className="hidden sm:inline text-[10px] font-medium">Full Browser</span>
               </button>
 
               <button
@@ -1607,7 +1608,7 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
                   <div className="flex items-center gap-2 truncate">
                     <Shield className={`w-4 h-4 shrink-0 ${useProxy ? 'text-emerald-400' : 'text-amber-400'}`} />
                     <span className="truncate text-xs">
-                      <strong>{currentAnalysis.hostname}</strong>: {useProxy ? 'Routing via In-App Web Proxy (Bypassing SAMEORIGIN)' : 'Blocks direct iframe framing'}
+                      <strong>{currentAnalysis.hostname}</strong>: {useProxy ? 'HTML proxy active (some sites may not work fully)' : 'This site blocks iframe embedding; open the full browser for normal browsing'}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
