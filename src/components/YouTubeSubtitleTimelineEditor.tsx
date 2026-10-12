@@ -10,7 +10,7 @@ import { BulkTextToolsModal } from "./BulkTextToolsModal";
 import { ExportModal } from "./ExportModal";
 import { FrameTranslateModal } from "./FrameTranslateModal";
 import { generateYouTubeSRT } from '../services/gemini_srt';
-import { normalizeYoutubeUrl, downloadYouTubeMediaStream, fetchYouTubeCaptions, extractYouTubeMediaDetails } from '../services/youtube';
+import { normalizeYoutubeUrl, downloadYouTubeMediaStream, fetchYouTubeCaptions, extractYouTubeMediaDetails, fetchYouTubeManifestDetails } from '../services/youtube';
 import { segmentsToSrt } from '../services/youtubeCaptionService';
 import { syncSubtitleTranslations, translateSingleLine, fixSubtitleWithAgenticVideo, fixSubtitleWithAudio, uploadVideoToGemini, fixSubtitleWithFrame, getEffectiveGeminiApiKey } from '../services/gemini';
 import { captureScreenFrame } from '../utils/frameCapture';
@@ -630,7 +630,7 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                 }
                 return captionData;
             });
-            const mediaPromise = extractYouTubeMediaDetails(effectiveYoutubeUrl);
+            const mediaPromise = fetchYouTubeManifestDetails(effectiveYoutubeUrl);
             const [captionResult, mediaResult] = await Promise.allSettled([captionPromise, mediaPromise]);
 
             const captionData = captionResult.status === 'fulfilled' ? captionResult.value : null;
@@ -648,12 +648,14 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                 reportMessages.push(captionData?.message || "No accessible official YouTube caption track was returned. Use Generate Subtitle for AI audio transcription.");
             }
 
-            if (mediaData) {
-                reportMessages.push(
+            if (mediaData?.success) {
+                reportMessages.push(mediaData.message || (
                     hlsUrl || dashUrl
                         ? `Manifest discovery completed: ${[hlsUrl ? 'HLS' : '', dashUrl ? 'DASH' : ''].filter(Boolean).join(' + ')}.`
-                        : "No HLS/DASH manifest URL was returned by the available YouTube providers for this video; direct media formats may still be available."
-                );
+                        : "No HLS/DASH manifest URL was returned by the available YouTube providers for this video."
+                ));
+            } else if (mediaData) {
+                reportMessages.push(mediaData.message || 'Manifest lookup did not return a result.');
             } else if (mediaResult.status === 'rejected') {
                 const error = mediaResult.reason;
                 reportMessages.push(`Manifest inspection failed: ${error instanceof Error ? error.message : String(error)}`);
