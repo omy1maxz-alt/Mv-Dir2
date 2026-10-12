@@ -616,29 +616,31 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
         if (!effectiveYoutubeUrl || isFetchingYoutubeAssets) return;
         setIsFetchingYoutubeAssets(true);
         setSnapNotification("Fetching official YouTube captions and inspecting available manifest links...");
+        let loadedCount = 0;
         try {
-            const [captionResult, mediaResult] = await Promise.allSettled([
-                fetchYouTubeCaptions(effectiveYoutubeUrl, 'English'),
-                extractYouTubeMediaDetails(effectiveYoutubeUrl)
-            ]);
+            // Import native CC as soon as that request finishes; manifest resolution can take longer.
+            const captionPromise = fetchYouTubeCaptions(effectiveYoutubeUrl, 'English').then(captionData => {
+                if (captionData.success && (captionData.rawSrt || captionData.segments?.length)) {
+                    const rawSrt = captionData.rawSrt || segmentsToSrt(captionData.segments || []);
+                    const parsed = parseSrt(rawSrt);
+                    if (parsed.length > 0) {
+                        loadedCount = parsed.length;
+                        setBlocksAndNotify(parsed);
+                    }
+                }
+                return captionData;
+            });
+            const mediaPromise = extractYouTubeMediaDetails(effectiveYoutubeUrl);
+            const [captionResult, mediaResult] = await Promise.allSettled([captionPromise, mediaPromise]);
 
             const captionData = captionResult.status === 'fulfilled' ? captionResult.value : null;
             const mediaData = mediaResult.status === 'fulfilled' ? mediaResult.value : null;
             const hlsUrl = mediaData?.hlsUrl || null;
             const dashUrl = mediaData?.dashUrl || null;
             const reportMessages: string[] = [];
-            let loadedCount = 0;
 
-            if (captionData?.success && (captionData.rawSrt || captionData.segments?.length)) {
-                const rawSrt = captionData.rawSrt || segmentsToSrt(captionData.segments || []);
-                const parsed = parseSrt(rawSrt);
-                if (parsed.length > 0) {
-                    setBlocksAndNotify(parsed);
-                    loadedCount = parsed.length;
-                    reportMessages.push(`Loaded ${parsed.length} timed cues from native YouTube captions (${captionData.language || 'source language'}).`);
-                } else {
-                    reportMessages.push("YouTube returned caption data, but no valid timed cues could be parsed.");
-                }
+            if (loadedCount > 0) {
+                reportMessages.push(`Loaded ${loadedCount} timed cues from native YouTube captions (${captionData?.language || 'source language'}).`);
             } else if (captionResult.status === 'rejected') {
                 const error = captionResult.reason;
                 reportMessages.push(`Caption retrieval failed: ${error instanceof Error ? error.message : String(error)}`);
