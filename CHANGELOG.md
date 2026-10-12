@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Cloudflare Refresh and FLUX.2 Error Guidance**: Manual catalog refresh now uses the same diagnostic as automatic lookup, so an old POST-only Worker is reported as an outdated deployment instead of repeating its raw “Use POST for model requests” response. FLUX.2 requests through the configured Worker now detect Cloudflare's missing multipart error at the correct request boundary and explain that the exact deployed Worker must be updated.
 - **FLUX.1 [schnell] Prompt Length**: Enforced Cloudflare's documented 2,048-character prompt limit before submission. Oversized prompts are shortened at safe word boundaries while preserving both the scene description at the beginning and quality/style constraints at the end; the app logs a warning with the original and resulting lengths.
 
 ### Fixed
