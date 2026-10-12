@@ -7,6 +7,44 @@ import { parseRawCaptionToSegments, segmentsToSrt, YouTubeCaptionResponse } from
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+
+const CLOUDFLARE_FLUX2_MODELS = new Set([
+  "@cf/black-forest-labs/flux-2-dev",
+  "@cf/black-forest-labs/flux-2-klein-4b",
+  "@cf/black-forest-labs/flux-2-klein-9b"
+]);
+
+function createCloudflareModelBody(model: string, action: string, input: Record<string, any>): {
+  body: BodyInit;
+  headers: Record<string, string>;
+} {
+  if (action !== 'image' || !CLOUDFLARE_FLUX2_MODELS.has(model)) {
+    return { body: JSON.stringify(input), headers: { 'Content-Type': 'application/json' } };
+  }
+
+  const imageKeys = Object.keys(input).filter(key => /^input_image_[0-3]$/.test(key));
+  if (imageKeys.length > 4) throw new Error('FLUX.2 supports at most four reference images.');
+  const form = new FormData();
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null) continue;
+    if (/^input_image_[0-3]$/.test(key)) {
+      if (typeof value !== 'string') throw new Error(`${key} must be an image data URL.`);
+      const match = value.match(/^data:(image\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
+      if (!match) throw new Error(`${key} must use a base64 image data URL.`);
+      const bytes = Buffer.from(match[2], 'base64');
+      const extension = match[1].split('/')[1].replace(/[^A-Za-z0-9]/g, '') || 'jpg';
+      form.append(key, new Blob([new Uint8Array(bytes)], { type: match[1] }), `${key}.${extension}`);
+    } else {
+      if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+        throw new Error(`Unsupported FLUX.2 input field: ${key}`);
+      }
+      form.append(key, String(value));
+    }
+  }
+  // Do not set Content-Type here; fetch must add the multipart boundary.
+  return { body: form, headers: {} };
+}
+
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
@@ -55,6 +93,13 @@ app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid Cloudflare account ID format.' });
     }
 
+    let modelRequest: { body: BodyInit; headers: Record<string, string> };
+    try {
+      modelRequest = createCloudflareModelBody(model, action, input);
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Invalid Cloudflare model input.' });
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 90000);
     let upstream: globalThis.Response;
@@ -63,9 +108,9 @@ app.post('/api/cloudflare-image', async (req: Request, res: Response) => {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiToken}`,
-          'Content-Type': 'application/json'
+          ...modelRequest.headers
         },
-        body: JSON.stringify(input),
+        body: modelRequest.body,
         signal: controller.signal
       });
     } catch (error: any) {
