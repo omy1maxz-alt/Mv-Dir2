@@ -291,6 +291,11 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
 
   if (!response.ok) {
     const errorText = await responseErrorText(response, apiToken || proxyToken);
+    if (isMultipartModel && /required properties.*multipart/i.test(errorText)) {
+      throw new Error(
+        'FLUX.2 requires multipart/form-data, but the configured Worker appears to be forwarding this request as JSON. Redeploy the latest cloudflare-worker-proxy/worker.js from GitHub, then retry. GitHub source changes do not automatically update the live Cloudflare Worker.'
+      );
+    }
     throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${errorText || response.statusText || 'Request rejected'}`);
   }
 
