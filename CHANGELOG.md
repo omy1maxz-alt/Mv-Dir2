@@ -1,3 +1,6 @@
+### Fixed
+- **Cloudflare Worker Failure Diagnostics**: Added a “Test Worker Connection” action in API & Account Settings that sends a dummy-token request to verify browser CORS/preflight and Worker routing without invoking image generation. Single-scene image failures now remain handled by the UI/log instead of surfacing as unhandled promise rejections; batch generation still receives failures for its existing stop/retry logic.
+
 ### Improved
 - **Browser Internet Navigation**: Both browser surfaces now use direct site loading by default instead of forcing all requests through the HTML proxy. The “Full Browser” action opens Capacitor Browser on native Android/iOS and a separate browser tab on web. Anti-frame warnings now guide users to the full browser for normal navigation, login, and sites that prohibit iframe embedding. Proxy mode remains optional because an HTML proxy cannot fully emulate an unrestricted browser.
 
