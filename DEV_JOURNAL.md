@@ -1,4 +1,10 @@
 ### 185. Cloudflare Workers AI Image Model Expansion
+- **User goal:** Add Cloudflare image models that match MV Director's cinematic storyboard and image-prompt workflow.
+- **Official-source audit:** Cloudflare's current model catalog includes FLUX.1 [schnell], FLUX.2 [dev]/[klein], DreamShaper 8 LCM, Phoenix 1.0, and Lucid Origin. FLUX.2 docs expose multipart input, unlike the current JSON request adapter; keep these models out of the selector until multipart request handling exists.
+- **Implementation:** Added model choices for prompt adherence (Lucid Origin/Phoenix), quick iteration (FLUX.1 [schnell]/SDXL Lightning), stylized exploration (DreamShaper), and general-purpose SDXL. Applied compatible model-specific JSON input settings while preserving existing model IDs, proxy configuration and response decoding. No silent fallback is introduced.
+- **Verification limitation:** Changes were made via GitHub source connector. No local TypeScript build or live render test was run. Test each new model against the deployed Worker before relying on it for batch generation.
+
+### 185. Cloudflare Workers AI Image Model Expansion
 - **User goal:** Add Cloudflare image models that match MV Director's cinematic storyboards and image-prompt workflow.
 - **Official-source audit:** Cloudflare's current model catalog confirms FLUX.1 [schnell], FLUX.2 [dev]/[klein], DreamShaper 8 LCM, Phoenix 1.0, and Lucid Origin. The FLUX.2 docs expose a multipart input contract, unlike the existing JSON payload adapter; do not list them in the current dropdown until multipart request/response handling is implemented.
 - **Implementation approach:** Expose the curated JSON-input text-to-image models relevant to cinematic prompt adherence, stylized exploration, or fast draft iteration. Map each model to supported input parameters and respect model dimension/step limits. Preserve existing model IDs, Worker URL/token settings, image response decoding, and the explicit no-silent-fallback provider policy.
