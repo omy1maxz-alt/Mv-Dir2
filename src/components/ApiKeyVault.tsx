@@ -156,6 +156,20 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  const cloudflareCatalogErrorMessage = (status: number, data: any) => {
+    const remoteMessage = String(data?.error || '').trim();
+    if (
+      status === 405 ||
+      /use post for model requests|use get to discover models/i.test(remoteMessage)
+    ) {
+      return 'The configured Cloudflare Worker is outdated. The catalog uses GET, while the deployed Worker only accepts POST. Deploy the latest cloudflare-worker-proxy/worker.js from GitHub; it also includes the FLUX.2 multipart fix. Keep your existing Worker secrets.';
+    }
+    if (status === 401) {
+      return 'The Worker rejected the catalog request (HTTP 401). Check that the saved Proxy Access Token matches the PROXY_ACCESS_TOKEN secret on your deployed Worker.';
+    }
+    return remoteMessage || `Cloudflare catalog request failed (HTTP ${status}).`;
+  };
+
   useEffect(() => {
     if (isOpen) {
       setSource(currentSource);
@@ -189,7 +203,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
         data: await response.json().catch(() => ({}))
       })));
       const failed = payloads.find(({ response, data }) => !response.ok || !data.success || !Array.isArray(data.models));
-      if (failed) throw new Error(failed.data.error || 'Cloudflare catalog failed (HTTP ' + failed.response.status + ').');
+      if (failed) throw new Error(cloudflareCatalogErrorMessage(failed.response.status, failed.data));
       if (cancelled) return;
       const unique = new Map<string, CloudflareCatalogModel>();
       payloads.flatMap(item => item.data.models as CloudflareCatalogModel[]).forEach(model => {
@@ -534,10 +548,6 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                   <button type="button" onClick={refreshCloudflareCatalog} disabled={catalogState.kind === 'loading'} className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-50">
                     {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
                     Refresh Model Catalog
-                  </button>
-                  {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
-                  <button type="button" onClick={refreshCloudflareCatalog} disabled={catalogState.kind === 'loading'} className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 disabled:opacity-50">
-                    {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />} Refresh Model Catalog
                   </button>
                   {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
                 </div>
