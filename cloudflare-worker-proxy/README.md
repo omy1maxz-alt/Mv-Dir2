@@ -14,6 +14,13 @@ Configure the following Worker values in Settings → Variables and Secrets:
 
 Deploy the Worker and copy its `https://<worker-name>.<your-subdomain>.workers.dev` URL.
 
+### Updating an existing Worker
+
+If a model request returns `required properties at '/' are 'multipart'` for FLUX.2, or refreshing the catalog displays `Use POST for model requests`, the deployed Worker is likely older than the current repository source. Open that existing Worker in Cloudflare Dashboard, replace its code with the latest `cloudflare-worker-proxy/worker.js` from this repository, and click **Deploy**. Keep the existing values for `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `PROXY_ACCESS_TOKEN`; a GitHub commit does not redeploy the Cloudflare Worker automatically.
+
+The updated Worker uses **GET** for model-catalog discovery and **POST** for model inference. FLUX.2 [dev], Klein 4B, and Klein 9B requests are converted to upstream `multipart/form-data` automatically.
+
+
 ## 2. Configure MV Director
 
 Open Settings → API & Account Settings, select Custom API Keys, and under Cloudflare Workers AI enter:
