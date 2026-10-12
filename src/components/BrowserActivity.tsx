@@ -682,6 +682,23 @@ export const BrowserActivity: React.FC<BrowserActivityProps> = ({
     }
   };
 
+  const openInFullBrowser = useCallback(async (url: string = activeTab?.url || '') => {
+    if (!url || url === 'mv://newtab' || url === 'about:newtab') return;
+    try {
+      if (Capacitor.isNativePlatform()) {
+        // Android/iOS open a real browser surface so sites can run their normal navigation,
+        // login, cookies, JavaScript and download flows without iframe restrictions.
+        await Browser.open({ url });
+      } else {
+        // Web preview: open a separate browser tab. Popup blockers can still apply.
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+      appendBrowserLog('success', 'Opened page in full browser', url);
+    } catch (error: any) {
+      appendBrowserLog('error', 'Could not open full browser', error?.message || String(error));
+    }
+  }, [activeTab?.url, appendBrowserLog]);
+
   const handleCopyUrl = () => {
     navigator.clipboard.writeText(activeTab.url === 'mv://newtab' ? 'https://duckduckgo.com' : activeTab.url);
     setCopied(true);
@@ -878,26 +895,14 @@ export const BrowserActivity: React.FC<BrowserActivityProps> = ({
             </button>
 
                         <button
-            type="button"
-            onClick={async () => {
-            if (!activeTab.url || activeTab.url === 'mv://newtab') return;
-            try {
-            if (Capacitor.isNativePlatform()) {
-            await Browser.open({ url: activeTab.url });
-            } else {
-            window.open(activeTab.url, '_blank', 'noopener,noreferrer');
-            }
-            appendBrowserLog('success', 'Opened page in full browser', activeTab.url);
-            } catch (error: any) {
-            appendBrowserLog('error', 'Could not open full browser', error?.message || String(error));
-            }
-            }}
-            className="p-1.5 text-white/60 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors"
-            title="Open in full browser (normal browsing, sign-in and site navigation)"
-            aria-label="Open in full browser"
-            >
-            <ExternalLink className="w-3.5 h-3.5 text-white/80" />
-            </button>
+                type="button"
+                onClick={() => void openInFullBrowser()}
+                className="p-1.5 text-white/60 hover:text-teal-300 hover:bg-teal-500/10 rounded-lg transition-colors"
+                title="Open in full browser (normal browsing, sign-in and site navigation)"
+                aria-label="Open in full browser"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-white/80" />
+              </button>
 
             <button
               type="button"
@@ -1643,12 +1648,12 @@ export const BrowserActivity: React.FC<BrowserActivityProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => window.open(activeTab.url, '_blank')}
-                    className="px-2 py-1 bg-white/10 hover:bg-white/20 text-white rounded-lg font-bold text-[10px] flex items-center gap-1 transition-colors"
-                    title="Open in Native Browser Tab"
+                    onClick={() => void openInFullBrowser()}
+                    className="px-2 py-1 bg-white/10 hover:bg-teal-500/20 text-white hover:text-teal-200 rounded-lg font-bold text-[10px] flex items-center gap-1 transition-colors"
+                    title="Open in full browser"
                   >
                     <ExternalLink className="w-3 h-3" />
-                    <span>Open in Tab</span>
+                    <span>Open Full Browser</span>
                   </button>
                   <button
                     type="button"
