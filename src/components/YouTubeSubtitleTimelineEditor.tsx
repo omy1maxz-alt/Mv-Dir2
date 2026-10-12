@@ -10,7 +10,7 @@ import { BulkTextToolsModal } from "./BulkTextToolsModal";
 import { ExportModal } from "./ExportModal";
 import { FrameTranslateModal } from "./FrameTranslateModal";
 import { generateYouTubeSRT } from '../services/gemini_srt';
-import { normalizeYoutubeUrl, downloadYouTubeMediaStream, fetchYouTubeCaptions, extractYouTubeMediaDetails, fetchYouTubeManifestDetails } from '../services/youtube';
+import { normalizeYoutubeUrl, downloadYouTubeMediaStream, fetchYouTubeCaptions, fetchYouTubeManifestDetails } from '../services/youtube';
 import { segmentsToSrt } from '../services/youtubeCaptionService';
 import { syncSubtitleTranslations, translateSingleLine, fixSubtitleWithAgenticVideo, fixSubtitleWithAudio, uploadVideoToGemini, fixSubtitleWithFrame, getEffectiveGeminiApiKey } from '../services/gemini';
 import { captureScreenFrame } from '../utils/frameCapture';
