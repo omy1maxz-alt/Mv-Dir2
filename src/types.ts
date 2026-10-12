@@ -16,6 +16,8 @@ export interface ApiKeys {
   openaiModel?: string;
   cloudflareAccountId?: string;
   cloudflareApiToken?: string;
+  cloudflareWorkerProxyUrl?: string;
+  cloudflareWorkerProxyToken?: string;
   aiHordeApiKey?: string;
 }
 

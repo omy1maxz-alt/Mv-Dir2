@@ -54,6 +54,9 @@ import {
 
 const Player = ReactPlayer as any;
 
+const isExternalTextModel = (model: string): boolean =>
+  model.startsWith('cloudflare-text:') || model === 'aihorde-text';
+
 const LYRICS_HISTORY_KEY = 'mv_director_lyrics_history';
 const TECH_HISTORY_KEY = 'mv_director_tech_history';
 
@@ -996,7 +999,7 @@ export const App: React.FC = () => {
         addLog("Your Custom OpenAI API Key is required. Please add it in the Vault.", 'warning');
         return;
       }
-    } else if (apiKeySourceRef.current === 'custom' && !apiKeysRef.current.google) {
+    } else if (apiKeySourceRef.current === 'custom' && !apiKeysRef.current.google && !isExternalTextModel(textModel)) {
       setShowKeyVault(true);
       addLog("Your Google Gemini API Key is required for this action. Please add it in the Vault.", 'warning');
       return;
@@ -1034,7 +1037,7 @@ export const App: React.FC = () => {
         addLog("Your Custom OpenAI API Key is required. Please add it in the Vault.", 'warning');
         return;
       }
-    } else if (apiKeySourceRef.current === 'custom' && !apiKeysRef.current.google) {
+    } else if (apiKeySourceRef.current === 'custom' && !apiKeysRef.current.google && !isExternalTextModel(textModel)) {
       setShowKeyVault(true);
       addLog("Your Google Gemini API Key is required for this action. Please add it in the Vault.", 'warning');
       return;
@@ -1071,9 +1074,20 @@ export const App: React.FC = () => {
         addLog("Kie AI API Key is required for Nano Banana image generation. Please add it in API Settings.", 'warning');
         return;
     }
-    if (imageModel.startsWith('cloudflare:') && (!apiKeysRef.current.cloudflareAccountId || !apiKeysRef.current.cloudflareApiToken)) {
+    const hasCloudflareWorkerProxy = Boolean(
+      apiKeysRef.current.cloudflareWorkerProxyUrl && apiKeysRef.current.cloudflareWorkerProxyToken
+    );
+    const hasCloudflareApiCredentials = Boolean(
+      apiKeysRef.current.cloudflareAccountId && apiKeysRef.current.cloudflareApiToken
+    );
+    if (imageModel.startsWith('cloudflare:') && !hasCloudflareWorkerProxy && !hasCloudflareApiCredentials) {
         setShowKeyVault(true);
-        addLog("Cloudflare Account ID and Workers AI API Token are required. Please add them in Settings -> API Settings.", 'warning');
+        addLog("Configure Cloudflare Account ID + Workers AI API Token, or a Cloudflare Worker Proxy URL + Proxy Access Token in Settings -> API Vault.", 'warning');
+        return;
+    }
+    if (imageModel.startsWith('cloudflare:') && APP_ENV.isInsideGoogleStudio && !hasCloudflareWorkerProxy) {
+        setShowKeyVault(true);
+        addLog("Google AI Studio's iframe can block direct Cloudflare API requests through CORS. Deploy the included Cloudflare Worker Proxy and configure its URL + access token in API Vault.", 'warning');
         return;
     }
 
@@ -1106,7 +1120,7 @@ export const App: React.FC = () => {
   const handleEnhanceMotionPrompt = async (index: number) => {
     if (!directorPlan) return;
     const key = apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined;
-     if (apiKeySourceRef.current === 'custom' && !key) {
+     if (apiKeySourceRef.current === 'custom' && !key && !isExternalTextModel(textModel)) {
         setShowKeyVault(true);
         addLog("Your own API Key is required for this action. Please add it in the Vault.", 'warning');
         return;
@@ -1129,7 +1143,7 @@ export const App: React.FC = () => {
   const handleEnhancePrompt = async (index: number) => {
     if (!directorPlan) return;
     const key = apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined;
-     if (apiKeySourceRef.current === 'custom' && !key) {
+     if (apiKeySourceRef.current === 'custom' && !key && !isExternalTextModel(textModel)) {
         setShowKeyVault(true);
         addLog("Your own API Key is required for this action. Please add it in the Vault.", 'warning');
         return;
@@ -1175,9 +1189,20 @@ export const App: React.FC = () => {
           addLog("Kie AI API Key is required for Nano Banana image generation. Please add it in API Settings.", 'warning');
           return;
       }
-      if (imageModel.startsWith('cloudflare:') && (!apiKeysRef.current.cloudflareAccountId || !apiKeysRef.current.cloudflareApiToken)) {
+      const hasCloudflareWorkerProxy = Boolean(
+        apiKeysRef.current.cloudflareWorkerProxyUrl && apiKeysRef.current.cloudflareWorkerProxyToken
+      );
+      const hasCloudflareApiCredentials = Boolean(
+        apiKeysRef.current.cloudflareAccountId && apiKeysRef.current.cloudflareApiToken
+      );
+      if (imageModel.startsWith('cloudflare:') && !hasCloudflareWorkerProxy && !hasCloudflareApiCredentials) {
           setShowKeyVault(true);
-          addLog("Cloudflare Account ID and Workers AI API Token are required. Please add them in Settings -> API Settings.", 'warning');
+          addLog("Configure Cloudflare Account ID + Workers AI API Token, or a Cloudflare Worker Proxy URL + Proxy Access Token in Settings -> API Vault.", 'warning');
+          return;
+      }
+      if (imageModel.startsWith('cloudflare:') && APP_ENV.isInsideGoogleStudio && !hasCloudflareWorkerProxy) {
+          setShowKeyVault(true);
+          addLog("Google AI Studio's iframe can block direct Cloudflare API requests through CORS. Deploy the included Cloudflare Worker Proxy and configure its URL + access token in API Vault.", 'warning');
           return;
       }
       const scenesToQueue = directorPlan.scenes.filter(s => !s.imageUrl);
@@ -1219,7 +1244,7 @@ export const App: React.FC = () => {
 
   const handleAnalyzeDNAFromReference = async (base64Data: string) => {
     const key = apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined;
-    if (apiKeySourceRef.current === 'custom' && !key) {
+    if (apiKeySourceRef.current === 'custom' && !key && !isExternalTextModel(textModel)) {
         setShowKeyVault(true);
         addLog("Your own API Key is required for DNA analysis.", 'warning');
         return;
@@ -1258,7 +1283,7 @@ export const App: React.FC = () => {
 
   const handleAutoStyleCharacter = async () => {
     const key = apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined;
-    if (apiKeySourceRef.current === 'custom' && !key) {
+    if (apiKeySourceRef.current === 'custom' && !key && !isExternalTextModel(textModel)) {
         setShowKeyVault(true);
         addLog("Your own API Key is required to auto-style character.", 'warning');
         return;
@@ -1280,7 +1305,7 @@ export const App: React.FC = () => {
   const handleGenerateCharFromPrompt = async () => {
     if (!charPrompt.trim()) return;
     const key = apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined;
-    if (apiKeySourceRef.current === 'custom' && !key) {
+    if (apiKeySourceRef.current === 'custom' && !key && !isExternalTextModel(textModel)) {
         setShowKeyVault(true);
         addLog("Your own API Key is required to generate character.", 'warning');
         return;

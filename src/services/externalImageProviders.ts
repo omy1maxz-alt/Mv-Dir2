@@ -24,103 +24,166 @@ const getDimensionsForHorde = (aspectRatio?: string): { width: number; height: n
     case '9:16': return { width: 448, height: 768 };
     case '4:3': return { width: 640, height: 480 };
     case '3:4': return { width: 480, height: 640 };
+    case '2.35:1': return { width: 832, height: 352 };
+    case '14:9': return { width: 640, height: 416 };
+    case '8:15': return { width: 384, height: 704 };
     case '1:1':
     default: return { width: 512, height: 512 };
   }
 };
 
 /**
- * Generate image via Cloudflare Workers AI (FLUX.1 [schnell] or SDXL)
- * Endpoint: https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/run/{model}
+ * Image dimensions for common aspect ratios. Cloudflare image models need width/height
+ * in the model input; a prompt alone is not enough for consistent framing.
  */
-export async function generateImageCloudflare(options: CloudflareOptions): Promise<string> {
-  const { prompt, addLog } = options;
-  const model = options.model || '@cf/black-forest-labs/flux-1-schnell';
-
-  const storedKeys = (() => {
-    try {
-      const s = localStorage.getItem('mv_api_keys');
-      return s ? JSON.parse(s) : {};
-    } catch {
-      return {};
-    }
-  })();
-
-  const accountId = options.accountId || storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '';
-  const apiToken = options.apiToken || storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '';
-
-  const hasClientCredentials = Boolean(accountId && apiToken);
-  if (!hasClientCredentials) {
-    addLog?.('No complete client-side Cloudflare credentials found; checking whether the server has securely configured credentials...', 'info');
+const getImageDimensions = (aspectRatio?: string): { width: number; height: number } => {
+  switch (aspectRatio) {
+    case '16:9': return { width: 1024, height: 576 };
+    case '9:16': return { width: 576, height: 1024 };
+    case '4:3': return { width: 768, height: 576 };
+    case '3:4': return { width: 576, height: 768 };
+    case '2.35:1': return { width: 1024, height: 448 };
+    case '14:9': return { width: 896, height: 576 };
+    case '8:15': return { width: 512, height: 960 };
+    case '1:1':
+    default: return { width: 768, height: 768 };
   }
+};
 
-  addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
-
-  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
-
-  let response: Response | undefined;
-  let proxyUnavailable = false;
+const readStoredProviderKeys = (): Record<string, any> => {
   try {
-    // Prefer the same-origin server route where this full-stack app is deployed.
-    // Server environment variables can supply credentials without putting them in the browser.
-    const proxyPayload = { accountId, apiToken, model, prompt };
-    let proxyResponse: Response | undefined;
-    try {
-      proxyResponse = await fetch('/api/cloudflare-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(proxyPayload)
-      });
-    } catch {
-      proxyUnavailable = true;
-    }
-
-    const proxyType = proxyResponse?.headers.get('content-type') || '';
-    const proxyLooksLikeImageApi = Boolean(
-      proxyResponse &&
-      (proxyType.includes('application/json') || proxyType.startsWith('image/'))
-    );
-    // Vite/SPA hosting can answer an unknown API path with index.html (HTTP 200).
-    // Treat HTML or an unknown route as unavailable instead of misreporting it as an image.
-    if (proxyResponse && proxyLooksLikeImageApi && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
-      response = proxyResponse;
-    } else {
-      proxyUnavailable = true;
-    }
+    const s = localStorage.getItem('mv_api_keys');
+    return s ? JSON.parse(s) : {};
   } catch {
-    proxyUnavailable = true;
+    return {};
   }
+};
 
-  if (!response) {
-    if (!hasClientCredentials) {
+const responseErrorText = async (response: Response, tokenToRedact?: string): Promise<string> => {
+  const text = (await response.text()).slice(0, 1200);
+  return tokenToRedact
+    ? text.replaceAll(tokenToRedact, '[redacted]').replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
+    : text.replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
+};
+
+const postCloudflareModel = async (args: {
+  action: 'image' | 'text';
+  model: string;
+  input: Record<string, any>;
+  accountId: string;
+  apiToken: string;
+  proxyUrl?: string;
+  proxyToken?: string;
+}): Promise<Response> => {
+  const { action, model, input, accountId, apiToken, proxyUrl, proxyToken } = args;
+
+  // A user-configured Worker is the reliable browser-to-server route inside
+  // the Google AI Studio iframe. Its own CORS response allows the hosted UI origin.
+  if (proxyUrl) {
+    if (!proxyToken) {
+      throw new Error('Cloudflare Worker Proxy URL is configured, but its Proxy Access Token is missing.');
+    }
+    let response: Response;
+    try {
+      response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${proxyToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ action, model, input })
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        'Cloudflare credentials are not available in the client, and the same-origin server proxy did not respond as an image API. Configure CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN on a trusted server, or configure both values in Settings -> API Vault.'
+        `Could not reach the Cloudflare Worker Proxy. Verify the Worker URL, that it is deployed, and that its CORS preflight allows this app. ${message}`
       );
     }
-    try {
-      response = await fetch(endpoint, {
+    if (!response.ok) {
+      const errorText = await responseErrorText(response, proxyToken);
+      throw new Error(`Cloudflare Worker Proxy Error (HTTP ${response.status}): ${errorText || response.statusText}`);
+    }
+    return response;
+  }
+
+  // First use the same-origin route in deployments that run this repository's
+  // Express/Vite server. AI Studio's hosted preview usually does not run these routes.
+  let proxyResponse: Response | undefined;
+  try {
+    proxyResponse = await fetch('/api/cloudflare-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, accountId, apiToken, model, input, ...input })
+    });
+  } catch {
+    // Continue to the direct request below only if client credentials are available.
+  }
+
+  const proxyType = proxyResponse?.headers.get('content-type') || '';
+  const looksLikeApiResponse = Boolean(
+    proxyResponse && (proxyType.includes('application/json') || proxyType.startsWith('image/'))
+  );
+  if (proxyResponse && looksLikeApiResponse && proxyResponse.status !== 404 && proxyResponse.status !== 405) {
+    return proxyResponse;
+  }
+
+  if (!accountId || !apiToken) {
+    throw new Error(
+      'Cloudflare credentials or a working proxy are missing. In Google AI Studio, deploy the included Cloudflare Worker Proxy, then configure its URL and access token in Settings -> API Vault.'
+    );
+  }
+
+  try {
+    return await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`,
+      {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ prompt })
-      });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isNetworkFailure = error instanceof TypeError && /fetch/i.test(message);
-      const detail = isNetworkFailure
-        ? 'The browser could not read a response. This commonly indicates a CORS restriction, DNS/network failure, or a blocked request. Check the browser Network/Console panel to distinguish them.'
-        : message;
-      addLog?.(`Cloudflare Workers AI request failed: ${detail}`, 'error');
-      throw new Error(`Cloudflare Workers AI request failed before an HTTP response was available. ${detail}`);
-    }
+        body: JSON.stringify(input)
+      }
+    );
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Cloudflare Workers AI could not be reached from this browser. The direct Cloudflare API request is likely blocked by browser CORS in the AI Studio iframe; DNS/network blocking can produce the same error. Deploy the included Worker Proxy and set its URL and access token in API Vault. Details: ${message}`
+    );
   }
+};
 
-  if (!response) {
-    throw new Error(proxyUnavailable
-      ? 'Cloudflare image request could not reach either the same-origin proxy or Cloudflare API.'
-      : 'Cloudflare image request failed without a response.');
+/**
+ * Generate image via Cloudflare Workers AI. In Google AI Studio, configure the
+ * included Cloudflare Worker Proxy because browser calls to api.cloudflare.com
+ * can fail CORS preflight in the hosted iframe.
+ */
+export async function generateImageCloudflare(options: CloudflareOptions): Promise<string> {
+  const { prompt, addLog } = options;
+  const model = options.model || '@cf/black-forest-labs/flux-1-schnell';
+  const storedKeys = readStoredProviderKeys();
+
+  const accountId = options.accountId || storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '';
+  const apiToken = options.apiToken || storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '';
+  const proxyUrl = String(storedKeys.cloudflareWorkerProxyUrl || '').trim();
+  const proxyToken = String(storedKeys.cloudflareWorkerProxyToken || '').trim();
+  const { width, height } = getImageDimensions(options.aspectRatio);
+
+  addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
+
+  const response = await postCloudflareModel({
+    action: 'image',
+    model,
+    input: { prompt, width, height },
+    accountId,
+    apiToken,
+    proxyUrl,
+    proxyToken
+  });
+
+  if (!response.ok) {
+    const errorText = await responseErrorText(response, apiToken || proxyToken);
+    throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${errorText || response.statusText || 'Request rejected'}`);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -131,32 +194,38 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     } catch {
       throw new Error('Cloudflare Workers AI returned invalid JSON.');
     }
-    if (typeof data.result?.image === 'string' && data.result.image.length > 0) {
+
+    const encodedImage = typeof data.result?.image === 'string'
+      ? data.result.image
+      : typeof data.result === 'string'
+        ? data.result
+        : '';
+    if (encodedImage) {
       addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
-      return `data:image/jpeg;base64,${data.result.image}`;
+      return `data:image/png;base64,${encodedImage}`;
     }
+
     const providerMessage = typeof data.errors?.[0]?.message === 'string'
       ? data.errors[0].message
-      : 'No result.image field was returned.';
+      : typeof data.error === 'string'
+        ? data.error
+        : 'No image data was returned.';
     throw new Error(`Cloudflare Workers AI returned an unexpected JSON response: ${providerMessage.slice(0, 300)}`);
   }
 
-  // Direct binary stream (image/png or image/jpeg)
   if (!contentType.startsWith('image/')) {
     const body = (await response.text()).slice(0, 300);
     throw new Error(`Cloudflare Workers AI returned an unexpected content type (${contentType || 'unknown'}): ${body}`);
   }
 
   const blob = await response.blob();
-  if (!blob.size) {
-    throw new Error('Cloudflare Workers AI returned an empty image response.');
-  }
+  if (!blob.size) throw new Error('Cloudflare Workers AI returned an empty image response.');
+
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') resolve(reader.result);
-      else reject(new Error('Unable to encode the Cloudflare image response.'));
-    };
+    reader.onloadend = () => typeof reader.result === 'string'
+      ? resolve(reader.result)
+      : reject(new Error('Unable to encode the Cloudflare image response.'));
     reader.onerror = () => reject(new Error('Unable to read the Cloudflare image response.'));
     reader.readAsDataURL(blob);
   });
@@ -166,10 +235,165 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
 }
 
 /**
+ * Run a Cloudflare Workers AI text model using the current text-generation request.
+ */
+export async function generateTextCloudflare(options: {
+  model: string;
+  input: Record<string, any>;
+  addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+}): Promise<string> {
+  const storedKeys = readStoredProviderKeys();
+  const accountId = String(storedKeys.cloudflareAccountId || localStorage.getItem('cf_account_id') || '');
+  const apiToken = String(storedKeys.cloudflareApiToken || localStorage.getItem('cf_api_token') || '');
+  const proxyUrl = String(storedKeys.cloudflareWorkerProxyUrl || '').trim();
+  const proxyToken = String(storedKeys.cloudflareWorkerProxyToken || '').trim();
+
+  const response = await postCloudflareModel({
+    action: 'text',
+    model: options.model,
+    input: options.input,
+    accountId,
+    apiToken,
+    proxyUrl,
+    proxyToken
+  });
+
+  if (!response.ok) {
+    const errorText = await responseErrorText(response, apiToken || proxyToken);
+    throw new Error(`Cloudflare Text Generation Error (HTTP ${response.status}): ${errorText || response.statusText}`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const body = (await response.text()).slice(0, 300);
+    throw new Error(`Cloudflare text model returned unexpected content type (${contentType || 'unknown'}): ${body}`);
+  }
+
+  const data = await response.json();
+  const result = data.result;
+  const text = typeof result?.response === 'string'
+    ? result.response
+    : typeof result?.text === 'string'
+      ? result.text
+      : typeof result === 'string'
+        ? result
+        : typeof data.response === 'string'
+          ? data.response
+          : '';
+  if (!text) {
+    const detail = typeof data.errors?.[0]?.message === 'string' ? data.errors[0].message : 'No text field was returned.';
+    throw new Error(`Cloudflare text model returned an empty response: ${detail.slice(0, 300)}`);
+  }
+  return text;
+}
+
+/**
  * Generate image via AI Horde (aihorde.net)
  * Decentralized, crowdsourced volunteer GPU cluster.
  * Uses anonymous key ("0000000000") by default or user API key with kudos for higher priority.
  */
+export async function generateTextAIHorde(options: {
+  prompt: string;
+  apiKey?: string;
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+}): Promise<string> {
+  const storedKeys = readStoredProviderKeys();
+  const apiKey = options.apiKey || storedKeys.aiHordeApiKey || localStorage.getItem('aihorde_api_key') || '0000000000';
+  const isAnonymous = apiKey === '0000000000';
+  addLog?.(
+    isAnonymous
+      ? 'Submitting text job to AI Horde (anonymous requests have the lowest queue priority)...'
+      : 'Submitting text job to AI Horde with your account priority...',
+    'info'
+  );
+
+  const response = await fetch('https://aihorde.net/api/v2/generate/text/async', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': apiKey,
+      'Client-Agent': 'mv-director:1.0:web'
+    },
+    body: JSON.stringify({
+      prompt: options.prompt,
+      params: {
+        max_context_length: 4096,
+        max_length: Math.min(Math.max(options.maxTokens || 1024, 128), 4096),
+        temperature: Math.min(Math.max(options.temperature ?? 0.4, 0), 2),
+        top_p: 0.9,
+        top_k: 0,
+        rep_pen: 1.08
+      },
+      ...(options.model ? { models: [options.model] } : {})
+    })
+  });
+
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 700);
+    throw new Error(`AI Horde text request failed (HTTP ${response.status}): ${detail}`);
+  }
+
+  const data = await response.json();
+  const jobId = data.id;
+  if (typeof jobId !== 'string' || !jobId) {
+    throw new Error('AI Horde did not return a valid text Job ID.');
+  }
+  addLog?.(`AI Horde text job queued (${jobId.slice(0, 8)}...). Waiting for a volunteer worker...`, 'info');
+
+  const maxAttempts = 180; // Up to ~6 minutes, including volunteer queue time.
+  let attempts = 0;
+  let completed = false;
+  while (attempts < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    attempts++;
+    try {
+      const checkRes = await fetch(`https://aihorde.net/api/v2/generate/text/check/${jobId}`, {
+        headers: { 'Client-Agent': 'mv-director:1.0:web' }
+      });
+      if (!checkRes.ok) {
+        if (attempts % 10 === 0) addLog?.(`AI Horde text status returned HTTP ${checkRes.status}; retrying...`, 'warning');
+        continue;
+      }
+      const checkData = await checkRes.json();
+      if (checkData.faulted) throw new Error('AI Horde text job faulted on the volunteer worker.');
+      if (checkData.done) {
+        completed = true;
+        break;
+      }
+      if (checkData.queue_position !== undefined && attempts % 5 === 0) {
+        addLog?.(
+          checkData.queue_position > 0
+            ? `AI Horde text queue position: #${checkData.queue_position} (estimated wait: ${Math.round(checkData.wait_time || 0)}s)...`
+            : 'AI Horde text worker is generating the response...',
+          'info'
+        );
+      }
+    } catch (error: any) {
+      if (error.message?.includes('faulted')) throw error;
+    }
+  }
+
+  if (!completed) {
+    throw new Error(`AI Horde text job ${jobId.slice(0, 8)} is still queued or processing after 6 minutes. It was not resubmitted; retry later to avoid duplicate jobs.`);
+  }
+
+  const statusRes = await fetch(`https://aihorde.net/api/v2/generate/text/status/${jobId}`, {
+    headers: { 'Client-Agent': 'mv-director:1.0:web' }
+  });
+  if (!statusRes.ok) {
+    throw new Error(`Failed to retrieve completed AI Horde text response (HTTP ${statusRes.status}).`);
+  }
+  const statusData = await statusRes.json();
+  const text = statusData.generations?.[0]?.text;
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('AI Horde text job completed without returning generated text.');
+  }
+  return text.trim();
+}
+
 export async function generateImageAIHorde(options: AIHordeOptions): Promise<string> {
   const { prompt, aspectRatio, addLog } = options;
 
@@ -227,9 +451,11 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
 
   addLog?.(`AI Horde Job queued (ID: ${jobId.slice(0, 8)}...). Polling worker status...`, 'info');
 
-  // Poll status
-  const maxAttempts = 60; // Up to ~2 minutes
+  // Volunteer capacity varies. Allow a longer queue window and never fetch status
+  // as if the job had completed when the polling window has expired.
+  const maxAttempts = 180; // Up to ~6 minutes
   let attempts = 0;
+  let completed = false;
 
   while (attempts < maxAttempts) {
     await new Promise((r) => setTimeout(r, 2000));
@@ -239,29 +465,40 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
       const checkRes = await fetch(`https://aihorde.net/api/v2/generate/check/${jobId}`, {
         headers: { 'Client-Agent': 'mv-director:1.0:web' }
       });
-      if (checkRes.ok) {
-        const checkData = await checkRes.json();
-        if (checkData.done) {
-          break;
+      if (!checkRes.ok) {
+        if (attempts % 10 === 0) {
+          addLog?.(`AI Horde status check returned HTTP ${checkRes.status}; retrying...`, 'warning');
         }
-        if (checkData.faulted) {
-          throw new Error('AI Horde job reported a fault/error during rendering.');
-        }
-        if (checkData.queue_position !== undefined && checkData.queue_position > 0) {
-          if (attempts % 5 === 0) {
-            addLog?.(
-              `AI Horde Queue Position: #${checkData.queue_position} (Estimated wait: ${Math.round(checkData.wait_time || 0)}s)...`,
-              'info'
-            );
-          }
-        }
+        continue;
+      }
+
+      const checkData = await checkRes.json();
+      if (checkData.faulted) {
+        throw new Error('AI Horde job reported a fault during rendering. Try another model or retry.');
+      }
+      if (checkData.done) {
+        completed = true;
+        break;
+      }
+      if (checkData.queue_position !== undefined && attempts % 5 === 0) {
+        addLog?.(
+          checkData.queue_position > 0
+            ? `AI Horde queue position: #${checkData.queue_position} (estimated wait: ${Math.round(checkData.wait_time || 0)}s)...`
+            : 'AI Horde worker is processing the image...',
+          'info'
+        );
       }
     } catch (e: any) {
       if (e.message?.includes('fault')) throw e;
+      // A transient poll failure is retried; do not resubmit the paid/queued job.
     }
   }
 
-  // Fetch final status
+  if (!completed) {
+    throw new Error(`AI Horde image job ${jobId.slice(0, 8)} is still queued or processing after 6 minutes. It was not resubmitted. Retry later to avoid duplicate jobs.`);
+  }
+
+  // Fetch final status only after the check endpoint confirms completion.
   const statusRes = await fetch(`https://aihorde.net/api/v2/generate/status/${jobId}`, {
     headers: { 'Client-Agent': 'mv-director:1.0:web' }
   });
@@ -283,11 +520,18 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
   if (imgData.startsWith('http://') || imgData.startsWith('https://')) {
     addLog?.('Fetching rendered image from AI Horde storage...', 'info');
     const imgFetch = await fetch(imgData);
+    if (!imgFetch.ok) {
+      throw new Error(`Failed to download AI Horde image (HTTP ${imgFetch.status}).`);
+    }
     const blob = await imgFetch.blob();
+    if (!blob.size) throw new Error('AI Horde returned an empty image download.');
     return await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') resolve(reader.result);
+        else reject(new Error('Unable to encode the AI Horde image.'));
+      };
+      reader.onerror = () => reject(new Error('Unable to read the AI Horde image.'));
       reader.readAsDataURL(blob);
     });
   }
@@ -296,5 +540,12 @@ export async function generateImageAIHorde(options: AIHordeOptions): Promise<str
     return imgData;
   }
 
-  return `data:image/webp;base64,${imgData}`;
+  // AI Horde normally returns base64-encoded image bytes. Detect common formats
+  // so the browser does not try to decode a PNG/JPEG as WebP.
+  const mime = imgData.startsWith('iVBOR') ? 'image/png'
+    : imgData.startsWith('/9j/') ? 'image/jpeg'
+    : imgData.startsWith('R0lGOD') ? 'image/gif'
+    : imgData.startsWith('UklGR') ? 'image/webp'
+    : 'image/png';
+  return `data:${mime};base64,${imgData}`;
 }

@@ -3,7 +3,7 @@ import { ProjectData, DirectorPlan, AspectRatio, ReferenceImage } from '../types
 import { callKieChatCompletion, KieChatMessage } from './kieChatService';
 import { generateKieImage } from './kie';
 import { generateImageHF } from './huggingface';
-import { generateImageCloudflare, generateImageAIHorde } from './externalImageProviders';
+import { generateImageCloudflare, generateImageAIHorde, generateTextCloudflare, generateTextAIHorde } from './externalImageProviders';
 
 // --- Core Setup --- 
 
@@ -38,6 +38,95 @@ export const setKieSettings = (apiKey?: string, model?: string) => {
 };
 
 export async function callTextModel(genAI: GoogleGenAI, request: any): Promise<any> {
+    if (typeof request.model === 'string' && request.model.startsWith('cloudflare-text:')) {
+        const model = request.model.replace(/^cloudflare-text:/, '');
+        const messages: Array<{ role: string; content: string }> = [];
+        const systemInstruction = request.config?.systemInstruction;
+        const systemText = typeof systemInstruction === 'string'
+            ? systemInstruction
+            : systemInstruction?.parts?.map((part: any) => part.text || '').filter(Boolean).join('\n') || '';
+        if (systemText) messages.push({ role: 'system', content: systemText });
+
+        const contents = Array.isArray(request.contents) ? request.contents : [request.contents];
+        for (const item of contents) {
+            if (typeof item === 'string') {
+                messages.push({ role: 'user', content: item });
+                continue;
+            }
+            const role = item?.role === 'model' ? 'assistant' : 'user';
+            const text = Array.isArray(item?.parts)
+                ? item.parts.map((part: any) => typeof part?.text === 'string' ? part.text : '').filter(Boolean).join('\n')
+                : (typeof item?.text === 'string' ? item.text : '');
+            if (text) messages.push({ role, content: text });
+        }
+
+        if (!messages.some(message => message.role === 'user')) {
+            messages.push({ role: 'user', content: 'Generate the requested response.' });
+        }
+
+        if (request.config?.responseMimeType === 'application/json' || request.config?.responseSchema) {
+            const lastMessage = messages[messages.length - 1];
+            if (lastMessage?.role === 'user' && !/valid json|raw json|json object/i.test(lastMessage.content)) {
+                lastMessage.content += '\n\nReturn only valid JSON matching the requested schema. Do not use Markdown fences or commentary.';
+            }
+        }
+
+        const input: Record<string, any> = {
+            messages,
+            max_tokens: Math.min(Math.max(Number(request.config?.maxOutputTokens) || 4096, 128), 8192),
+            temperature: request.config?.temperature ?? 0.4
+        };
+        if (request.config?.topP !== undefined) input.top_p = request.config.topP;
+        if (request.config?.topK !== undefined) input.top_k = request.config.topK;
+
+        const text = await generateTextCloudflare({ model, input });
+        return { text };
+    }
+
+    if (request.model === 'aihorde-text') {
+        const messages: Array<{ role: string; content: string }> = [];
+        const systemInstruction = request.config?.systemInstruction;
+        const systemText = typeof systemInstruction === 'string'
+            ? systemInstruction
+            : systemInstruction?.parts?.map((part: any) => part.text || '').filter(Boolean).join('\n') || '';
+        if (systemText) messages.push({ role: 'system', content: systemText });
+
+        const contents = Array.isArray(request.contents) ? request.contents : [request.contents];
+        for (const item of contents) {
+            if (typeof item === 'string') {
+                messages.push({ role: 'user', content: item });
+                continue;
+            }
+            const role = item?.role === 'model' ? 'assistant' : 'user';
+            const text = Array.isArray(item?.parts)
+                ? item.parts.map((part: any) => typeof part?.text === 'string' ? part.text : '').filter(Boolean).join('\n')
+                : (typeof item?.text === 'string' ? item.text : '');
+            if (text) messages.push({ role, content: text });
+        }
+
+        if (!messages.some(message => message.role === 'user')) {
+            messages.push({ role: 'user', content: 'Generate the requested response.' });
+        }
+        if (request.config?.responseMimeType === 'application/json' || request.config?.responseSchema) {
+            const lastMessage = messages[messages.length - 1];
+            if (lastMessage?.role === 'user' && !/valid json|raw json|json object/i.test(lastMessage.content)) {
+                lastMessage.content += '\n\nReturn only valid JSON matching the requested schema. Do not use Markdown fences or commentary.';
+            }
+        }
+        const prompt = messages.map(message => {
+            if (message.role === 'system') return `System instructions:\n${message.content}`;
+            if (message.role === 'assistant') return `Assistant:\n${message.content}`;
+            return `User:\n${message.content}`;
+        }).join('\n\n') + '\n\nAssistant:\n';
+
+        const text = await generateTextAIHorde({
+            prompt,
+            maxTokens: request.config?.maxOutputTokens,
+            temperature: request.config?.temperature
+        });
+        return { text };
+    }
+
     if (typeof request.model === 'string' && request.model.startsWith('kie:')) {
         const rawModel = request.model.replace(/^kie:/, '');
         const modelId = rawModel === 'custom' ? (customKieModel || 'gemini-3.5-flash') : rawModel;

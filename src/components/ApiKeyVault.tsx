@@ -290,6 +290,31 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                     className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-indigo-500 transition-colors"
                   />
                 </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-white/70">Cloudflare Worker Proxy URL (Recommended for AI Studio)</label>
+                  <input
+                    type="url"
+                    value={keys.cloudflareWorkerProxyUrl || ''}
+                    onChange={(e) => setKeys({ ...keys, cloudflareWorkerProxyUrl: e.target.value.trim() })}
+                    placeholder="https://your-image-proxy.your-subdomain.workers.dev"
+                    className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <div className="text-[10px] text-white/40">
+                    Cloudflare's REST API may be blocked by browser CORS in the AI Studio iframe. Deploy the included worker proxy and paste its URL here.
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-white/70">Cloudflare Worker Proxy Access Token</label>
+                  <input
+                    type="password"
+                    value={keys.cloudflareWorkerProxyToken || ''}
+                    onChange={(e) => setKeys({ ...keys, cloudflareWorkerProxyToken: e.target.value })}
+                    placeholder="The PROXY_ACCESS_TOKEN secret configured on your Worker"
+                    className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
               </div>
 
               <div className="pt-4 border-t border-white/10 space-y-4">
@@ -313,7 +338,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
 
               <div className="flex items-center gap-1.5 text-[10px] text-white/40">
                 <Shield className="w-3 h-3" />
-                <span>Keys are stored locally in your browser and never sent to our servers.</span>
+                <span>Provider settings are stored locally. A configured Cloudflare Worker receives only its proxy access token; keep the Cloudflare API token in the Worker secret store.</span>
               </div>
             </div>
           )}
@@ -324,6 +349,16 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               {textModel.startsWith('kie:') && (
                 <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 font-medium">
                   KIE AI Routing Active
+                </span>
+              )}
+              {textModel.startsWith('cloudflare-text:') && (
+                <span className="text-[10px] text-orange-300 bg-orange-500/10 px-2 py-0.5 rounded border border-orange-500/20 font-medium">
+                  Cloudflare Workers AI Text
+                </span>
+              )}
+              {textModel === 'aihorde-text' && (
+                <span className="text-[10px] text-teal-300 bg-teal-500/10 px-2 py-0.5 rounded border border-teal-500/20 font-medium">
+                  AI Horde Text
                 </span>
               )}
             </div>
@@ -391,6 +426,14 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                 <option value="kie:custom" className="bg-[#1a1a1a] text-indigo-400">KIE Custom Model (Specify below)</option>
               </optgroup>
 
+              <optgroup label="Cloudflare Workers AI — Text Generation" className="bg-[#1a1a1a] text-orange-300 font-semibold">
+                <option value="cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast" className="bg-[#1a1a1a] text-white">Cloudflare Llama 3.3 70B (Worker Proxy recommended)</option>
+              </optgroup>
+
+              <optgroup label="AI Horde — Text Generation (Volunteer Workers)" className="bg-[#1a1a1a] text-teal-300 font-semibold">
+                <option value="aihorde-text" className="bg-[#1a1a1a] text-white">AI Horde Text (Anonymous / priority with personal key)</option>
+              </optgroup>
+
               <optgroup label="Custom Provider" className="bg-[#1a1a1a] text-white font-semibold">
                 <option value="custom-openai" className="bg-[#1a1a1a] text-indigo-400">Custom OpenAI Provider (Set above)</option>
               </optgroup>
@@ -442,7 +485,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
             )}
 
             <div className="text-[10px] text-white/40 mb-4">
-              Select the model used for director plans, chat, prompt enhancement, and subtitle translation.
+              Select the model used for director plans, chat, prompt enhancement, and subtitle translation. Cloudflare text in the AI Studio iframe needs the Worker Proxy URL and access token configured above. AI Horde text uses volunteer workers and may queue.
             </div>
             
             <div className="flex items-center justify-between">
