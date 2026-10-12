@@ -315,8 +315,11 @@ const uploadKieReferenceImage = async (source: string, apiKey: string, index: nu
 
 const resolveKieReferenceUrls = async (options: KieImageOptions): Promise<string[]> => {
     const suppliedUrls = (options.referenceImageUrls || []).filter(url => typeof url === 'string' && /^https?:\/\//i.test(url.trim()));
-    if (suppliedUrls.length) return suppliedUrls.slice(0, 14);
-    const images = (options.referenceImages || []).filter(image => typeof image?.data === 'string' && image.data.trim()).slice(0, 14);
+    if (suppliedUrls.length > 14) throw new Error('KIE image generation supports up to 14 reference URLs in this app. Reduce the selected references; no images were silently dropped.');
+    if (suppliedUrls.length) return suppliedUrls;
+    const allImages = (options.referenceImages || []).filter(image => typeof image?.data === 'string' && image.data.trim());
+    if (allImages.length > 14) throw new Error('KIE image generation supports up to 14 reference images in this app. Reduce the selected references; no images were silently dropped.');
+    const images = allImages;
     if (!images.length) return [];
     options.addLog?.(`Uploading ${images.length} reference image(s) to KIE AI so the selected model can use the actual image pixels, not only their descriptions...`, 'info');
     const urls: string[] = [];
