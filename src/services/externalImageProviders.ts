@@ -292,6 +292,108 @@ export async function generateTextCloudflare(options: {
  * Decentralized, crowdsourced volunteer GPU cluster.
  * Uses anonymous key ("0000000000") by default or user API key with kudos for higher priority.
  */
+export async function generateTextAIHorde(options: {
+  prompt: string;
+  apiKey?: string;
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+}): Promise<string> {
+  const storedKeys = readStoredProviderKeys();
+  const apiKey = options.apiKey || storedKeys.aiHordeApiKey || localStorage.getItem('aihorde_api_key') || '0000000000';
+  const isAnonymous = apiKey === '0000000000';
+  addLog?.(
+    isAnonymous
+      ? 'Submitting text job to AI Horde (anonymous requests have the lowest queue priority)...'
+      : 'Submitting text job to AI Horde with your account priority...',
+    'info'
+  );
+
+  const response = await fetch('https://aihorde.net/api/v2/generate/text/async', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': apiKey,
+      'Client-Agent': 'mv-director:1.0:web'
+    },
+    body: JSON.stringify({
+      prompt: options.prompt,
+      params: {
+        max_context_length: 4096,
+        max_length: Math.min(Math.max(options.maxTokens || 1024, 128), 4096),
+        temperature: Math.min(Math.max(options.temperature ?? 0.4, 0), 2),
+        top_p: 0.9,
+        top_k: 0,
+        rep_pen: 1.08
+      },
+      ...(options.model ? { models: [options.model] } : {})
+    })
+  });
+
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 700);
+    throw new Error(`AI Horde text request failed (HTTP ${response.status}): ${detail}`);
+  }
+
+  const data = await response.json();
+  const jobId = data.id;
+  if (typeof jobId !== 'string' || !jobId) {
+    throw new Error('AI Horde did not return a valid text Job ID.');
+  }
+  addLog?.(`AI Horde text job queued (${jobId.slice(0, 8)}...). Waiting for a volunteer worker...`, 'info');
+
+  const maxAttempts = 180; // Up to ~6 minutes, including volunteer queue time.
+  let attempts = 0;
+  let completed = false;
+  while (attempts < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    attempts++;
+    try {
+      const checkRes = await fetch(`https://aihorde.net/api/v2/generate/text/check/${jobId}`, {
+        headers: { 'Client-Agent': 'mv-director:1.0:web' }
+      });
+      if (!checkRes.ok) {
+        if (attempts % 10 === 0) addLog?.(`AI Horde text status returned HTTP ${checkRes.status}; retrying...`, 'warning');
+        continue;
+      }
+      const checkData = await checkRes.json();
+      if (checkData.faulted) throw new Error('AI Horde text job faulted on the volunteer worker.');
+      if (checkData.done) {
+        completed = true;
+        break;
+      }
+      if (checkData.queue_position !== undefined && attempts % 5 === 0) {
+        addLog?.(
+          checkData.queue_position > 0
+            ? `AI Horde text queue position: #${checkData.queue_position} (estimated wait: ${Math.round(checkData.wait_time || 0)}s)...`
+            : 'AI Horde text worker is generating the response...',
+          'info'
+        );
+      }
+    } catch (error: any) {
+      if (error.message?.includes('faulted')) throw error;
+    }
+  }
+
+  if (!completed) {
+    throw new Error(`AI Horde text job ${jobId.slice(0, 8)} is still queued or processing after 6 minutes. It was not resubmitted; retry later to avoid duplicate jobs.`);
+  }
+
+  const statusRes = await fetch(`https://aihorde.net/api/v2/generate/text/status/${jobId}`, {
+    headers: { 'Client-Agent': 'mv-director:1.0:web' }
+  });
+  if (!statusRes.ok) {
+    throw new Error(`Failed to retrieve completed AI Horde text response (HTTP ${statusRes.status}).`);
+  }
+  const statusData = await statusRes.json();
+  const text = statusData.generations?.[0]?.text;
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('AI Horde text job completed without returning generated text.');
+  }
+  return text.trim();
+}
+
 export async function generateImageAIHorde(options: AIHordeOptions): Promise<string> {
   const { prompt, aspectRatio, addLog } = options;
 
