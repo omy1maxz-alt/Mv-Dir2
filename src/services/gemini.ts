@@ -1383,7 +1383,8 @@ const getCharacterForReference = (ref: ReferenceImage, projectData: ProjectData)
 
 const isCharacterIdentityReference = (ref: ReferenceImage, projectData: ProjectData): boolean => {
     const roles = referenceRoles(ref);
-    return roles.includes('Face') || roles.includes('Body') || Boolean(getCharacterForReference(ref, projectData));
+    // Body refs should not outrank or masquerade as face-identity references.
+    return roles.includes('Face') || Boolean(getCharacterForReference(ref, projectData));
 };
 
 const sortReferencesForIdentity = (references: ReferenceImage[], projectData: ProjectData): ReferenceImage[] => {
@@ -1471,7 +1472,7 @@ export const generateSceneImage = async (
 
             // An unlinked face image is safe to infer only when there is one obvious
             // subject/reference. Otherwise require an explicit character link to avoid face mixing.
-            if (ref.isPrimary || (identityReferenceCount === 1 && (activeCharacters.length === 1 || explicitlyMentioned.length === 1))) {
+            if (ref.isPrimary || (identityReferenceCount === 1 && (activeCharacters.length <= 1 || explicitlyMentioned.length === 1))) {
                 return true;
             }
             return false;
