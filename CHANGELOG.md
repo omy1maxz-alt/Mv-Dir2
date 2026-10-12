@@ -1,3 +1,6 @@
+### Added
+- **Cloudflare Workers AI Image Model Expansion**: Expanded the image-model selector with curated Cloudflare text-to-image options that fit MV Director's prompt-and-aspect-ratio workflow: Lucid Origin, Phoenix 1.0, FLUX.1 [schnell], DreamShaper 8 LCM, SDXL 1.0, and SDXL Lightning. Added provider-aware input parameters for models whose official schemas differ. Kept multipart FLUX.2 models out of the JSON-only path pending a dedicated multipart adapter. Existing saved model IDs and the Cloudflare Worker proxy contract remain unchanged.
+
 ### Fixed
 - **AI Studio Cloudflare Proxy Compatibility + External Text Providers**: Added a deployable Cloudflare Worker proxy configuration to avoid direct browser-to-Cloudflare REST CORS failures in the hosted Google AI Studio iframe. Image requests now include model dimensions, Worker proxy requests use a separate proxy access token, and the Cloudflare request path supports image and text payloads.
 - **Cloudflare / AI Horde Text Routing**: Added optional Cloudflare Workers AI and AI Horde text selections while retaining the existing Gemini, Kie AI, and Custom OpenAI paths. Both new external text adapters return a response through the shared text-model dispatcher.
