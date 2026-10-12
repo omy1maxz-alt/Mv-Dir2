@@ -1622,15 +1622,6 @@ export const generateSceneImage = async (
         });
     }
 
-    const { parts: referenceParts, instructions: referenceInstructions } = buildReferenceParts(relevantReferences, projectData);
-    
-    if (referenceInstructions.length > 0) {
-        fullPrompt += `\n\n**CRITICAL REFERENCE INSTRUCTIONS:**\nYou are provided with reference images above. You MUST follow these rules for using them:\n`;
-        referenceInstructions.forEach(inst => {
-            fullPrompt += `- ${inst}\n`;
-        });
-    }
-
     if (currentImageModel.startsWith('kie:') || currentImageModel.startsWith('google/nano-banana')) {
         const keyToUse = customKieApiKey || (typeof window !== 'undefined' ? (() => {
             try {
