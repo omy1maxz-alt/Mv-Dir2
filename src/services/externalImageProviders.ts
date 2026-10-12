@@ -4,10 +4,16 @@ export interface ExternalImageOptions {
   addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
+export interface CloudflareReferenceImage {
+  data: string;
+  description?: string;
+}
+
 export interface CloudflareOptions extends ExternalImageOptions {
   accountId?: string;
   apiToken?: string;
   model?: string;
+  referenceImages?: CloudflareReferenceImage[];
 }
 
 export interface AIHordeOptions extends ExternalImageOptions {
@@ -64,6 +70,63 @@ const responseErrorText = async (response: Response, tokenToRedact?: string): Pr
   return tokenToRedact
     ? text.replaceAll(tokenToRedact, '[redacted]').replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
     : text.replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
+};
+
+const isCloudflareMultipartImageModel = (model: string) =>
+  model === '@cf/black-forest-labs/flux-2-dev'
+  || model === '@cf/black-forest-labs/flux-2-klein-4b'
+  || model === '@cf/black-forest-labs/flux-2-klein-9b';
+
+const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
+  const trimmed = String(source || '').trim();
+  if (!trimmed) throw new Error('A reference image has no image data.');
+  const dataUrl = trimmed.startsWith('data:') ? trimmed : `data:image/png;base64,${trimmed}`;
+
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Could not decode a selected reference image for FLUX.2.'));
+    image.src = dataUrl;
+  });
+  if (!image.naturalWidth || !image.naturalHeight) {
+    throw new Error('The selected reference image has no usable dimensions.');
+  }
+
+  // Cloudflare's multi-reference examples use small reference images (512x512 or less).
+  const scale = Math.min(1, 512 / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Reference image resizing is unavailable in this browser.');
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', 0.9);
+};
+
+const cloudflareInputToMultipart = (input: Record<string, any>): FormData => {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null) continue;
+    if (/^input_image_[0-3]$/.test(key) && typeof value === 'string') {
+      const match = value.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/s);
+      const mimeType = match?.[1] || 'image/png';
+      const base64 = match?.[2] || value.replace(/^data:[^,]*,/, '');
+      let binary: string;
+      try {
+        binary = atob(base64);
+      } catch {
+        throw new Error(`Reference image field ${key} is not valid base64 data.`);
+      }
+      const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+      const extension = mimeType.split('/')[1]?.replace(/[^a-zA-Z0-9]/g, '') || 'png';
+      form.append(key, new Blob([bytes], { type: mimeType }), `${key}.${extension}`);
+      continue;
+    }
+    form.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+  }
+  return form;
 };
 
 const postCloudflareModel = async (args: {
@@ -134,17 +197,23 @@ const postCloudflareModel = async (args: {
   }
 
   try {
-    return await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`,
-      {
+    const target = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`;
+    if (action === 'image' && isCloudflareMultipartImageModel(model)) {
+      // The FLUX.2 endpoints require multipart/form-data. Let fetch set the boundary.
+      return await fetch(target, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(input)
-      }
-    );
+        headers: { 'Authorization': `Bearer ${apiToken}` },
+        body: cloudflareInputToMultipart(input)
+      });
+    }
+    return await fetch(target, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(input)
+    });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -172,6 +241,18 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
   // These model IDs use distinct input contracts. Keep this shared adapter limited
   // to the JSON-schema image models so prompts/aspect ratios remain predictable.
   const modelInput: Record<string, any> = { prompt, width, height };
+  const isMultipartModel = isCloudflareMultipartImageModel(model);
+  if (isMultipartModel) {
+    const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim()).slice(0, 4);
+    for (let index = 0; index < references.length; index++) {
+      modelInput[`input_image_${index}`] = await imageToCloudflareDataUrl(references[index].data);
+    }
+    if (references.length > 0) {
+      addLog?.(`Preparing ${references.length} reference image(s) for FLUX.2 multipart editing (max 4, resized to 512px).`, 'info');
+    }
+  } else if ((options.referenceImages || []).length > 0) {
+    addLog?.(`The selected Cloudflare model (${model}) accepts prompt-only input in this adapter; reference images are not sent. Choose a FLUX.2 model to use reference images.`, 'warning');
+  }
   if (model === '@cf/black-forest-labs/flux-1-schnell') {
     // FLUX.1 schnell only accepts prompt/steps; dimensions are not in its schema.
     delete modelInput.width;
