@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Fixed
+- **Cloudflare Worker Deployment Diagnosis**: API Settings now explains that “Use POST for model requests” is evidence of an outdated deployed Worker when the catalog GET request returns HTTP 405. The duplicate Refresh Model Catalog button/status was removed. FLUX.2 errors that explicitly indicate a missing multipart request now point to the Worker redeploy fix.
+
+### Improved
+- **Cloudflare Image-to-Text Catalog Discovery**: Model discovery now queries text-generation, text-to-image, and image-to-text separately. Image-to-Text models are shown as vision-analysis inventory only; they are not mixed into image generation or ordinary text-chat choices before a compatible image-input adapter exists.
+
 ### Improved
 - **Cloudflare FLUX.2 Models & Multi-Reference Generation**: Added FLUX.2 [dev], Klein 4B, and Klein 9B to the image-model picker. The scene generator now passes relevant project references (up to four), creates an index-to-description prompt map, and forwards the scene seed when present. Reference images are resized to below 512×512.
 - **Cloudflare Model POST Body Compatibility**: Kept the app-to-proxy model request as an authenticated `POST`, then added model-aware translation in both `cloudflare-worker-proxy/worker.js` and the Express backend. Standard models continue receiving JSON; FLUX.2 requests are forwarded upstream as `multipart/form-data` with binary `input_image_0`–`input_image_3` parts. No browser-side Cloudflare API token is required when using the Worker.
