@@ -224,6 +224,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       { value: 'cloudflare:@cf/leonardo/lucid-origin', label: 'Lucid Origin — Best for prompt adherence, detailed cinematic art & specific direction' },
       { value: 'cloudflare:@cf/leonardo/phoenix-1.0', label: 'Phoenix 1.0 — Strong prompt adherence, stylized concepts & coherent text' },
       { value: 'cloudflare:@cf/black-forest-labs/flux-1-schnell', label: 'FLUX.1 [schnell] — Fast drafts & iteration' },
+      { value: 'cloudflare:@cf/black-forest-labs/flux-2-dev', label: 'FLUX.2 [dev] — High-quality generation with up to 4 reference images' },
+      { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-4b', label: 'FLUX.2 [klein] 4B — Faster reference-guided drafts (4 fixed steps)' },
+      { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-9b', label: 'FLUX.2 [klein] 9B — Reference-guided generation with enhanced quality (4 fixed steps)' },
       { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
       { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation' },
       { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' }
