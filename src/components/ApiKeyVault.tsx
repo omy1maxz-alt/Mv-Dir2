@@ -196,7 +196,8 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     setCatalogState({ kind: 'loading', message: 'Loading Cloudflare model catalog…' });
     Promise.all([
       fetch(baseUrl + '?task=text-generation', { headers, signal: controller.signal, cache: 'no-store' }),
-      fetch(baseUrl + '?task=text-to-image', { headers, signal: controller.signal, cache: 'no-store' })
+      fetch(baseUrl + '?task=text-to-image', { headers, signal: controller.signal, cache: 'no-store' }),
+      fetch(baseUrl + '?task=image-to-text', { headers, signal: controller.signal, cache: 'no-store' })
     ]).then(async responses => {
       const payloads = await Promise.all(responses.map(async response => ({
         response,
@@ -210,7 +211,8 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
         if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
       });
       setCloudflareCatalog(Array.from(unique.values()));
-      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' current Cloudflare models from the Worker catalog.' });
+      const visionCount = Array.from(unique.values()).filter(model => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-') === 'image-to-text').length;
+      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' current Cloudflare models across text generation, text-to-image, and image-to-text (' + visionCount + ' vision models).' });
     }).catch(error => {
       if (cancelled || error?.name === 'AbortError') return;
       setCatalogState({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
@@ -226,6 +228,8 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   }, []);
 
   const normalizedTask = (model: CloudflareCatalogModel) => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-');
+  const cloudflareVisionModels = cloudflareCatalog.filter(model => normalizedTask(model) === 'image-to-text');
+
   const cloudflareTextGroup: ModelOptionGroup = (() => {
     const supported = cloudflareCatalog.some(model => normalizedTask(model).includes('text-generation') && model.id === '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
     return {
@@ -265,7 +269,8 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       const headers = { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' };
       const responses = await Promise.all([
         fetch(baseUrl + '?task=text-generation', { headers, cache: 'no-store' }),
-        fetch(baseUrl + '?task=text-to-image', { headers, cache: 'no-store' })
+        fetch(baseUrl + '?task=text-to-image', { headers, cache: 'no-store' }),
+        fetch(baseUrl + '?task=image-to-text', { headers, cache: 'no-store' })
       ]);
       const payloads = await Promise.all(responses.map(async response => ({
         response, data: await response.json().catch(() => ({}))
@@ -277,7 +282,8 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
         if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
       });
       setCloudflareCatalog(Array.from(unique.values()));
-      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' catalog models. Only known-supported adapters are selectable.' });
+      const visionCount = Array.from(unique.values()).filter(model => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-') === 'image-to-text').length;
+      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' catalog models, including ' + visionCount + ' Image-to-Text model(s). Only models with supported adapters are selectable.' });
     } catch (error) {
       setCatalogState({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
     }
@@ -550,6 +556,17 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                     Refresh Model Catalog
                   </button>
                   {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
+                  {catalogState.kind === 'success' && (
+                    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] px-3 py-2 text-[11px] leading-relaxed text-sky-100/80">
+                      <div className="font-semibold text-sky-200">Image-to-Text models (vision analysis)</div>
+                      {cloudflareVisionModels.length > 0 ? (
+                        <div className="mt-1">{cloudflareVisionModels.slice(0, 4).map(model => model.id).join(', ')}{cloudflareVisionModels.length > 4 ? ` +${cloudflareVisionModels.length - 4} more` : ''}</div>
+                      ) : (
+                        <div className="mt-1">No Image-to-Text models were returned by this catalog query.</div>
+                      )}
+                      <div className="mt-1 text-white/45">These models analyze a supplied image (for example, captioning or OCR). They are not text-to-image generators and remain informational until a dedicated image-input adapter is added.</div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">
