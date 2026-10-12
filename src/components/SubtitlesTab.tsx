@@ -14,6 +14,7 @@ import { SubtitleFormatDropdown } from './SubtitleFormatDropdown';
 import { YouTubeStreamLinksSelector } from './YouTubeStreamLinksSelector';
 import { SubtitleType } from '../types';
 import { parseSubtitles, generateSrt as generateSrtString, splitOversizedBlocks } from '../utils/subtitleParser';
+import { segmentsToSrt } from '../services/youtubeCaptionService';
 import { get, set, del } from 'idb-keyval';
 import { 
     normalizeYoutubeUrl, 
