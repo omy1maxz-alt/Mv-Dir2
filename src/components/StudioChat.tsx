@@ -1359,11 +1359,11 @@ const PROXY_PERSONA_INFO: Record<ProxyPersonaType, { label: string; role: string
     return { cleanedText: cleaned.trim(), actions };
   };
 
-  const processMessage = async (userMessage: Message, currentMessages: Message[], targetConvoId: string) => {
+  const processMessage = async (userMessage: Message, currentMessages: Message[], targetConvoId: string, regenerateFromHistory: boolean = false) => {
     setIsLoading(true);
     abortLoopRef.current = false;
     setActiveLoopStep(0);
-    const convoMessages: Message[] = [...currentMessages, userMessage];
+    const convoMessages: Message[] = regenerateFromHistory ? [...currentMessages] : [...currentMessages, userMessage];
     try {
         const key = apiKeySource === 'custom' ? apiKeys.google : undefined;
         
@@ -1530,7 +1530,7 @@ const PROXY_PERSONA_INFO: Record<ProxyPersonaType, { label: string; role: string
           }
         }
 
-        const totalSteps = isLoopEnabled ? Math.max(2, Math.min(10, loopIterations)) : 1;
+        const totalSteps = regenerateFromHistory ? 1 : (isLoopEnabled ? Math.max(2, Math.min(10, loopIterations)) : 1);
         let currentHistory = [...history];
         let pendingNextStep = '';
         let lastAgentResponseText = '';
@@ -1668,7 +1668,14 @@ Ask your question / critique to the AI Assistant now:`;
           // ODD STEPS (OR TASK MODE): AI ASSISTANT SPEAKS
           // ==========================================
           let currentPrompt = '';
-          if (step === 1) {
+          if (regenerateFromHistory) {
+            const lastContextMessage = currentMessages[currentMessages.length - 1];
+            const historyEndsWithUser = Boolean(lastContextMessage &&
+              (lastContextMessage.sender === 'user' || lastContextMessage.sender === 'bot_proxy'));
+            currentPrompt = historyEndsWithUser
+              ? ''
+              : 'Generate a fresh assistant response to the conversation context above. Continue naturally from the existing transcript and do not mention this instruction.';
+          } else if (step === 1) {
             currentPrompt = isLoopEnabled
               ? loopMode === 'dialogue'
                 ? `${promptToSend}\n\n[AI-TO-AI DIALOGUE MODE ACTIVE: Step 1/${totalSteps}]\nProvide your response. After your response, the AI User-Proxy (${PROXY_PERSONA_INFO[proxyPersona]?.label || 'User Role'}) will review your output and ask the next follow-up question or refinement in real time.`
@@ -1693,9 +1700,11 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
             );
           }
 
-          const imagesToSend = userMessage.attachedImages && userMessage.attachedImages.length > 0
-            ? userMessage.attachedImages
-            : (userMessage.attachedImage ? [userMessage.attachedImage] : undefined);
+          const imagesToSend = regenerateFromHistory
+            ? undefined
+            : (userMessage.attachedImages && userMessage.attachedImages.length > 0
+              ? userMessage.attachedImages
+              : (userMessage.attachedImage ? [userMessage.attachedImage] : undefined));
 
           const response = await sendStudioChatMessage(
             currentHistory, 
@@ -2142,47 +2151,43 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
   const handleRetryMessage = async (targetMsgId?: string) => {
     if (!activeConversationId || isLoading) return;
 
-    let targetIdx = -1;
-    if (targetMsgId) {
-      targetIdx = messages.findIndex(m => m.id === targetMsgId);
-    } else {
-      targetIdx = messages.length - 1;
-    }
-
+    const targetIdx = targetMsgId
+      ? messages.findIndex(m => m.id === targetMsgId)
+      : messages.length - 1;
     if (targetIdx < 0) return;
 
     const targetMsg = messages[targetIdx];
-    let userMsg: Message | undefined;
-    let precedingMessages: Message[] = [];
+    // Refresh is only supported for real assistant replies, never user, proxy, or error messages.
+    if (
+      targetMsg.sender !== 'bot' ||
+      (targetMsg.text || '').trim().startsWith('Error:') ||
+      (targetMsg.text || '').trim().startsWith('⚠️')
+    ) return;
 
-    if (targetMsg.sender === 'user') {
-      // Retrying from a user message
-      userMsg = targetMsg;
-      precedingMessages = messages.slice(0, targetIdx);
-    } else {
-      // Retrying a bot or bot_proxy message: find the nearest preceding user message
-      const lastUserIdx = messages.slice(0, targetIdx).map(m => m.sender).lastIndexOf('user');
-      if (lastUserIdx !== -1) {
-        userMsg = messages[lastUserIdx];
-        precedingMessages = messages.slice(0, lastUserIdx);
-      } else {
-        const anyUser = messages.find(m => m.sender === 'user');
-        if (anyUser) {
-          userMsg = anyUser;
-          precedingMessages = [];
-        }
-      }
-    }
-
-    if (!userMsg) return;
+    // Keep the exact transcript prefix before this reply and remove only this reply plus later messages.
+    const precedingMessages = messages.slice(0, targetIdx);
+    const lastUserMsg = [...precedingMessages].reverse().find(m => m.sender === 'user');
+    if (!lastUserMsg) return;
 
     const targetConvoId = activeConversationId;
-    // Set UI messages to the preceding history
     setMessages(precedingMessages);
     await saveConversationMessages(targetConvoId, precedingMessages);
 
-    // Reprocess the user prompt
-    await processMessage(userMsg, precedingMessages, targetConvoId);
+    setConversations(prev => {
+      const lastMsg = precedingMessages[precedingMessages.length - 1];
+      const updatedList = prev.map(c => c.id === targetConvoId ? {
+        ...c,
+        lastMessagePreview: lastMsg?.text ? lastMsg.text.slice(0, 80).replace(/\n/g, ' ') : '',
+        messageCount: precedingMessages.length,
+        updatedAt: new Date().toISOString(),
+      } : c);
+      saveConversationsList(updatedList);
+      return updatedList;
+    });
+
+    // Regenerate from the full prefix without duplicating the existing user prompt.
+    // This path produces one replacement reply even when Chat Loop is enabled.
+    await processMessage(lastUserMsg, precedingMessages, targetConvoId, true);
   };
 
   const processRawFiles = async (files: File[]) => {
@@ -2841,12 +2846,16 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
             </div>
           </div>
         )}
-        {messages.map(msg => {
+        {messages.map((msg, messageIndex) => {
           const isLongMessage = (msg.text || '').length > 280 || ((msg.text || '').match(/\n/g) || []).length >= 5;
           const isCollapsed = Boolean(collapsedMessageIds[msg.id]);
           const isProxy = msg.sender === 'bot_proxy';
           const isUser = msg.sender === 'user';
           const isDirector = msg.sender === 'bot';
+          const canRefreshMessage = isDirector &&
+            !(msg.text || '').trim().startsWith('Error:') &&
+            !(msg.text || '').trim().startsWith('⚠️') &&
+            messages.slice(0, messageIndex).some(previous => previous.sender === 'user');
           const turnNumber = messageTurns.get(msg.id) || 1;
           const canRevert = turnNumber < totalTurns;
 
@@ -2879,14 +2888,6 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
                         {isCollapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
                       </button>
                     )}
-                    <button 
-                      onClick={() => handleRetryMessage(msg.id)} 
-                      disabled={isLoading}
-                      className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-indigo-300 disabled:opacity-30 transition-colors" 
-                      title="Retry / Resend message"
-                    >
-                      <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                    </button>
                     <button 
                       onClick={() => handleEditMessage(msg.id)} 
                       className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-white transition-colors" 
@@ -3049,14 +3050,16 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
                       {isCollapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
                     </button>
                   )}
-                  <button 
-                    onClick={() => handleRetryMessage(msg.id)} 
-                    disabled={isLoading}
-                    className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-indigo-300 disabled:opacity-30 transition-colors" 
-                    title="Retry / Regenerate response"
-                  >
-                    <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                  </button>
+                  {canRefreshMessage && (
+                    <button 
+                      onClick={() => handleRetryMessage(msg.id)} 
+                      disabled={isLoading}
+                      className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-indigo-300 disabled:opacity-30 transition-colors" 
+                      title="Regenerate this AI response and remove messages below it"
+                    >
+                      <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
                   <button 
                     onClick={() => handleCopyMessage(msg.id, msg.text)} 
                     className="p-1 rounded hover:bg-white/10 text-white/50 hover:text-white transition-colors" 
