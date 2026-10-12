@@ -989,6 +989,33 @@ async function getYouTubeCaptionsServerSide(videoId: string, targetLanguage?: st
   }
 }
 
+// Lightweight subtitle-track inventory endpoint. It intentionally does not invoke the slower stream resolver.
+app.all('/api/youtube/caption-tracks', async (req: Request, res: Response) => {
+  try {
+    const rawUrl = (req.query.url as string) || (req.body?.url as string) || '';
+    const rawVideoId = (req.query.videoId as string) || (req.query.v as string) || (req.body?.videoId as string) || '';
+    const videoId = rawVideoId || extractVideoId(rawUrl);
+    if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+      return res.status(400).json({ success: false, videoId: videoId || '', tracks: [], message: 'A valid YouTube URL or video ID is required.' });
+    }
+
+    const payloads = await fetchYouTubePlayerDataCandidates(videoId);
+    let tracks = collectYouTubeCaptionTracks(payloads);
+    if (!tracks.length) tracks = await fetchCommunityYouTubeCaptionTracks(videoId);
+    const metadata = payloads.find(payload => payload?.videoDetails) || payloads[0] || {};
+    return res.json({
+      success: true,
+      videoId,
+      title: metadata?.videoDetails?.title || 'YouTube_Video',
+      duration: parseInt(metadata?.videoDetails?.lengthSeconds || '0', 10) || 0,
+      thumbnailUrl: metadata?.videoDetails?.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      tracks
+    });
+  } catch (error: any) {
+    return res.status(502).json({ success: false, tracks: [], message: error?.message || 'Could not discover YouTube caption tracks.' });
+  }
+});
+
 app.all('/api/youtube/captions', async (req: Request, res: Response) => {
   try {
     const rawUrl = (req.query.url as string) || (req.body?.url as string) || '';
