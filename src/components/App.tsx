@@ -1935,7 +1935,7 @@ export const App: React.FC = () => {
                   <div className="pb-32">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                       {directorPlan.scenes.map((scene, idx) => (
-                        <SceneCard key={idx} scene={scene} index={idx} onGenerate={params => handleGenerateScene(idx, params || { aspectRatio: scene.aspectRatio || projectData.aspectRatio, seed: 0 })} onStopGenerate={() => handleStopGenerateScene(idx)} onUpdate={updates => { setDirectorPlan(currentPlan => { if (!currentPlan) return null; const newScenes = currentPlan.scenes.map((s, i) => i === idx ? { ...s, ...updates } : s); return { ...currentPlan, scenes: newScenes }; }); }} onEnhance={() => handleEnhancePrompt(idx)} onEnhanceVideo={() => handleEnhanceMotionPrompt(idx)} projectData={projectData}
+                        <SceneCard key={idx} scene={scene} index={idx} onGenerate={params => { void handleGenerateScene(idx, params || { aspectRatio: scene.aspectRatio || projectData.aspectRatio, seed: 0 }).catch(() => undefined); }} onStopGenerate={() => handleStopGenerateScene(idx)} onUpdate={updates => { setDirectorPlan(currentPlan => { if (!currentPlan) return null; const newScenes = currentPlan.scenes.map((s, i) => i === idx ? { ...s, ...updates } : s); return { ...currentPlan, scenes: newScenes }; }); }} onEnhance={() => handleEnhancePrompt(idx)} onEnhanceVideo={() => handleEnhanceMotionPrompt(idx)} projectData={projectData}
             apiKey={apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined} />
                       ))}
                     </div>
