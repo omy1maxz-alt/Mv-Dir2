@@ -1,3 +1,5 @@
+- **Live Cloudflare Model Catalog**: Added an authenticated catalog endpoint to the existing Worker proxy and a refresh/status action in API & Account Settings. The settings panel queries Cloudflare's model catalog for text-generation and text-to-image tasks through the Worker, keeps the API token server-side, and preserves known model options when discovery is unavailable. Discovery does not automatically enable arbitrary model IDs; current selectors remain limited to known-supported adapters.
+
 ### Fixed
 - **Cloudflare Worker Failure Diagnostics**: Added a “Test Worker Connection” action in API & Account Settings that sends a dummy-token request to verify browser CORS/preflight and Worker routing without invoking image generation. Single-scene image failures now remain handled by the UI/log instead of surfacing as unhandled promise rejections; batch generation still receives failures for its existing stop/retry logic.
 
