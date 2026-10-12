@@ -18,6 +18,7 @@ const SearchableModelPicker: React.FC<{
 }> = ({ label, value, groups, onChange, accent }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [openUpward, setOpenUpward] = useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const selected = groups.flatMap(group => group.options).find(option => option.value === value);
@@ -54,7 +55,7 @@ const SearchableModelPicker: React.FC<{
         aria-haspopup="listbox"
         aria-expanded={isOpen}
         aria-label={label}
-        onClick={() => { setIsOpen(open => !open); setQuery(''); }}
+        onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const spaceBelow = window.innerHeight - rect.bottom; setOpenUpward(spaceBelow < Math.min(420, window.innerHeight * 0.48) && rect.top > spaceBelow); setIsOpen(open => !open); setQuery(''); }}
         className={`w-full min-w-0 flex items-center gap-3 rounded-xl border border-white/10 bg-black/40 px-3.5 py-3 text-left transition-colors hover:border-white/20 hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/10 ${isOpen ? accentBorder : ''}`}
       >
         <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] ${accentText}`}>
@@ -68,7 +69,7 @@ const SearchableModelPicker: React.FC<{
       </button>
 
       {isOpen && (
-        <div className="absolute left-0 right-0 top-full z-[130] mt-2 overflow-hidden rounded-2xl border border-white/10 bg-[#151515] shadow-2xl shadow-black/60">
+        <div className={`absolute left-0 right-0 z-[130] overflow-hidden rounded-2xl border border-white/10 bg-[#151515] shadow-2xl shadow-black/60 ${openUpward ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
           <div className="border-b border-white/10 bg-[#191919] p-3">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
