@@ -427,7 +427,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               </optgroup>
 
               <optgroup label="Cloudflare Workers AI — Text Generation" className="bg-[#1a1a1a] text-orange-300 font-semibold">
-                <option value="cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast" className="bg-[#1a1a1a] text-white">Cloudflare Llama 3.3 70B (Free Neurons allocation • Worker Proxy recommended)</option>
+                <option value="cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast" className="bg-[#1a1a1a] text-white">Cloudflare Llama 3.3 70B (Worker Proxy recommended)</option>
               </optgroup>
 
               <optgroup label="AI Horde — Text Generation (Volunteer Workers)" className="bg-[#1a1a1a] text-teal-300 font-semibold">
