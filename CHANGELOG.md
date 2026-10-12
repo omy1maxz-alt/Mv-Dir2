@@ -5,7 +5,7 @@
 - **Text Model Picker Build Failure**: Corrected the malformed JSX model-group array insertion that caused the production build to fail in `ApiKeyVault.tsx`.
 
 ### Improved
-- **YouTube Caption Track Discovery**: Server-side caption track inventory now has a dedicated route with InnerTube client candidates and community-provider fallback. The existing stream inspection endpoint still reports available HLS/DASH manifests when providers return them; a manifest is not guaranteed for every video/client/session.
+- **YouTube Caption and Manifest Discovery**: Native caption retrieval and HLS/DASH lookup run through dedicated backend endpoints instead of relying on the cross-origin iframe or waiting for the legacy stream downloader. Manifest lookup checks YouTube player clients and a bounded set of Piped/Invidious providers in parallel; the Caption tab displays and lets users copy any returned `.m3u8` / `.mpd` URLs. Manifest availability varies by video and session, and signed links may expire.
 
 ### Fixed
 - **YouTube Caption Tab Cross-Origin Retrieval**: Caption fetching now runs independently on the server instead of relying on access to the cross-origin YouTube iframe. The backend tries Android, iOS, and web player metadata, extracts caption track URLs, retries JSON3 for YouTube timed-text tracks, and falls back to a small set of Piped/Invidious caption providers in parallel.
