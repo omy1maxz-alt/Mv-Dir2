@@ -14,7 +14,7 @@
  * when using this proxy. Only PROXY_ACCESS_TOKEN is stored by the application.
  */
 
-const ALLOWED_METHODS = "POST, OPTIONS";
+const ALLOWED_METHODS = "GET, POST, OPTIONS";
 const ALLOWED_HEADERS = "Authorization, Content-Type";
 const MAX_BODY_BYTES = 1_000_000;
 
@@ -53,9 +53,6 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
-    if (request.method !== "POST") {
-      return json({ error: "Use POST for model requests." }, 405, origin);
-    }
     if (!env.PROXY_ACCESS_TOKEN || !env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_API_TOKEN) {
       return json({ error: "Proxy is not configured. Set PROXY_ACCESS_TOKEN, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN as Worker secrets/variables." }, 500, origin);
     }
@@ -64,6 +61,58 @@ export default {
     const supplied = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
     if (!constantTimeEqual(supplied, env.PROXY_ACCESS_TOKEN)) {
       return json({ error: "Unauthorized Worker Proxy request." }, 401, origin);
+    }
+
+    if (request.method === "GET") {
+      const incomingUrl = new URL(request.url);
+      const task = incomingUrl.searchParams.get("task") || "";
+      if (task && !/^[a-z0-9_-]{1,80}$/i.test(task)) {
+        return json({ error: "Invalid task filter." }, 400, origin);
+      }
+      const params = new URLSearchParams({ hide_experimental: "true", per_page: "100", page: "1" });
+      if (task) params.set("task", task);
+
+      let upstream;
+      try {
+        upstream = await fetch(
+          "https://api.cloudflare.com/client/v4/accounts/" +
+            encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID) +
+            "/ai/models/search?" + params.toString(),
+          {
+            headers: { "Authorization": "Bearer " + env.CLOUDFLARE_API_TOKEN, "Accept": "application/json" },
+            signal: AbortSignal.timeout(20000)
+          }
+        );
+      } catch (error) {
+        const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+        return json({ error: timedOut ? "Cloudflare model catalog request timed out." : "The Worker could not connect to the Cloudflare model catalog." }, timedOut ? 504 : 502, origin);
+      }
+
+      if (!upstream.ok) {
+        let details = (await upstream.text()).slice(0, 800);
+        details = details.replaceAll(env.CLOUDFLARE_API_TOKEN, "[redacted]")
+          .replace(/Bearer\s+[^\s"'<>]+/gi, "Bearer [redacted]");
+        return json({ error: "Cloudflare model catalog request failed (HTTP " + upstream.status + ").", details }, upstream.status, origin);
+      }
+
+      const payload = await upstream.json();
+      if (!payload?.success || !Array.isArray(payload.result)) {
+        return json({ error: "Cloudflare returned an unexpected model catalog response." }, 502, origin);
+      }
+      const models = payload.result.map(model => ({
+        id: model.name || model.id || "",
+        name: model.name || model.id || "",
+        description: model.description || "",
+        task: typeof model.task === "object" ? (model.task?.name || "") : (model.task || ""),
+        source: typeof model.source === "object" ? (model.source?.name || "") : (model.source || ""),
+        properties: Array.isArray(model.properties) ? model.properties : [],
+        tags: Array.isArray(model.tags) ? model.tags : []
+      })).filter(model => typeof model.id === "string" && model.id.startsWith("@cf/"));
+      return json({ success: true, models, page: 1, perPage: 100 }, 200, origin);
+    }
+
+    if (request.method !== "POST") {
+      return json({ error: "Use GET to discover models or POST to run a model." }, 405, origin);
     }
 
     const contentLength = Number(request.headers.get("Content-Length") || "0");
