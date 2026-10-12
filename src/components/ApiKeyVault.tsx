@@ -189,29 +189,20 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     const controller = new AbortController();
     setCatalogState({ kind: 'loading', message: 'Loading Cloudflare model catalog…' });
     const baseUrl = proxyUrl.replace(/\/+$/, '');
-    fetch(baseUrl + '?task=text-generation', {
-      headers: { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' },
-      signal: controller.signal,
-      cache: 'no-store'
-    }).then(async response => {
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.success || !Array.isArray(data.models)) {
-        throw new Error(data.error || 'Cloudflare text catalog request failed (HTTP ' + response.status + ').');
-      }
-      const textModels = data.models as CloudflareCatalogModel[];
-      const imageResponse = await fetch(baseUrl + '?task=text-to-image', {
-        headers: { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' },
-        signal: controller.signal,
-        cache: 'no-store'
-      });
-      const imageData = await imageResponse.json().catch(() => ({}));
-      if (!imageResponse.ok || !imageData.success || !Array.isArray(imageData.models)) {
-        throw new Error(imageData.error || 'Cloudflare image catalog request failed (HTTP ' + imageResponse.status + ').');
-      }
+    const headers = { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' };
+    Promise.all([
+      fetch(baseUrl + '?task=text-generation', { headers, signal: controller.signal, cache: 'no-store' }),
+      fetch(baseUrl + '?task=text-to-image', { headers, signal: controller.signal, cache: 'no-store' })
+    ]).then(async responses => {
+      const payloads = await Promise.all(responses.map(async response => ({
+        response,
+        data: await response.json().catch(() => ({}))
+      })));
+      const failed = payloads.find(({ response, data }) => !response.ok || !data.success || !Array.isArray(data.models));
+      if (failed) throw new Error(failed.data.error || 'Cloudflare catalog failed (HTTP ' + failed.response.status + ').');
       if (cancelled) return;
-      const combined = [...textModels, ...(imageData.models as CloudflareCatalogModel[])];
       const unique = new Map<string, CloudflareCatalogModel>();
-      combined.forEach(model => {
+      payloads.flatMap(item => item.data.models as CloudflareCatalogModel[]).forEach(model => {
         if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
       });
       setCloudflareCatalog(Array.from(unique.values()));
@@ -222,9 +213,6 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     });
     return () => { cancelled = true; controller.abort(); };
   }, [isOpen, keys.cloudflareWorkerProxyUrl, keys.cloudflareWorkerProxyToken]);
-
-  useEffect(() => {
-    const unsubscribe = listenAuthState((user) => {
       setAuthUser(user);
     });
     return () => unsubscribe();
