@@ -16,7 +16,12 @@
 
 const ALLOWED_METHODS = "GET, POST, OPTIONS";
 const ALLOWED_HEADERS = "Authorization, Content-Type";
-const MAX_BODY_BYTES = 1_000_000;
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
+const FLUX2_MODELS = new Set([
+  "@cf/black-forest-labs/flux-2-dev",
+  "@cf/black-forest-labs/flux-2-klein-4b",
+  "@cf/black-forest-labs/flux-2-klein-9b"
+]);
 
 function corsHeaders(origin) {
   return {
@@ -127,6 +132,11 @@ export default {
       return json({ error: "A valid JSON body is required." }, 400, origin);
     }
 
+    // Check parsed JSON size as well; Content-Length is not always supplied by clients.
+    if (new TextEncoder().encode(JSON.stringify(body)).byteLength > MAX_BODY_BYTES) {
+      return json({ error: "Request body is too large. Keep FLUX.2 reference images under 512x512 each." }, 413, origin);
+    }
+
     const action = body?.action === "text" ? "text" : "image";
     const model = typeof body?.model === "string" ? body.model.trim() : "";
     const input = body?.input;
@@ -146,15 +156,54 @@ export default {
     const url = "https://api.cloudflare.com/client/v4/accounts/" +
       encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID) + "/ai/run/" + model;
 
+    // FLUX.2 reference images arrive at this Worker inside the app's JSON envelope
+    // as data URLs. Convert them to binary multipart parts before calling Cloudflare.
+    let upstreamBody;
+    const upstreamHeaders = { "Authorization": "Bearer " + env.CLOUDFLARE_API_TOKEN };
+    if (action === "image" && FLUX2_MODELS.has(model)) {
+      const imageKeys = Object.keys(input).filter(key => /^input_image_[0-3]$/.test(key));
+      if (imageKeys.length > 4) {
+        return json({ error: "FLUX.2 supports at most four reference images." }, 400, origin);
+      }
+      const form = new FormData();
+      for (const [key, value] of Object.entries(input)) {
+        if (value === undefined || value === null) continue;
+        if (/^input_image_[0-3]$/.test(key)) {
+          if (typeof value !== "string") {
+            return json({ error: key + " must be an image data URL." }, 400, origin);
+          }
+          const match = value.match(/^data:(image\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/);
+          if (!match) {
+            return json({ error: key + " must use a base64 image data URL." }, 400, origin);
+          }
+          let binary;
+          try {
+            binary = atob(match[2]);
+          } catch {
+            return json({ error: key + " contains invalid base64 data." }, 400, origin);
+          }
+          const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+          const extension = match[1].split("/")[1].replace(/[^A-Za-z0-9]/g, "") || "jpg";
+          form.append(key, new Blob([bytes], { type: match[1] }), key + "." + extension);
+        } else {
+          if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+            return json({ error: "Unsupported FLUX.2 input field: " + key }, 400, origin);
+          }
+          form.append(key, String(value));
+        }
+      }
+      upstreamBody = form;
+    } else {
+      upstreamHeaders["Content-Type"] = "application/json";
+      upstreamBody = JSON.stringify(input);
+    }
+
     let upstream;
     try {
       upstream = await fetch(url, {
         method: "POST",
-        headers: {
-          "Authorization": "Bearer " + env.CLOUDFLARE_API_TOKEN,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(input),
+        headers: upstreamHeaders,
+        body: upstreamBody,
         signal: AbortSignal.timeout(90000)
       });
     } catch (error) {
