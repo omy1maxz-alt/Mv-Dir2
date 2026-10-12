@@ -305,6 +305,39 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     return { label: 'Cloudflare Workers AI (Live Catalog' + (catalogState.kind === 'success' ? '' : ' / Fallback') + ')', options: options.length ? options : existing };
   })();
 
+  const refreshCloudflareCatalog = async () => {
+    const proxyUrl = String(keys.cloudflareWorkerProxyUrl || '').trim();
+    const proxyToken = String(keys.cloudflareWorkerProxyToken || '').trim();
+    if (!proxyUrl || !proxyToken) {
+      setCatalogState({ kind: 'error', message: 'Enter the Worker URL and proxy access token before refreshing the catalog.' });
+      return;
+    }
+    setCatalogState({ kind: 'loading', message: 'Refreshing Cloudflare model catalog…' });
+    setCloudflareCatalog([]);
+    const baseUrl = proxyUrl.replace(/\/+$/, '');
+    try {
+      const headers = { Authorization: 'Bearer ' + proxyToken, Accept: 'application/json' };
+      const responses = await Promise.all([
+        fetch(baseUrl + '?task=text-generation', { headers, cache: 'no-store' }),
+        fetch(baseUrl + '?task=text-to-image', { headers, cache: 'no-store' })
+      ]);
+      const payloads = await Promise.all(responses.map(async response => ({
+        response,
+        data: await response.json().catch(() => ({}))
+      })));
+      const failed = payloads.find(({ response, data }) => !response.ok || !data.success || !Array.isArray(data.models));
+      if (failed) throw new Error(failed.data.error || 'Cloudflare catalog failed (HTTP ' + failed.response.status + ').');
+      const unique = new Map<string, CloudflareCatalogModel>();
+      payloads.flatMap(item => item.data.models as CloudflareCatalogModel[]).forEach(model => {
+        if (typeof model.id === 'string' && model.id.startsWith('@cf/')) unique.set(model.id, model);
+      });
+      setCloudflareCatalog(Array.from(unique.values()));
+      setCatalogState({ kind: 'success', message: 'Loaded ' + unique.size + ' catalog models. Only known-supported model adapters are selectable.' });
+    } catch (error) {
+      setCatalogState({ kind: 'error', message: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   // Tests browser-to-Worker CORS/routing using a deliberately invalid token.
   // The Worker should answer 401 before contacting Workers AI, so this uses no AI credits.
   const handleTestCloudflareProxy = async () => {
@@ -591,6 +624,15 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <button
                       type="button"
+                      onClick={refreshCloudflareCatalog}
+                      disabled={catalogState.kind === 'loading'}
+                      className="inline-flex items-center gap-2 rounded-lg border border-orange-500/20 bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-200 transition-colors hover:bg-orange-500/15 disabled:cursor-wait disabled:opacity-50"
+                    >
+                      {catalogState.kind === 'loading' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                      Refresh Model Catalog
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleTestCloudflareProxy}
                       disabled={proxyTest?.kind === 'testing'}
                       className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-2 text-xs font-medium text-white/80 transition-colors hover:bg-white/10 disabled:cursor-wait disabled:opacity-50"
@@ -600,6 +642,20 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                     </button>
                     <span className="text-[10px] text-white/35">Uses a dummy token; does not generate an image or use AI credits.</span>
                   </div>
+                  {catalogState.message && (
+                    <div
+                      role="status"
+                      className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
+                        catalogState.kind === 'success'
+                          ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
+                          : catalogState.kind === 'error'
+                            ? 'border-rose-500/20 bg-rose-500/10 text-rose-200'
+                            : 'border-white/10 bg-white/[0.04] text-white/60'
+                      }`}
+                    >
+                      {catalogState.message}
+                    </div>
+                  )}
                   {proxyTest && (
                     <div
                       role="status"
