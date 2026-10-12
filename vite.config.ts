@@ -76,7 +76,7 @@ function setupCustomMiddlewares(middlewares: any) {
             res.end(JSON.stringify({ error: 'Cloudflare credentials and image prompt are required.' }));
             return;
           }
-          if (!/^[a-zA-Z0-9_-]+$/.test(accountId) || !/^[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
+          if (!/^[a-zA-Z0-9_-]+$/.test(accountId) || !/^@?[-a-zA-Z0-9_./]+$/.test(model) || model.includes('..')) {
             res.statusCode = 400;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ error: 'Invalid Cloudflare account ID or model identifier.' }));
