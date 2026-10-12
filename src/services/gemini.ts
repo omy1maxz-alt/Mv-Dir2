@@ -3336,18 +3336,21 @@ export const generateMultiSwapImage = async (
         throw new Error(`${currentImageModel === 'aihorde' ? 'AI Horde' : 'Pollinations'} is prompt-only in MV Director and cannot preserve the selected frame/character identity images. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2.`);
     }
     
-    addLog("Connecting to image generation service for multi-character swap...", 'info');
-    const genAI = getGenAI(apiKey);
+    addLog("Preparing multi-character identity transfer...", 'info');
     
     const isSingleSwap = characterMappings.length === 1;
     let finalPrompt = "";
 
     const is31 = currentImageModel.includes('3.1') || currentImageModel.includes('nano-banana') || currentImageModel.includes('3-pro') || currentImageModel.includes('pro-image');
-    if (!is31) { // Auto-describe frame reference for legacy models
+    const isExternalReferenceProvider = currentImageModel.startsWith('cloudflare:')
+        || currentImageModel.startsWith('kie:')
+        || currentImageModel.startsWith('google/nano-banana');
+    if (!is31 && !isExternalReferenceProvider) { // Auto-describe frame reference for native legacy models
         // Auto-describe frame reference to provide robust scene context for models that don't support native tag merging well
         addLog(`Analyzing frame reference to generate a scene description for ${currentImageModel}...`, 'info');
         try {
-            const visionResponse = await callTextModel(genAI, {
+            const analysisAI = getGenAI(apiKey);
+            const visionResponse = await callTextModel(analysisAI, {
                 model: currentTextModel,
                 contents: [
                     {
@@ -3509,6 +3512,7 @@ export const generateMultiSwapImage = async (
         throw new Error(`The selected Imagen model (${currentImageModel}) uses a prompt-only image request in MV Director and does not support this reference-driven multi-character swap. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2.`);
     }
 
+    const genAI = getGenAI(apiKey);
     const doGenerate = async () => {
         const response = await withRetry(() => callTextModel(genAI, {
             model: currentImageModel,
