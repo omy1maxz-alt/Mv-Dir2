@@ -1,3 +1,10 @@
+### 200. Retry Transient Gemini Image Generation Failures
+- **User issue:** Scene 1 returned IMAGE_OTHER for both the original and sanitized prompts with face/reference images selected.
+- **Finding:** Google's Generate Content API defines IMAGE_OTHER as a miscellaneous image-generation finish reason, not specifically a safety rejection. A response can be HTTP 200 and contain no image bytes; this kind of failure may succeed when the same request is retried. See https://ai.google.dev/api/generate-content and https://ai.google.dev/gemini-api/docs/generate-content/image-generation.
+- **Change:** Gemini image requests now retry missing-image, IMAGE_OTHER, and other no-image responses up to three times with the exact same prompt and reference parts before giving up. Logs identify each retry. Explicit safety, recitation, blocklist, and prohibited-content reasons remain separate and continue through the prompt-sanitization path.
+- **Reference protection:** If all same-request retries fail while references are selected, the app returns a clearer model-output error and keeps the reference images. It does not claim the prompt was definitely blocked for safety and does not silently switch to prompt-only generation. Prompt-only requests may use the existing fallback after retries are exhausted.
+- **Verification:** Source was updated through GitHub. Verify the Vite/TypeScript and Android APK Actions run. Runtime image generation with the user's own prompt and reference photos is still needed to confirm output behavior; no live user-key image request was made here.
+
 ### 199. Image-Model-Aware AI Director Prompting
 - **User request:** Make the AI Director aware of the selected image generator and adapt prompt style to that model family.
 - **Change:** Added a shared selected-model prompt profile in `gemini.ts`. The Director system prompt uses it for new and continued plans; scene prompt enhancement uses the same profile. The profile covers Gemini/Nano Banana, KIE Nano Banana/GPT Image/Grok Imagine and other KIE models, Cloudflare FLUX.2, FLUX.1 [schnell], Leonardo Lucid/Phoenix, SDXL/DreamShaper, Imagen, and prompt-only routes.
