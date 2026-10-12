@@ -708,6 +708,91 @@ const calculateEstimatedScenes = (totalDuration: string, segmentDuration: string
     return Math.ceil(totalSeconds / segmentSeconds);
 };
 
+/**
+ * Model-specific prompt guidance for the image model selected in API Settings.
+ * Different model families respond better to different prompt structures.
+ */
+const getImageModelPromptProfile = (rawModel: string = currentImageModel): { label: string; guidance: string } => {
+    const model = String(rawModel || '').trim();
+    const lower = model.toLowerCase();
+    const cloudflareId = lower.startsWith('cloudflare:') ? lower.slice('cloudflare:'.length) : '';
+    const kieId = lower.startsWith('kie:') ? lower.slice('kie:'.length) : '';
+
+    if (cloudflareId.includes('flux-2')) {
+        return {
+            label: 'Cloudflare FLUX.2 (' + cloudflareId + ')',
+            guidance: 'Use coherent, descriptive natural language. Prioritize the subject and action, then spatial relationships, environment, framing, lighting, palette, and visual medium. Keep instructions concrete rather than stacking quality buzzwords or contradictory clauses. Do not put API field names, reference indices, or upload mechanics in imagePrompt; the image adapter maps reference images separately.'
+        };
+    }
+    if (cloudflareId.includes('flux-1-schnell')) {
+        return {
+            label: 'Cloudflare FLUX.1 [schnell]',
+            guidance: 'Use a compact, high-signal positive prompt: subject/action first, then setting, composition, lighting, palette, and essential style/texture. Aim for 1,500 characters or fewer and never exceed 2,048. Remove repetition, long meta-instructions, contradictions, and verbose negative lists. Do not assume a separate negative-prompt field.'
+        };
+    }
+    if (cloudflareId.includes('lucid-origin') || cloudflareId.includes('phoenix-1.0')) {
+        return {
+            label: cloudflareId.includes('lucid-origin') ? 'Cloudflare Leonardo Lucid Origin' : 'Cloudflare Leonardo Phoenix 1.0',
+            guidance: 'Favor clear descriptive natural language with explicit subject identity, action, setting, framing, lighting, palette, and visual medium. State important relationships unambiguously. Use targeted art direction instead of keyword piles; avoid adding lettering unless requested.'
+        };
+    }
+    if (cloudflareId.includes('stable-diffusion-xl') || cloudflareId.includes('dreamshaper-8-lcm')) {
+        return {
+            label: 'Cloudflare diffusion model (' + cloudflareId + ')',
+            guidance: 'Use a compact, visual-first prompt: subject and action first, then appearance/wardrobe, environment, shot composition, lighting, palette, and style/medium descriptors. Prefer specific visual descriptors over long narrative instructions. Avoid contradictory styles and express the desired result positively rather than relying on a separate negative-prompt field.'
+        };
+    }
+    if (kieId.startsWith('google/nano-banana') || lower.startsWith('gemini-') || lower.includes('nano-banana')) {
+        return {
+            label: 'Gemini / Nano Banana image model (' + model + ')',
+            guidance: 'Use precise natural-language art direction rather than a keyword dump. Describe one coherent frozen moment, subject relationships, framing, visual hierarchy, lighting, atmosphere, and materials. Give references clear roles and preserve identity while letting text control pose, wardrobe, scene, and composition. Avoid redundant quality slogans, conflicting constraints, and camera-motion language in a still-image prompt.'
+        };
+    }
+    if (kieId.startsWith('gpt-image')) {
+        return {
+            label: 'KIE GPT Image (' + kieId + ')',
+            guidance: 'Use explicit instruction-style natural language. Make the subject, requested visual changes, composition, lighting, and style priorities unambiguous. State what must remain consistent when references are supplied. Avoid prompt-tag soup and unsupported assumptions about negative-prompt fields.'
+        };
+    }
+    if (kieId.startsWith('grok-imagine')) {
+        return {
+            label: 'KIE Grok Imagine Image (' + kieId + ')',
+            guidance: 'Use a direct, visually concrete natural-language description. Lead with subject and action, then composition, setting, lighting, palette, and style. Keep the request internally consistent and avoid repeated quality tokens or long procedural directions.'
+        };
+    }
+    if (kieId) {
+        return {
+            label: 'KIE image model (' + kieId + ')',
+            guidance: 'Use clear natural-language art direction with subject/action first, then composition, setting, lighting, palette, material detail, and style. Respect supplied identity/frame/style references and separate their roles. Do not assume unsupported prompt parameters or a separate negative-prompt input.'
+        };
+    }
+    if (lower.startsWith('imagen-')) {
+        return {
+            label: 'Google Imagen (' + model + ')',
+            guidance: 'Use a complete descriptive natural-language scene prompt specifying subject/action, composition, environment, light, color, and photographic or illustrative medium. Be precise and coherent; avoid keyword stuffing, contradictory directions, and unnecessary technical generation parameters.'
+        };
+    }
+    if (lower === 'aihorde' || lower === 'pollinations') {
+        return {
+            label: lower === 'aihorde' ? 'AI Horde' : 'Pollinations',
+            guidance: 'Use a concise self-contained positive visual prompt: subject/action, appearance, environment, composition, lighting, palette, and style. These app routes are prompt-only, so do not imply that reference images or separate negative prompts will be passed to the provider.'
+        };
+    }
+    return {
+        label: model || 'Unknown image model',
+        guidance: 'Use a clear self-contained prompt for one frozen moment, specifying subject/action, composition, setting, lighting, palette, and visual medium. Avoid contradictions, repetitive quality buzzwords, unsupported negative-prompt syntax, and provider/API instructions. Preserve the requested style and character continuity.'
+    };
+};
+
+const getImageModelPromptDirective = (rawModel: string = currentImageModel): string => {
+    const profile = getImageModelPromptProfile(rawModel);
+    return '\n\n=== SELECTED IMAGE GENERATOR: ' + profile.label + ' ===\n' +
+        'Author imagePrompt specifically for this selected image generator, not for a generic model. Apply the model-family guidance while preserving creative intent, master art style, character identity, scene continuity, and the static-frame requirement:\n' +
+        '- ' + profile.guidance + '\n' +
+        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n' +
+        '- Keep videoMotionPrompt separate; do not leak camera-movement instructions into imagePrompt.\n';
+};
+
 const buildSystemPrompt = (projectData: ProjectData): string => {
     const targetSceneCount = projectData.useAutoSceneCount 
         ? Math.max(1, calculateEstimatedScenes(projectData.totalDuration, "7s"))
@@ -829,6 +914,8 @@ Directive 5: Chromatic and Luminance Evolution
         }
     }
 
+    prompt += getImageModelPromptDirective(currentImageModel);
+
     return prompt;
 };
 
@@ -861,7 +948,7 @@ const directorPlanSchema = {
                     songSection: { type: Type.STRING, description: "The section of the song this scene aligns with (e.g., 'Verse 1', 'Chorus', 'Bridge'). Leave empty if not applicable." },
                     emotionalTone: { type: Type.STRING, description: "The dominant feeling conveyed in the lyrics during this moment." },
                     title: { type: Type.STRING, description: "Visual Scene Concept: A short, descriptive title for the scene (e.g., 'Neon Alley Chase')." },
-                    imagePrompt: { type: Type.STRING, description: "A detailed, single-paragraph prompt for an AI image generator. This MUST include the master art style, character descriptions, camera angle, character pose, facial expression, lighting, setting, and mood. This is the most important field." },
+                    imagePrompt: { type: Type.STRING, description: "A detailed, single-paragraph image prompt tailored to the selected image-generator profile in the system instructions. Include art style, applicable character identity/styling, camera angle, pose, lighting, setting, composition, and mood while following that model family’s prompt structure." },
                     videoMotionPrompt: { type: Type.STRING, description: "A brief description of the camera motion or action in the scene (e.g., 'Slow dolly in', 'Subject running towards camera'). CRITICAL: Because this will be used for Image-to-Video generation, do NOT include character names or physical descriptions (hair, skin, etc.) here, as it causes AI hallucination. Only describe action and cinematography." },
                     isContinuation: { type: Type.BOOLEAN, description: "Set to true ONLY if this scene is a direct visual continuation of the previous scene (same location, same characters, continuous action). Otherwise false." },
                 },
@@ -874,6 +961,7 @@ const directorPlanSchema = {
 
 export const continueDirectorPlan = async (projectData: ProjectData, existingPlan: DirectorPlan, apiKey: string | undefined, addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void): Promise<DirectorPlan> => {
     addLog("Connecting to Gemini to continue plan...", 'info');
+    addLog('Director continuation profile: ' + getImageModelPromptProfile(currentImageModel).label, 'info');
     const genAI = getGenAI(apiKey);
 
     const systemInstruction = buildSystemPrompt(projectData);
@@ -1017,6 +1105,7 @@ export const continueDirectorPlan = async (projectData: ProjectData, existingPla
 };
 export const createDirectorPlan = async (projectData: ProjectData, apiKey: string | undefined, addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void): Promise<DirectorPlan> => {
     addLog("Connecting to Gemini...", 'info');
+    addLog('Director image-prompt profile: ' + getImageModelPromptProfile(currentImageModel).label, 'info');
     const genAI = getGenAI(apiKey);
 
     const systemInstruction = buildSystemPrompt(projectData);
@@ -2390,6 +2479,8 @@ export const enhanceAndSanitizePrompt = async (prompt: string, projectData: Proj
 7.  **Multi-Character Separation (CRITICAL):** If multiple characters are present in the same scene, you MUST structurally separate them in your spatial description (e.g., 'On the left is X, on the far right is Y'). To prevent the image generator from blending them or swapping faces, you MUST explicitly restate their gender, distinct clothing colors, and hair styles directly in the prompt. Avoid grouping them together physically unless absolutely necessary, and always describe their unique visual traits.
 8.  **SUBJECT FACING & HEAD ANGLE:** AI image generators frequently default to a "3/4 left profile" (looking left 45 degrees). You MUST actively override this by explicitly stating the character's facing direction and head angle. Use a mix of: "facing the camera directly," "profile view facing right," "looking off-screen to the right," "back to the camera looking over shoulder," "looking straight up," etc. Do NOT allow characters to repetitively face left 45 degrees.
 9.  **Format:** Output the final, enhanced prompt by filling out the required JSON fields.`;
+
+    systemInstruction += getImageModelPromptDirective(currentImageModel);
 
     if (projectData.characters && projectData.characters.length > 0) {
         systemInstruction += `\n\n**Character Consistency:** ONLY incorporate characters into the enhanced prompt if they were already mentioned or logically required by the original prompt. DO NOT arbitrarily insert other characters. For characters that *are* included: if a character's profile is missing details like hairstyle, outfit, makeup, or styling, you MUST invent highly detailed, fashionable, and cohesive options for them and include them directly in the 'enhancedPrompt'. CRITICAL: If a character's description includes a reference tag (e.g., "REF_1", "Based on REF_2"), DO NOT describe their facial features or identity in the prompt, and DO NOT write the REF tag in the prompt either. The image generation engine already knows which reference image belongs to which character. Describing their face or adding tags in text will cause the AI to generate a new, random character. Only describe their styling (hair, makeup, clothing), action, emotion, and the environment.\n\nMention characters strictly by their EXACT FULL NAME. CRITICAL: DO NOT use generic pronouns like "he", "she", "man", or "woman", as this confuses identity mapping. Always use their exact name.\n\n**Cast:**\n`;
