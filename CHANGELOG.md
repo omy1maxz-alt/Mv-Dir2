@@ -1,6 +1,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **Character Reference Face Preservation Across Image Tools**: Scene generation now includes only enabled, relevant references, prioritizes explicit face/character references before frame and style references, and sends the actual reference pixels to compatible Gemini, KIE Nano Banana, and Cloudflare FLUX.2 paths. The single-image tool now forwards the selected character image and frame together instead of dropping the frame whenever a face image is also selected. Character-swap generation now supports the same reference-capable KIE and FLUX.2 routes.
+- **No Silent Prompt-Only Fallback When a Face Reference Is Selected**: Pollinations, AI Horde, Imagen prompt-only requests, and Cloudflare models without a supported reference-image adapter now show a clear error instead of quietly generating without the selected face. Quota and safety fallback paths no longer silently remove reference images when doing so could change character identity.
+- **KIE Reference Image Upload and Input Schema**: Selected images are uploaded using KIE's base64 file-upload API, then passed via `image_input` for Nano Banana 2/Pro or `image_urls` for Nano Banana Edit. Unsupported KIE model variants reject reference-guided requests instead of ignoring the images. KIE-hosted reference files expire after 24 hours.
+
+
+### Fixed
 - **AI Chat Refresh / Regenerate**: Refresh controls appear only on real AI assistant replies, not user messages, welcome text, proxy messages, or error output. Regeneration truncates only the selected conversation at the chosen AI response, preserves the exact earlier transcript (including the original user prompt), and appends a replacement response. Other conversations remain unchanged.
 - **Cloudflare Refresh and FLUX.2 Error Guidance**: Manual catalog refresh now uses the same diagnostic as automatic lookup, so an old POST-only Worker is reported as an outdated deployment instead of repeating its raw “Use POST for model requests” response. FLUX.2 requests through the configured Worker now detect Cloudflare's missing multipart error at the correct request boundary and explain that the exact deployed Worker must be updated.
 - **FLUX.1 [schnell] Prompt Length**: Enforced Cloudflare's documented 2,048-character prompt limit before submission. Oversized prompts are shortened at safe word boundaries while preserving both the scene description at the beginning and quality/style constraints at the end; the app logs a warning with the original and resulting lengths.
