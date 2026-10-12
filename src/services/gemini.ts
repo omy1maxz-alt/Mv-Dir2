@@ -1365,6 +1365,55 @@ const fallbackToPollinations = async (prompt: string, aspectRatio: string, addLo
     throw new Error(`Fallback failed: Public image generation services are temporarily unreachable (${lastError?.message || 'Network Timeout'}). Please check your Gemini API key in Settings -> API Settings or configure a Hugging Face / Kie AI API key.`);
 };
 
+const referenceRoles = (ref: ReferenceImage): string[] =>
+    Array.isArray(ref.roles) ? ref.roles as string[] : [];
+
+const getCharacterForReference = (ref: ReferenceImage, projectData: ProjectData) => {
+    if (ref.characterId) {
+        const linked = projectData.characters?.find(character => character.id === ref.characterId);
+        if (linked) return linked;
+    }
+    const originalIndex = projectData.referenceImages?.findIndex(item => item.id === ref.id) ?? -1;
+    if (originalIndex >= 0) {
+        const refId = `REF_${originalIndex + 1}`;
+        return projectData.characters?.find(character => character.description?.facialFeatures === refId);
+    }
+    return undefined;
+};
+
+const isCharacterIdentityReference = (ref: ReferenceImage, projectData: ProjectData): boolean => {
+    const roles = referenceRoles(ref);
+    return roles.includes('Face') || roles.includes('Body') || Boolean(getCharacterForReference(ref, projectData));
+};
+
+const sortReferencesForIdentity = (references: ReferenceImage[], projectData: ProjectData): ReferenceImage[] => {
+    const weight = (ref: ReferenceImage) => {
+        const roles = referenceRoles(ref);
+        if (roles.includes('Face') || Boolean(getCharacterForReference(ref, projectData))) return 0;
+        if (roles.includes('Body')) return 1;
+        if (roles.includes('Frame') || roles.includes('Continuity')) return 2;
+        if (roles.includes('Style') || ref.isMasterArt) return 3;
+        return 4;
+    };
+    return [...references].sort((a, b) => weight(a) - weight(b));
+};
+
+const describeReferenceForImagePrompt = (ref: ReferenceImage, projectData: ProjectData): string => {
+    const roles = referenceRoles(ref);
+    const character = getCharacterForReference(ref, projectData);
+    if (roles.includes('Face') || character) {
+        return `CHARACTER FACE / IDENTITY${character?.name ? ` — ${character.name}` : ''}. Preserve this person's actual facial identity, eye shape, nose, lips, face proportions, and skin tone. Do not copy pose, clothing, background, or style unless separately requested.`;
+    }
+    if (roles.includes('Body')) return 'CHARACTER BODY / SILHOUETTE reference. Use for body proportions and physical appearance, not as a replacement for a separate face reference.';
+    if (roles.includes('Frame')) return 'FRAME / COMPOSITION reference. Use for shot framing, camera angle, pose, and scene layout; do not copy the face as the character identity.';
+    if (roles.includes('Continuity')) return 'CONTINUITY reference. Use for visual continuity of the scene, lighting, and environment; do not copy its face when a character face reference is also supplied.';
+    if (roles.includes('Style') || ref.isMasterArt) return 'STYLE reference. Use for visual treatment, palette, texture, and lighting only.';
+    return roles.length ? roles.join(' / ') + ' reference.' : 'Project reference.';
+};
+
+const isCloudflareFlux2Model = (model: string): boolean =>
+    ['@cf/black-forest-labs/flux-2-dev', '@cf/black-forest-labs/flux-2-klein-4b', '@cf/black-forest-labs/flux-2-klein-9b'].includes(model);
+
 export const generateSceneImage = async (
     prompt: string,
     aspectRatio: AspectRatio,
@@ -1375,79 +1424,77 @@ export const generateSceneImage = async (
     addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void,
     disabledCharacterIds?: string[]
 ): Promise<string> => {
-    if (currentImageModel === 'pollinations') {
-        return await fallbackToPollinations(prompt, aspectRatio, addLog);
-    }
-    if (currentImageModel === 'aihorde') {
-        return await generateImageAIHorde({
-            prompt,
-            aspectRatio: aspectRatio as string,
-            addLog
-        });
-    }
-    
     addLog("Connecting to image generation service...", 'info');
+
+    // Resolve references before selecting a provider so text-only providers can
+    // never silently discard an explicitly selected character face.
     
-    // Filter references to only include those relevant to the prompt
     const relevantReferences = references.filter((ref) => {
+        const roles = referenceRoles(ref);
         if (ref.enabled === false) return false;
-        // NEVER pass Character Sheets to the image generator visually, as the grid layout confuses it.
-        if (ref.roles.includes('Character Sheet')) return false;
+        // Contact sheets are for analysis and should not be sent as one image reference.
+        if (roles.includes('Character Sheet')) return false;
 
-        if (ref.roles.includes('Continuity') || ref.roles.includes('Frame')) return true;
-        
-        const originalIndex = projectData.referenceImages.findIndex(r => r.id === ref.id);
-        const refId = originalIndex !== -1 ? `REF_${originalIndex + 1}` : null;
-        
-        const character = ref.characterId 
-            ? projectData.characters.find(c => c.id === ref.characterId) 
-            : (refId ? projectData.characters.find(c => c.description.facialFeatures === refId) : undefined);
-            
+        const character = getCharacterForReference(ref, projectData);
+        if (character && disabledCharacterIds?.includes(character.id)) return false;
+
+        // Frame and continuity references are explicitly global to this shot.
+        if (roles.includes('Continuity') || roles.includes('Frame')) return true;
+
         if (character) {
-            if (disabledCharacterIds?.includes(character.id)) return false;
-            const trimmedName = character.name.trim();
-            if (!trimmedName) return false;
-            
-            const escapedName = trimmedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            // Safely split and check firstName
-            const firstNameParts = escapedName.split(/\s+/);
-            const firstName = firstNameParts[0];
-            
-            if (!firstName) return false;
-
-            // Only allow firstName matching if length > 2 to prevent accidental matching of generic/short pronouns like "A", "I", "He"
-            let regexStr = `\\b(${escapedName})\\b`;
-            if (firstName.length > 2) {
-                 regexStr = `\\b(${escapedName}|${firstName})\\b`;
-            }
-            const nameRegex = new RegExp(regexStr, 'i');
+            const escapedName = character.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const firstName = escapedName.split(/\s+/)[0];
+            const nameRegex = new RegExp(firstName.length > 2
+                ? `\\b(${escapedName}|${firstName})\\b`
+                : `\\b(${escapedName})\\b`, 'i');
             if (nameRegex.test(prompt)) return true;
-            
-            // If there's exactly 1 active character in the scene, assume they are the subject even if not explicitly named
-            const activeCharactersCount = projectData.characters.filter(c => !disabledCharacterIds?.includes(c.id)).length;
-            if (activeCharactersCount === 1) {
-                return true; 
-            }
 
+            const activeCharactersCount = (projectData.characters || []).filter(c => !disabledCharacterIds?.includes(c.id)).length;
+            // Keep a pinned/primary reference even when a scene prompt omits the name.
+            if (ref.isPrimary || activeCharactersCount === 1) return true;
             return false;
         }
-        
-        // If it's an untied reference, it should only be included globally if it is explicitly marked 
-        // as a global environmental or stylistic reference.
-        if (ref.isMasterArt) return true;
 
-        // If it has 'Face', 'Body', 'Outfit', or 'General', it risks bleeding a character portrait into EVERY scene.
-        const allowedGlobalRoles = ['Style', 'Frame', 'Continuity'];
-        const hasGlobalRole = ref.roles.some(r => allowedGlobalRoles.includes(r));
-        if (hasGlobalRole) {
-            return true;
+        if (isCharacterIdentityReference(ref, projectData)) {
+            const activeCharacters = (projectData.characters || []).filter(c => !disabledCharacterIds?.includes(c.id));
+            const explicitlyMentioned = activeCharacters.filter(character => {
+                const name = character.name?.trim();
+                if (!name) return false;
+                const firstName = name.split(/\s+/)[0];
+                return new RegExp(`\\b(${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\b`, 'i').test(prompt);
+            });
+            const identityReferenceCount = references.filter(candidate =>
+                candidate.enabled !== false &&
+                !referenceRoles(candidate).includes('Character Sheet') &&
+                isCharacterIdentityReference(candidate, projectData)
+            ).length;
+
+            // An unlinked face image is safe to infer only when there is one obvious
+            // subject/reference. Otherwise require an explicit character link to avoid face mixing.
+            if (ref.isPrimary || (identityReferenceCount === 1 && (activeCharacters.length === 1 || explicitlyMentioned.length === 1))) {
+                return true;
+            }
+            return false;
         }
 
-        // Otherwise exclude it to prevent cross-contamination.
-        return false;
+        if (ref.isMasterArt) return true;
+        const allowedGlobalRoles = ['Style'];
+        return roles.some(role => allowedGlobalRoles.includes(role));
     });
 
-    const hasCharRef = relevantReferences.some(r => r.roles.includes('Face') || r.roles.includes('Body') || r.characterId || projectData.characters.some(c => c.description.facialFeatures.includes(r.id.substring(0, 8))));
+    const hasCharRef = relevantReferences.some(ref => isCharacterIdentityReference(ref, projectData));
+    
+    if (currentImageModel === 'pollinations' || currentImageModel === 'aihorde') {
+        if (relevantReferences.length > 0) {
+            const provider = currentImageModel === 'aihorde' ? 'AI Horde' : 'Pollinations';
+            throw new Error(`${provider} is prompt-only in MV Director and cannot preserve selected visual references. No prompt-only fallback was run. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2 for reference-guided generation.`);
+        }
+        if (currentImageModel === 'aihorde') {
+            return await generateImageAIHorde({ prompt, aspectRatio: aspectRatio as string, addLog });
+        }
+        return await fallbackToPollinations(prompt, aspectRatio, addLog);
+    }
+
 
     let fullPrompt = `Generate a highly detailed image of the following scene. Do not output any conversational text, only the image.\n`;
     if (hasCharRef) {
@@ -1540,33 +1587,80 @@ export const generateSceneImage = async (
         });
     }
     
-    // FLUX.2 uses Cloudflare's multipart endpoint and accepts up to four relevant
-    // reference images. Route it after our normal reference filters so disabled,
-    // unrelated character, and character-sheet assets are not accidentally passed.
     if (currentImageModel.startsWith('cloudflare:')) {
         const model = currentImageModel.replace('cloudflare:', '');
-        const isFlux2 = [
-            '@cf/black-forest-labs/flux-2-dev',
-            '@cf/black-forest-labs/flux-2-klein-4b',
-            '@cf/black-forest-labs/flux-2-klein-9b'
-        ].includes(model);
-        const fluxReferences = isFlux2 ? relevantReferences.slice(0, 4) : [];
-        if (isFlux2 && relevantReferences.length > 4) {
-            addLog(`FLUX.2 supports up to 4 reference images; using the first 4 of ${relevantReferences.length} relevant references.`, 'warning');
+        if (relevantReferences.length > 0 && !isCloudflareFlux2Model(model)) {
+            throw new Error(`The selected Cloudflare model (${model}) does not accept reference images through MV Director's current adapter. Your character reference was not dropped silently. Choose a Cloudflare FLUX.2 model or a Gemini/KIE Nano Banana reference-capable model.`);
+        }
+        const orderedReferences = sortReferencesForIdentity(relevantReferences, projectData);
+        const identityReferences = orderedReferences.filter(ref => isCharacterIdentityReference(ref, projectData));
+        if (identityReferences.length > 4) {
+            throw new Error(`Cloudflare FLUX.2 accepts at most four reference images, but ${identityReferences.length} character identity references are active. Disable unrelated characters or use KIE Nano Banana 2/Pro or a Gemini image model.`);
+        }
+        const fluxReferences = isCloudflareFlux2Model(model)
+            ? [...identityReferences, ...orderedReferences.filter(ref => !isCharacterIdentityReference(ref, projectData))].slice(0, 4)
+            : [];
+        if (isCloudflareFlux2Model(model) && orderedReferences.length > fluxReferences.length) {
+            addLog(`FLUX.2 supports four reference images; all identity references are prioritized, plus the highest-priority frame/style references.`, 'warning');
         }
         let cloudflarePrompt = fullPrompt;
-        if (isFlux2 && fluxReferences.length > 0) {
+        if (fluxReferences.length > 0) {
             const referenceMap = fluxReferences.map((ref, index) =>
-                `Image ${index}: ${ref.description || (ref.roles || []).join(', ') || 'Project reference'}`
+                `Image ${index} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
             ).join('\n');
-            cloudflarePrompt += `\n\n**FLUX.2 Reference Image Map**\n${referenceMap}\nUse each supplied image for its described identity, style, or continuity guidance. Keep the new action, framing, and composition controlled by the current scene prompt.`;
+            cloudflarePrompt += `\n\n**Reference Image Index Map (matches input_image_0 through input_image_3 exactly)**\n${referenceMap}\n\n**Face-preservation priority:** For every named character, copy the face identity only from the matching CHARACTER FACE / IDENTITY reference. Do not derive, average, blend, or substitute that face from a frame, continuity, style, or other character reference. The prompt controls action, expression, pose, outfit, and camera framing.`;
         }
         return await generateImageCloudflare({
             prompt: cloudflarePrompt,
             aspectRatio: aspectRatio as string,
             model,
             seed,
-            referenceImages: isFlux2 ? fluxReferences.map(ref => ({ data: ref.data, description: ref.description })) : undefined,
+            referenceImages: isCloudflareFlux2Model(model)
+                ? fluxReferences.map(ref => ({ data: ref.data, description: describeReferenceForImagePrompt(ref, projectData) }))
+                : undefined,
+            addLog
+        });
+    }
+
+    const { parts: referenceParts, instructions: referenceInstructions } = buildReferenceParts(relevantReferences, projectData);
+    
+    if (referenceInstructions.length > 0) {
+        fullPrompt += `\n\n**CRITICAL REFERENCE INSTRUCTIONS:**\nYou are provided with reference images above. You MUST follow these rules for using them:\n`;
+        referenceInstructions.forEach(inst => {
+            fullPrompt += `- ${inst}\n`;
+        });
+    }
+
+    if (currentImageModel.startsWith('kie:') || currentImageModel.startsWith('google/nano-banana')) {
+        const keyToUse = customKieApiKey || (typeof window !== 'undefined' ? (() => {
+            try {
+                const stored = localStorage.getItem('mv_api_keys');
+                if (stored) return JSON.parse(stored).kie;
+            } catch {}
+            return undefined;
+        })() : undefined);
+        if (!keyToUse) {
+            throw new Error("Kie AI API Key is required for reference-guided image generation. Add it in Settings -> API Settings.");
+        }
+        const kieReferences = sortReferencesForIdentity(relevantReferences, projectData).slice(0, 14);
+        if (relevantReferences.length > kieReferences.length) {
+            addLog('KIE Nano Banana accepts up to 14 reference images here; identity references are prioritized before frame/style references.', 'warning');
+        }
+        const referenceMap = kieReferences.map((ref, index) =>
+            `Image ${index + 1} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
+        ).join('\n');
+        const kiePrompt = kieReferences.length
+            ? `${fullPrompt}\n\n**Reference Image Index Map (same order as the uploaded KIE image_input list)**\n${referenceMap}\n\n**Face-preservation priority:** Do not average, blend, or substitute character faces. Each named character must use the face from its matching CHARACTER FACE / IDENTITY reference. Use frame and continuity references only for composition/scene continuity, and style references only for style.`
+            : fullPrompt;
+        return await generateKieImage({
+            prompt: kiePrompt,
+            model: currentImageModel,
+            aspectRatio: aspectRatio as string,
+            apiKey: keyToUse,
+            referenceImages: kieReferences.map(ref => ({
+                data: ref.data,
+                description: describeReferenceForImagePrompt(ref, projectData)
+            })),
             addLog
         });
     }
@@ -1574,37 +1668,14 @@ export const generateSceneImage = async (
     // Interleave the reference parts with the main prompt
     const parts: any[] = [...referenceParts, { text: fullPrompt }];
 
-    const isKieImageModel = currentImageModel.startsWith('kie:') || currentImageModel.startsWith('google/nano-banana');
-    if (isKieImageModel) {
-        const keyToUse = customKieApiKey || (typeof window !== 'undefined' ? (() => {
-            try {
-                const stored = localStorage.getItem('mv_api_keys');
-                if (stored) {
-                    const parsed = JSON.parse(stored);
-                    return parsed.kie;
-                }
-            } catch {}
-            return undefined;
-        })() : undefined);
-
-        if (!keyToUse) {
-            throw new Error("Kie AI API Key is required for Nano Banana image generation. Please add your Kie AI API key in Settings -> API Settings.");
-        }
-
-        return await generateKieImage({
-            prompt: fullPrompt,
-            model: currentImageModel,
-            aspectRatio: aspectRatio as string,
-            apiKey: keyToUse,
-            addLog
-        });
-    }
-
     const genAI = getGenAI(apiKey);
 
     const doGenerate = async (currentParts: any[]) => {
         addLog(`Sending request to ${currentImageModel}...`, 'info');
         if (currentImageModel.startsWith('imagen-')) {
+            if (referenceParts.length > 0) {
+                throw new Error(`The selected Imagen model (${currentImageModel}) uses a prompt-only request in MV Director and would ignore the selected face/reference images. Choose a Gemini image model, KIE Nano Banana 2/Pro/Edit, or Cloudflare FLUX.2 instead.`);
+            }
             const resp = await withRetry(() => (genAI.models as any).generateImages({
                 model: currentImageModel,
                 prompt: prompt,
@@ -1667,6 +1738,9 @@ export const generateSceneImage = async (
     } catch (error: any) {
         const isQuotaOrAuth = error.message.includes('Quota') || error.message.includes('403') || error.message.includes('Permission Denied') || error.message.includes('429') || error.message.includes('limit');
         if (isQuotaOrAuth) {
+            if (referenceParts.length > 0) {
+                throw new Error(`Image generation failed for ${currentImageModel} (${error.message || 'authentication/quota error'}). MV Director did not switch to a prompt-only fallback because that would drop the selected reference images and could change the face. Fix the provider credentials/quota or select another reference-capable model.`);
+            }
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
 
@@ -1683,15 +1757,7 @@ export const generateSceneImage = async (
                 const isBlocked1 = fallbackError1.message === "IMAGE_OTHER" || fallbackError1.message.includes("safety") || fallbackError1.message.includes("blocked") || fallbackError1.message.includes("recitation") || fallbackError1.message.includes("SAFETY");
                 
                 if (isBlocked1 && referenceParts.length > 0) {
-                    addLog("Retrying with sanitized prompt without reference images...", 'warning');
-                    try {
-                        // Fallback 2: Sanitized prompt only (no references)
-                        const fallbackParts2 = [{ text: cleanSanitized }];
-                        return await doGenerate(fallbackParts2);
-                    } catch (fallbackError2: any) {
-                        addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                        return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-                    }
+                    throw new Error(`The model rejected both the original and sanitized prompts with the selected reference images. MV Director did not retry without references because that could change the character's face. Adjust the scene prompt or use another reference-capable image model. Original error: ${fallbackError1.message}`);
                 } else if (isBlocked1) {
                     addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
                     return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
