@@ -265,7 +265,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-9b', label: 'FLUX.2 [klein] 9B — Reference-guided generation with enhanced quality (4 fixed steps)' },
       { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
       { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation ($0.00 per step in Cloudflare docs)' },
-      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' },
+      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — $0.00 per step (fast drafts)' },
       { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting', label: 'Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)' }
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-to-image').map(model => model.id));
@@ -577,6 +577,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                     Refresh Model Catalog
                   </button>
                   {catalogState.message && <div role="status" className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${catalogState.kind === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : catalogState.kind === 'error' ? 'border-rose-500/20 bg-rose-500/10 text-rose-200' : 'border-white/10 bg-white/[0.04] text-white/60'}`}>{catalogState.message}</div>}
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] leading-relaxed text-white/50">
+                    Cloudflare Workers Free includes a shared 10,000-Neuron daily allowance. Free-plan-eligible models are not unlimited; large models can use the allowance quickly. A model documented at $0.00 per step is a different pricing category from token-priced text models.
+                  </div>
                   {catalogState.kind === 'success' && (
                     <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] px-3 py-2 text-[11px] leading-relaxed text-sky-100/80">
                       <div className="font-semibold text-sky-200">Image-to-Text models (vision analysis)</div>
