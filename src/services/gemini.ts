@@ -836,10 +836,10 @@ const getImageModelPromptDirective = (rawModel: string = currentImageModel): str
     return '\n\n=== SELECTED IMAGE GENERATOR: ' + profile.label + ' ===\n' +
         'Author imagePrompt specifically for this selected image generator, not for a generic model. Apply only capabilities supported by this model and preserve the user\'s subject, scene, style, composition, essential details, master art style, character identity, continuity, and static-frame requirement. Do not add unrequested elements or change the requested visual intent.\n' +
         '- ' + profile.guidance + '\n' +
-        '- Mention visible lettering only when the user requests it; do not assume all models render text reliably.\n' +
-        '- Describe aspect ratio in the prompt only when the selected provider requires composition guidance; actual aspect-ratio controls remain with the provider adapter.\n' +
-        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n' +
-        '- Keep videoMotionPrompt separate; do not leak camera-movement instructions into imagePrompt.\n';
+        '- Do not claim unsupported controls (including masks, negative prompts, reference inputs, or aspect-ratio parameters) are available unless the selected adapter actually supplies them.\n' +
+        '- Use visible lettering only when requested, and do not promise exact text rendering without a verified model capability.\n' +
+        '- Keep videoMotionPrompt separate; never leak camera movement over time into the static image prompt.\n' +
+        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n';
 };
 
 const buildSystemPrompt = (projectData: ProjectData, selectedImageModel: string = currentImageModel): string => {
