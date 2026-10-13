@@ -130,7 +130,7 @@ const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
   // Cloudflare requires each FLUX.2 reference image to be smaller than 512x512.
   const scale = Math.min(1, 511 / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale);
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
