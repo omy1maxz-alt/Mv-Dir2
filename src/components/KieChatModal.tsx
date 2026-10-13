@@ -3200,20 +3200,25 @@ Carefully review the conversation and your previous replies above.
         maxTurns={activeSession.maxMemoryTurns ?? 6}
         currentSystemPrompt={activeSession.customSystemPrompt}
         onApplyExecutiveMemory={(distilledText, targetSessionId) => {
+          const mergeMemory = (existingPrompt?: string) => {
+            const marker = '## Distilled Conversation Memory';
+            const base = (existingPrompt || '').split(marker)[0].trimEnd();
+            return [base, marker, distilledText.trim()].filter(Boolean).join('\\n\\n');
+          };
           if (targetSessionId === 'all') {
             setSessions(prev => {
-              const updated = prev.map(s => ({ ...s, customSystemPrompt: distilledText, updatedAt: Date.now() }));
+              const updated = prev.map(s => ({ ...s, customSystemPrompt: mergeMemory(s.customSystemPrompt), updatedAt: Date.now() }));
               try { localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(updated)); } catch {}
               return updated;
             });
           } else if (targetSessionId && targetSessionId !== activeSessionId) {
             setSessions(prev => {
-              const updated = prev.map(s => s.id === targetSessionId ? { ...s, customSystemPrompt: distilledText, updatedAt: Date.now() } : s);
+              const updated = prev.map(s => s.id === targetSessionId ? { ...s, customSystemPrompt: mergeMemory(s.customSystemPrompt), updatedAt: Date.now() } : s);
               try { localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(updated)); } catch {}
               return updated;
             });
           } else {
-            handleUpdateSession({ customSystemPrompt: distilledText });
+            handleUpdateSession({ customSystemPrompt: mergeMemory(activeSession.customSystemPrompt) });
           }
         }}
       />
