@@ -71,7 +71,7 @@ export const SearchableModelPicker: React.FC<{
             {visibleGroups.reduce((count, group) => count + group.options.length, 0)} models • grouped by provider
           </div>
           <div role="listbox" aria-label={label} className="max-h-[min(42dvh,360px)] overflow-y-auto overscroll-contain p-2">
-            {visibleGroups.length ? visibleGroups.map(group => (
+            {visibleGroups.map(group => (
               <div key={group.label} className="mb-2 last:mb-0">
                 <div className="sticky top-0 z-10 flex items-center gap-2 bg-[#151515]/95 px-2 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-white/45 backdrop-blur">
                   <span className={`h-1.5 w-1.5 rounded-full ${group.label.toLowerCase().includes('cloudflare') ? 'bg-orange-400' : group.label.toLowerCase().includes('kie') ? 'bg-indigo-400' : group.label.toLowerCase().includes('google') ? 'bg-emerald-400' : group.label.toLowerCase().includes('horde') ? 'bg-teal-400' : 'bg-white/40'}`} />
