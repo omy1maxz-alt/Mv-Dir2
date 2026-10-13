@@ -266,13 +266,15 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
       { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation ($0.00 per step in Cloudflare docs)' },
       { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — $0.00 per step (fast drafts)' },
-      { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting', label: 'Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)' }
+      { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting', label: 'Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)' },
+      { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-img2img', label: 'Stable Diffusion 1.5 Img2Img — $0.00 per step (requires one reference image)' }
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-to-image').map(model => model.id));
     const options = catalogState.kind === 'success'
       ? known.filter(option => found.has(option.value.slice('cloudflare:'.length))
-          // Cloudflare marks this documented $0/step Runway model as Beta, and the live catalog request hides experimental models.
-          || option.value === 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting')
+          // Cloudflare marks these documented $0/step Runway models as Beta; the live catalog query hides experimental models.
+          || option.value === 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting'
+          || option.value === 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-img2img')
       : known;
     return { label: 'Cloudflare Workers AI (' + (catalogState.kind === 'success' ? 'Live Catalog + supported Beta' : 'Fallback') + ')', options: options.length ? options : known };
   })();
@@ -737,6 +739,8 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
             <div className="text-[10px] text-white/40">
               {imageModel.startsWith('kie:') 
                 ? "Powered by Kie.ai Image API. Uses your Kie AI API key to generate images without GCP billing."
+                : imageModel === 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-img2img'
+                ? "Cloudflare Runway Stable Diffusion 1.5 Img2Img. Cloudflare lists $0.00 per step. Requires exactly one selected reference image; multiple references are rejected instead of silently discarded."
                 : imageModel.startsWith('cloudflare:')
                 ? "Powered by Cloudflare Workers AI. Uses your Cloudflare Account ID & Workers AI API Token."
                 : imageModel === 'aihorde'
