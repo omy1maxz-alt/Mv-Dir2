@@ -23,7 +23,6 @@ export const SearchableModelPicker: React.FC<{
   const [openUpward, setOpenUpward] = useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const selected = groups.flatMap(group => group.options).find(option => option.value === value);
-  const visibleGroups = groups;
 
   useEffect(() => {
     if (!isOpen) return;
