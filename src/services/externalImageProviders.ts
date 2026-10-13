@@ -140,6 +140,39 @@ const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
   return canvas.toDataURL('image/jpeg', 0.9);
 };
 
+/**
+ * Prepare one reference image for the Cloudflare Runway Stable Diffusion 1.5 img2img model.
+ * Unlike FLUX.2, this endpoint accepts a single base64 image_b64 field (no data: prefix).
+ */
+const imageToCloudflareImageBase64 = async (source: string): Promise<string> => {
+  const trimmed = String(source || '').trim();
+  if (!trimmed) throw new Error('The selected reference image has no image data.');
+  const dataUrl = trimmed.startsWith('data:') ? trimmed : `data:image/png;base64,${trimmed}`;
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Could not decode the selected reference image for Stable Diffusion 1.5 Img2Img.'));
+    image.src = dataUrl;
+  });
+  if (!image.naturalWidth || !image.naturalHeight) {
+    throw new Error('The selected reference image has no usable dimensions.');
+  }
+
+  // Keep a useful face/reference resolution while staying within common image payload limits.
+  const scale = Math.min(1, 1024 / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Reference image resizing is unavailable in this browser.');
+  context.drawImage(image, 0, 0, width, height);
+  const base64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
+  if (!base64) throw new Error('Could not encode the selected reference image.');
+  return base64;
+};
+
 const cloudflareInputToMultipart = (input: Record<string, any>): FormData => {
   const form = new FormData();
   for (const [key, value] of Object.entries(input)) {
@@ -298,8 +331,18 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     if (references.length > 0) {
       addLog?.(`Preparing ${references.length} reference image(s) for FLUX.2 multipart editing (max 4, resized to 512px).`, 'info');
     }
+  } else if (model === '@cf/runwayml/stable-diffusion-v1-5-img2img') {
+    const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
+    if (references.length !== 1) {
+      throw new Error(`Cloudflare Stable Diffusion 1.5 Img2Img is a $0.00-per-step model that requires exactly one selected reference image. ${references.length} were supplied. Use one face/reference image, or choose another model for multiple references.`);
+    }
+    modelInput.image_b64 = await imageToCloudflareImageBase64(references[0].data);
+    modelInput.num_steps = 20;
+    modelInput.strength = 0.72;
+    modelInput.guidance = 7.5;
+    addLog?.('Preparing one reference image for Runway Stable Diffusion 1.5 Img2Img (1024px max; 20 steps).', 'info');
   } else if ((options.referenceImages || []).length > 0) {
-    throw new Error(`The selected Cloudflare model (${model}) has no reference-image input in this adapter. MV Director will not discard the selected face/frame images. Choose FLUX.2 [dev], Klein 4B/9B, or a Gemini/KIE reference-capable model.`);
+    throw new Error(`The selected Cloudflare model (${model}) has no reference-image input in this adapter. MV Director will not discard the selected face/frame images. Choose FLUX.2 [dev], Klein 4B/9B, Runway Img2Img (one reference), or a Gemini/KIE reference-capable model.`);
   }
   if (model === '@cf/black-forest-labs/flux-1-schnell') {
     // FLUX.1 schnell only accepts prompt/steps; dimensions are not in its schema.
