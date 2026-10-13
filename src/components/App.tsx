@@ -9,7 +9,8 @@ import { saveProjectToDB, loadProjectFromDB, savePlanToDB, loadPlanFromDB, clear
 import { exportAllChatData, importChatData } from '@/services/studioChatStorage';
 import { SceneCard } from '@/components/SceneCard';
 import { PromptGenerator } from '@/components/PromptGenerator';
-import { ApiKeyVault } from '@/components/ApiKeyVault';
+import { ApiKeyVault, SearchableModelPicker } from '@/components/ApiKeyVault';
+import { STORYBOARD_IMAGE_MODEL_GROUPS } from '@/data/imageModelOptions';
 import { ChangelogModal } from '@/components/ChangelogModal';
 import { DevJournalModal } from '@/components/DevJournalModal';
 import { SecondBrainModal } from '@/components/SecondBrainModal';
@@ -742,6 +743,14 @@ export const App: React.FC = () => {
     localStorage.setItem('mv_text_model', model);
     localStorage.setItem('mv_image_model', imgModel);
     addLog("API settings updated.", 'success');
+  };
+
+  const handleSelectImageModel = (model: string) => {
+    setImageModel(model);
+    setImageModelInService(model);
+    try { localStorage.setItem('mv_image_model', model); } catch {}
+    const selectedLabel = STORYBOARD_IMAGE_MODEL_GROUPS.flatMap(group => group.options).find(option => option.value === model)?.label || model;
+    addLog(`Storyboard image model changed to ${selectedLabel}.`, 'success');
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1898,6 +1907,16 @@ export const App: React.FC = () => {
                   <div className="flex-shrink-0 mb-6 flex flex-col xl:flex-row items-start xl:items-center justify-between pb-4 border-b border-white/5 gap-4">
                     <div className="flex items-center gap-3"><div className="p-2 bg-indigo-600/20 rounded-lg"><Clapperboard className="w-5 h-5 text-indigo-400" /></div><div><h2 className="text-lg font-bold text-white">Production Storyboard</h2><p className="text-xs text-white/50 font-mono uppercase tracking-widest">{directorPlan.title} • {directorPlan.scenes.length} Scenes</p></div></div>
                     <div className="flex flex-wrap items-center gap-2">
+                        <div className="w-[240px] max-w-full">
+                          <SearchableModelPicker
+                            label="Storyboard Image Model"
+                            value={imageModel}
+                            onChange={handleSelectImageModel}
+                            accent="emerald"
+                            compact
+                            groups={STORYBOARD_IMAGE_MODEL_GROUPS}
+                          />
+                        </div>
                         <div className="mr-2 flex items-center gap-2">
                           <AspectRatioDropdown 
                             value={projectData.aspectRatio} 
