@@ -819,7 +819,8 @@ const getImageModelPromptDirective = (rawModel: string = currentImageModel): str
         '- Do not claim unsupported controls (including masks, negative prompts, reference inputs, or aspect-ratio parameters) are available unless the selected adapter actually supplies them.\n' +
         '- Use visible lettering only when requested, and do not promise exact text rendering without a verified model capability.\n' +
         '- Keep videoMotionPrompt separate; never leak camera movement over time into the static image prompt.\n' +
-        '- imagePrompt must be usable natural-language visual text, never a JSON object/array or serialized schema. Use the selected model\'s preferred prompt style instead of forcing every model into the same format.\\n' +\n        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n';
+        '- imagePrompt must be usable natural-language visual text, never a JSON object/array or serialized schema. Use the selected model\\'s preferred prompt style instead of forcing every model into the same format.\\n' +
+        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n';
 };
 
 /**
