@@ -231,10 +231,17 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const cloudflareVisionModels = cloudflareCatalog.filter(model => normalizedTask(model) === 'image-to-text');
 
   const cloudflareTextGroup: ModelOptionGroup = (() => {
-    const supported = cloudflareCatalog.some(model => normalizedTask(model).includes('text-generation') && model.id === '@cf/meta/llama-3.3-70b-instruct-fp8-fast');
+    const known: ModelOption[] = [
+      { value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B — general chat and reasoning' },
+      { value: 'cloudflare-text:@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash — free-plan compatible, multilingual reasoning' }
+    ];
+    const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-generation').map(model => model.id));
+    const options = catalogState.kind === 'success'
+      ? known.filter(option => found.has(option.value.slice('cloudflare-text:'.length)))
+      : known;
     return {
       label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog)' : ' (Fallback List)'),
-      options: [{ value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: supported ? 'Cloudflare Llama 3.3 70B (available in live catalog)' : 'Cloudflare Llama 3.3 70B (Worker Proxy recommended)' }]
+      options: options.length ? options : known
     };
   })();
   const cloudflareImageGroup: ModelOptionGroup = (() => {
@@ -246,8 +253,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-4b', label: 'FLUX.2 [klein] 4B — Faster reference-guided drafts (4 fixed steps)' },
       { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-9b', label: 'FLUX.2 [klein] 9B — Reference-guided generation with enhanced quality (4 fixed steps)' },
       { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
-      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation' },
-      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' }
+      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation ($0.00 per step in Cloudflare docs)' },
+      { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — Fast drafts' },
+      { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting', label: 'Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)' }
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-to-image').map(model => model.id));
     const options = catalogState.kind === 'success'
