@@ -19,6 +19,7 @@ export const setImageModel = (model: string) => {
     currentImageModel = model;
 };
 export const getCurrentImageModel = () => currentImageModel;
+export const getCurrentImageModel = () => currentImageModel;
 
 export let customOpenAIBaseUrl: string | undefined;
 export let customOpenAIApiKey: string | undefined;
@@ -739,6 +740,12 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
             guidance: 'Use a concise, concrete visual prompt. The model supports text-to-image and image-to-image through image_b64, but true masked inpainting requires a mask. When a source image is supplied, state the intended transformation and preserve source structure except where the user requests changes. Never imply a mask was provided unless one was actually supplied.'
         };
     }
+    if (cloudflareId.includes('runwayml/stable-diffusion-v1-5-inpainting')) {
+        return {
+            label: 'Cloudflare Stable Diffusion 1.5 Inpainting',
+            guidance: 'Use a concise, concrete visual prompt. This model supports text-to-image and image-to-image through image_b64; true masked inpainting needs a mask. When a source image is supplied, describe only the requested transformation and preserve source structure elsewhere. Never imply a mask was provided unless one was supplied.'
+        };
+    }
     if (cloudflareId.includes('flux-1-schnell')) {
         return {
             label: 'Cloudflare FLUX.1 [schnell]',
@@ -755,6 +762,12 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
         return {
             label: 'Cloudflare Stable Diffusion XL Lightning',
             guidance: 'Use a concise, visual-first positive prompt: subject and action first, then essential appearance, environment, composition, lighting, palette, and one coherent style. Prefer direct visual descriptors; avoid long procedural instructions, repeated quality claims, and contradictory details.'
+        };
+    }
+    if (cloudflareId.includes('stable-diffusion-xl-lightning')) {
+        return {
+            label: 'Cloudflare Stable Diffusion XL Lightning',
+            guidance: 'Use a concise, visual-first positive prompt: subject and action, essential appearance, setting, composition, lighting, palette, and one coherent style. Prefer direct visual descriptors; avoid long procedural wording, repeated quality claims, and contradictory details.'
         };
     }
     if (cloudflareId.includes('stable-diffusion-xl') || cloudflareId.includes('dreamshaper-8-lcm')) {
