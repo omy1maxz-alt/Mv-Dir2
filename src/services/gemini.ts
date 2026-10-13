@@ -738,13 +738,7 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
     if (cloudflareId.includes('runwayml/stable-diffusion-v1-5-inpainting')) {
         return {
             label: 'Cloudflare Stable Diffusion 1.5 Inpainting',
-            guidance: 'Use a concise, concrete visual prompt. The model supports text-to-image and image-to-image through image_b64, but true masked inpainting requires a mask. When a source image is supplied, state the intended transformation and preserve source structure except where the user requests changes. Never imply a mask was provided unless one was actually supplied.'
-        };
-    }
-    if (cloudflareId.includes('runwayml/stable-diffusion-v1-5-inpainting')) {
-        return {
-            label: 'Cloudflare Stable Diffusion 1.5 Inpainting',
-            guidance: 'Use a concise, concrete visual prompt. This model supports text-to-image and image-to-image through image_b64; true masked inpainting needs a mask. When a source image is supplied, describe only the requested transformation and preserve source structure elsewhere. Never imply a mask was provided unless one was supplied.'
+            guidance: 'Use a concise, concrete visual prompt. This model supports text-to-image and image-to-image through image_b64; true masked inpainting requires a mask. When a source image is supplied, describe only the requested transformation and preserve source structure elsewhere. Never imply that a mask was provided unless one was supplied.'
         };
     }
     if (cloudflareId.includes('flux-1-schnell')) {
@@ -756,13 +750,7 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
     if (cloudflareId.includes('lucid-origin') || cloudflareId.includes('phoenix-1.0')) {
         return {
             label: cloudflareId.includes('lucid-origin') ? 'Cloudflare Leonardo Lucid Origin' : 'Cloudflare Leonardo Phoenix 1.0',
-            guidance: 'Favor clear descriptive natural language with explicit subject identity, action, setting, framing, lighting, palette, and visual medium. State important relationships unambiguously. Use targeted art direction instead of keyword piles; avoid adding lettering unless requested.'
-        };
-    }
-    if (cloudflareId.includes('stable-diffusion-xl-lightning')) {
-        return {
-            label: 'Cloudflare Stable Diffusion XL Lightning',
-            guidance: 'Use a concise, visual-first positive prompt: subject and action first, then essential appearance, environment, composition, lighting, palette, and one coherent style. Prefer direct visual descriptors; avoid long procedural instructions, repeated quality claims, and contradictory details.'
+            guidance: 'Favor clear descriptive natural language with explicit subject identity, action, setting, framing, lighting, palette, and visual medium. State important relationships unambiguously. Use targeted art direction instead of keyword piles; do not add visible lettering unless requested.'
         };
     }
     if (cloudflareId.includes('stable-diffusion-xl-lightning')) {
@@ -774,13 +762,13 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
     if (cloudflareId.includes('stable-diffusion-xl') || cloudflareId.includes('dreamshaper-8-lcm')) {
         return {
             label: 'Cloudflare diffusion model (' + cloudflareId + ')',
-            guidance: 'Use a compact, visual-first prompt: subject and action first, then appearance/wardrobe, environment, shot composition, lighting, palette, and style/medium descriptors. Prefer specific visual descriptors over long narrative instructions. Avoid contradictory styles and express the desired result positively rather than relying on a separate negative-prompt field.'
+            guidance: 'Use a compact, visual-first prompt: subject and action, appearance/wardrobe, environment, composition, lighting, palette, and style/medium descriptors. Prefer specific visual descriptors over long narrative instructions. Avoid contradictory styles and do not assume a separate negative-prompt field.'
         };
     }
     if (kieId.startsWith('google/nano-banana') || lower.startsWith('gemini-') || lower.includes('nano-banana')) {
         return {
             label: 'Gemini / Nano Banana image model (' + model + ')',
-            guidance: 'Use precise natural-language art direction rather than a keyword dump. Describe one coherent frozen moment, subject relationships, framing, visual hierarchy, lighting, atmosphere, and materials. Give references clear roles and preserve identity while letting text control pose, wardrobe, scene, and composition. Avoid redundant quality slogans, conflicting constraints, and camera-motion language in a still-image prompt.'
+            guidance: 'Use precise natural-language art direction rather than a keyword dump. Describe one coherent frozen moment, subject relationships, framing, visual hierarchy, lighting, atmosphere, and materials. Give reference images clearly separated roles and preserve identity while letting the prompt control pose, wardrobe, scene, and composition. Avoid redundant quality slogans and conflicting constraints.'
         };
     }
     if (kieId.startsWith('gpt-image')) {
@@ -798,7 +786,7 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
     if (kieId) {
         return {
             label: 'KIE image model (' + kieId + ')',
-            guidance: 'Use clear natural-language art direction with subject/action first, then composition, setting, lighting, palette, material detail, and style. Respect supplied identity/frame/style references and separate their roles. Do not assume unsupported prompt parameters or a separate negative-prompt input.'
+            guidance: 'Use clear natural-language art direction with subject/action first, then composition, setting, lighting, palette, material detail, and style. Respect supplied identity/frame/style reference roles. Do not assume unsupported prompt parameters or a separate negative-prompt input.'
         };
     }
     if (lower.startsWith('imagen-')) {
@@ -810,7 +798,7 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
     if (lower === 'aihorde' || lower === 'pollinations') {
         return {
             label: lower === 'aihorde' ? 'AI Horde' : 'Pollinations',
-            guidance: 'Use a concise self-contained positive visual prompt: subject/action, appearance, environment, composition, lighting, palette, and style. These app routes are prompt-only, so do not imply that reference images or separate negative prompts will be passed to the provider.'
+            guidance: 'Use a concise self-contained positive visual prompt: subject/action, appearance, environment, composition, lighting, palette, and style. These app routes are prompt-only in MV Director, so do not imply that reference images or separate negative prompts reach the provider.'
         };
     }
     return {
