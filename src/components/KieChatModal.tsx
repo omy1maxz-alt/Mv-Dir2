@@ -1800,7 +1800,7 @@ Carefully review the conversation and your previous replies above.
                         ? 'bg-emerald-600/25 hover:bg-emerald-600/35 text-emerald-200 border border-emerald-500/40'
                         : 'bg-white/5 hover:bg-white/10 text-white/40 border border-white/5 hover:text-white/70'
                     }`}
-                    title={activeSession.loopEnabled ? `Auto-Loop ON (${activeSession.maxLoopSteps || 3}x)` : "Auto-Loop OFF"}
+                    title={activeSession.loopEnabled ? `Auto-Loop ON (${activeSession.maxLoopSteps || 3} steps): may trigger multiple paid/provider calls. Turn OFF for ordinary questions.` : "Auto-Loop OFF: single response; enabling can trigger multiple model calls."}
                   >
                     <RefreshCw className={`w-3 h-3 ${activeSession.loopEnabled ? 'text-emerald-400 animate-spin-slow' : 'text-white/40'}`} />
                     <span className="hidden sm:inline">Loop</span>
