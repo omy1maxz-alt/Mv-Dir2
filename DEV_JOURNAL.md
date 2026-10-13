@@ -1,3 +1,9 @@
+### 208. Fix Remaining generateSingleImage Brace Error
+- **Failed build evidence:** GitHub Actions run 38484845939 reached Vite transformation but failed at `src/services/gemini.ts:2456` with `Unexpected "}"`. The end of the function had an extra closing brace after its catch block.
+- **Fix:** Corrected the function closure at the end of `generateSingleImage`; retained its existing fallback and error-handling paths.
+- **Mobile picker:** Search removal remains in `ApiKeyVault.tsx`; no dropdown behavior was reverted.
+- **Verification:** Commit the correction and check the subsequent GitHub Actions run. No green build is claimed before CI confirms success.
+
 ### 207. Remove Mobile Model Picker Search and Fix Build Syntax
 - **User request:** Remove search from text and image model dropdowns because the mobile keyboard covers the app.
 - **Picker change:** Removed the search field and automatic input focus from the shared model picker. Text generation, API-settings image generation, and storyboard image-model pickers now show all provider-grouped options in a scrollable list without invoking the keyboard. Model selection and saved IDs are unchanged.
