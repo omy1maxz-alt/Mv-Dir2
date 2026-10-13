@@ -308,6 +308,10 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     modelInput.steps = 4;
   } else if (model === '@cf/stabilityai/stable-diffusion-xl-lightning') {
     modelInput.num_steps = 4;
+  } else if (model === '@cf/runwayml/stable-diffusion-v1-5-inpainting') {
+    // Cloudflare documents this prompt-to-image model at $0.00 per step.
+    // Its mask/image inputs are intentionally not populated by this prompt-only adapter.
+    modelInput.num_steps = 20;
   } else if (model === '@cf/leonardo/lucid-origin') {
     modelInput.width = Math.min(width, 2500);
     modelInput.height = Math.min(height, 2500);
