@@ -141,8 +141,8 @@ const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
 };
 
 /**
- * Prepare one reference image for the Cloudflare Runway Stable Diffusion 1.5 img2img model.
- * Unlike FLUX.2, this endpoint accepts a single base64 image_b64 field (no data: prefix).
+ * Prepare one reference image for JSON-schema Cloudflare image-to-image models.
+ * These models accept a single base64 image_b64 field (without a data: prefix).
  */
 const imageToCloudflareImageBase64 = async (source: string): Promise<string> => {
   const trimmed = String(source || '').trim();
@@ -151,7 +151,7 @@ const imageToCloudflareImageBase64 = async (source: string): Promise<string> => 
   const image = new Image();
   await new Promise<void>((resolve, reject) => {
     image.onload = () => resolve();
-    image.onerror = () => reject(new Error('Could not decode the selected reference image for Stable Diffusion 1.5 Img2Img.'));
+    image.onerror = () => reject(new Error('Could not decode the selected reference image for Cloudflare image-to-image generation.'));
     image.src = dataUrl;
   });
   if (!image.naturalWidth || !image.naturalHeight) {
@@ -169,7 +169,7 @@ const imageToCloudflareImageBase64 = async (source: string): Promise<string> => 
   if (!context) throw new Error('Reference image resizing is unavailable in this browser.');
   context.drawImage(image, 0, 0, width, height);
   const base64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1];
-  if (!base64) throw new Error('Could not encode the selected reference image.');
+  if (!base64) throw new Error('Could not encode the selected reference image for Cloudflare image-to-image generation.');
   return base64;
 };
 
@@ -331,6 +331,16 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     if (references.length > 0) {
       addLog?.(`Preparing ${references.length} reference image(s) for FLUX.2 multipart editing (max 4, resized to 512px).`, 'info');
     }
+  } else if (model === '@cf/stabilityai/stable-diffusion-xl-base-1.0' && (options.referenceImages || []).length > 0) {
+    const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
+    if (references.length !== 1) {
+      throw new Error(`Cloudflare Stable Diffusion XL Base is documented at $0.00 per step and supports one reference image in this MV Director adapter. ${references.length} references were supplied. Select one face/reference image, or use FLUX.2 for up to four references.`);
+    }
+    modelInput.image_b64 = await imageToCloudflareImageBase64(references[0].data);
+    modelInput.num_steps = 20;
+    modelInput.strength = 0.72;
+    modelInput.guidance = 7.5;
+    addLog?.('Preparing one reference image for Stable Diffusion XL Base (1024px max; 20 steps).', 'info');
   } else if (model === '@cf/runwayml/stable-diffusion-v1-5-img2img') {
     const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
     if (references.length !== 1) {
@@ -351,6 +361,9 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     modelInput.steps = 4;
   } else if (model === '@cf/stabilityai/stable-diffusion-xl-lightning') {
     modelInput.num_steps = 4;
+  } else if (model === '@cf/stabilityai/stable-diffusion-xl-base-1.0') {
+    // Cloudflare's official schema supports up to 20 diffusion steps.
+    modelInput.num_steps = 20;
   } else if (model === '@cf/runwayml/stable-diffusion-v1-5-inpainting') {
     // Cloudflare documents this prompt-to-image model at $0.00 per step.
     // Its mask/image inputs are intentionally not populated by this prompt-only adapter.
