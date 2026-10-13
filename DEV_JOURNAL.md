@@ -1,3 +1,10 @@
+### 207. Remove Mobile Model Picker Search and Fix Build Syntax
+- **User request:** Remove search from text and image model dropdowns because the mobile keyboard covers the app.
+- **Picker change:** Removed the search field and automatic input focus from the shared model picker. Text generation, API-settings image generation, and storyboard image-model pickers now show all provider-grouped options in a scrollable list without invoking the keyboard. Model selection and saved IDs are unchanged.
+- **Build failure diagnosis:** GitHub Actions run 180 failed during Vite parsing at `src/services/gemini.ts:822` because the selected-model directive contained an over-escaped apostrophe and newline.
+- **Fix:** Corrected the string escaping and retained the intended model-native image prompt instruction.
+- **Verification:** Source changes are committed together. Confirm the new GitHub Actions run; do not treat the prior failed run as a successful build.
+
 ### 206. Use Model-Native Prompt Text for Storyboard and Generate Image
 - **User requirement:** Do not force JSON prompt formatting on image models that work better with their native prompting style. Apply model-aware prompt adjustment both while generating the storyboard and when the user presses Generate Image.
 - **Storyboard behavior:** The selected model profile now explicitly tells the director that each `imagePrompt` must be natural-language visual text, not a JSON object/array or serialized schema. The structured JSON response for the overall storyboard is retained because the app parser requires it; JSON is not forced into the image prompt field.

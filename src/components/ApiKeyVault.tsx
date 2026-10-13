@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ApiKeys, ApiKeySource } from '@/types';
-import { X, Key, Shield, Check, AlertCircle, LogOut, User as UserIcon, Loader2, Search, SearchX, ChevronDown, ChevronUp, MessageSquareText, Image as ImageIcon, Cpu } from 'lucide-react';
+import { X, Key, Shield, Check, AlertCircle, LogOut, User as UserIcon, Loader2, Search, ChevronDown, ChevronUp, MessageSquareText, Image as ImageIcon, Cpu } from 'lucide-react';
 import { signInWithGoogle, signOutGoogle, listenAuthState, isNativeEnvironment } from '@/services/auth';
 import { APP_ENV } from '@/services/environment';
 import type { User } from 'firebase/auth';
@@ -20,15 +20,10 @@ export const SearchableModelPicker: React.FC<{
   className?: string;
 }> = ({ label, value, groups, onChange, accent, compact = false, className = '' }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const [openUpward, setOpenUpward] = useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
-  const searchRef = React.useRef<HTMLInputElement>(null);
   const selected = groups.flatMap(group => group.options).find(option => option.value === value);
-  const visibleGroups = groups.map(group => ({
-    ...group,
-    options: group.options.filter(option => `${option.label} ${option.value}`.toLowerCase().includes(query.trim().toLowerCase()))
-  })).filter(group => group.options.length > 0);
+  const visibleGroups = groups;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -40,7 +35,6 @@ export const SearchableModelPicker: React.FC<{
     };
     document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
-    requestAnimationFrame(() => searchRef.current?.focus());
     return () => {
       document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
@@ -58,7 +52,7 @@ export const SearchableModelPicker: React.FC<{
         aria-haspopup="listbox"
         aria-expanded={isOpen}
         aria-label={label}
-        onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const spaceBelow = window.innerHeight - rect.bottom; setOpenUpward(spaceBelow < Math.min(420, window.innerHeight * 0.48) && rect.top > spaceBelow); setIsOpen(open => !open); setQuery(''); }}
+        onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const spaceBelow = window.innerHeight - rect.bottom; setOpenUpward(spaceBelow < Math.min(420, window.innerHeight * 0.48) && rect.top > spaceBelow); setIsOpen(open => !open); }}
         className={`w-full min-w-0 flex items-center ${compact ? 'gap-2 rounded-lg px-2.5 py-1.5' : 'gap-3 rounded-xl px-3.5 py-3'} border border-white/10 bg-black/40 text-left transition-colors hover:border-white/20 hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/10 ${isOpen ? accentBorder : ''}`}
       >
         <span className={`${compact ? 'flex h-6 w-6' : 'flex h-9 w-9'} shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] ${accentText}`}>
@@ -73,21 +67,8 @@ export const SearchableModelPicker: React.FC<{
 
       {isOpen && (
         <div className={`absolute left-0 right-0 z-[130] overflow-hidden rounded-2xl border border-white/10 bg-[#151515] shadow-2xl shadow-black/60 ${openUpward ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
-          <div className="border-b border-white/10 bg-[#191919] p-3">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
-              <input
-                ref={searchRef}
-                type="search"
-                value={query}
-                onChange={event => setQuery(event.target.value)}
-                placeholder={`Search ${label.toLowerCase()}…`}
-                className={`w-full rounded-lg border border-white/10 bg-black/40 py-2.5 pl-9 pr-3 text-sm text-white outline-none placeholder:text-white/30 ${accentBorder}`}
-              />
-            </div>
-            <div className="mt-2 text-[10px] uppercase tracking-[0.14em] text-white/35">
-              {visibleGroups.reduce((count, group) => count + group.options.length, 0)} models • grouped by provider
-            </div>
+          <div className="border-b border-white/10 bg-[#191919] px-3 py-2.5 text-[10px] uppercase tracking-[0.14em] text-white/35">
+            {visibleGroups.reduce((count, group) => count + group.options.length, 0)} models • grouped by provider
           </div>
           <div role="listbox" aria-label={label} className="max-h-[min(42dvh,360px)] overflow-y-auto overscroll-contain p-2">
             {visibleGroups.length ? visibleGroups.map(group => (
@@ -105,7 +86,7 @@ export const SearchableModelPicker: React.FC<{
                       role="option"
                       aria-selected={isSelected}
                       key={option.value}
-                      onClick={() => { onChange(option.value); setIsOpen(false); setQuery(''); }}
+                      onClick={() => { onChange(option.value); setIsOpen(false); }}
                       className={`flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${isSelected ? activeBg : 'hover:bg-white/[0.05]'}`}
                     >
                       <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${isSelected ? 'border-white/15 bg-white/10 text-white' : 'border-white/5 bg-white/[0.03] text-white/35'}`}>
@@ -119,13 +100,7 @@ export const SearchableModelPicker: React.FC<{
                   );
                 })}
               </div>
-            )) : (
-              <div className="px-4 py-8 text-center">
-                <SearchX className="mx-auto h-5 w-5 text-white/25" />
-                <div className="mt-2 text-xs text-white/55">No matching models</div>
-                <div className="mt-1 text-[10px] text-white/30">Try a different model name or provider</div>
-              </div>
-            )}
+            ))}
           </div>
           <div className="flex items-center justify-between border-t border-white/10 px-3 py-2 text-[10px] text-white/35">
             <span>Tap a model to select it</span>

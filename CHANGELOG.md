@@ -1,6 +1,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Mobile Model Picker Keyboard Overlay**: Removed the search input from text-generation, image-generation, and storyboard image-model dropdowns. Opening a picker no longer focuses an input or opens the phone keyboard; all models remain available in the scrollable provider-grouped list.
+- **Image Prompt Directive Build Failure**: Corrected the escaped apostrophe/newline in the selected image model directive that caused Vite to fail parsing `src/services/gemini.ts`.
 - **Model-Native Image Prompt Formatting**: Storyboard generation now explicitly asks for each selected image model's preferred natural-language prompt style instead of embedding JSON inside scene image prompts. Both storyboard scene rendering and the standalone Generate Image action now normalize accidental JSON prompt strings before provider selection, including Cloudflare/KIE early-return routes. DreamShaper 8 LCM receives concise visual-first guidance and model-specific generation settings (8 steps, guidance 2). The app's internal storyboard response remains structured for reliable parsing; only the image prompt sent to image models is converted to readable visual text.
 
 ### Added
