@@ -5,7 +5,7 @@ import { Image as ImageIcon, Film, Wand2, RefreshCw, Edit3, Check, Loader2, Play
 interface SceneCardProps {
   scene: Scene;
   index: number;
-  onGenerate: (params?: { aspectRatio: AspectRatio; seed: number }) => void;
+  onGenerate: (params?: { aspectRatio: AspectRatio; seed: number }) => void | Promise<void>;
   onStopGenerate?: () => void;
   onUpdate: (updates: Partial<Scene>) => void;
   onEnhance: () => void;
@@ -43,6 +43,17 @@ export const SceneCard: React.FC<SceneCardProps> = ({
   const [copiedVideo, setCopiedVideo] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showRatioDropdown, setShowRatioDropdown] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+
+  const runGeneration = async () => {
+    setGenerationError(null);
+    try {
+      await onGenerate();
+    } catch (error: any) {
+      setGenerationError(error?.message || 'Image generation failed. Check the app log for details.');
+    }
+  };
+
 
   useEffect(() => {
     setTempImagePrompt(scene.imagePrompt);
@@ -251,7 +262,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
               </button>
             ) : (
               <button
-                onClick={() => onGenerate()}
+                onClick={() => { void runGeneration(); }}
                 className="p-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition-colors"
                 title="Generate Image"
               >
@@ -305,6 +316,15 @@ export const SceneCard: React.FC<SceneCardProps> = ({
             </div>
           )}
         </div>
+
+      {generationError && (
+        <div role="alert" className="mx-3 mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200 break-words">
+          <div className="flex items-start justify-between gap-2">
+            <span className="flex-1">{generationError}</span>
+            <button type="button" onClick={() => setGenerationError(null)} className="shrink-0 rounded px-1 text-rose-200/70 hover:text-white" aria-label="Dismiss generation error">×</button>
+          </div>
+        </div>
+      )}
 
       <div className="p-4 space-y-4 flex-1 flex flex-col">
         {((scene.songSection || scene.emotionalTone) || (projectData.characters && projectData.characters.length > 0)) && (
