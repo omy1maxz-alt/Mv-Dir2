@@ -365,7 +365,11 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     modelInput.height = Math.min(height, 2048);
     modelInput.num_steps = 25;
   } else if (model === '@cf/lykon/dreamshaper-8-lcm') {
+    // DreamShaper 8 LCM is a Latent Consistency Model. LCM guidance is much
+    // lower than standard SDXL/SD 1.5 guidance; ~2 is a practical starting point.
+    // Keep the step count aligned with the model's fast 8-step workflow.
     modelInput.num_steps = 8;
+    modelInput.guidance = 2;
   }
 
   addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
