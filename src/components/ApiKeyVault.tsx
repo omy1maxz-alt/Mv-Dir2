@@ -6,8 +6,8 @@ import { APP_ENV } from '@/services/environment';
 import type { User } from 'firebase/auth';
 
 
-type ModelOption = { value: string; label: string };
-type ModelOptionGroup = { label: string; options: ModelOption[] };
+export type ModelOption = { value: string; label: string };
+export type ModelOptionGroup = { label: string; options: ModelOption[] };
 type CloudflareCatalogModel = { id: string; name: string; description: string; task: string; source: string; properties: string[]; tags: string[] };
 
 export const SearchableModelPicker: React.FC<{
@@ -18,7 +18,7 @@ export const SearchableModelPicker: React.FC<{
   accent: 'indigo' | 'emerald';
   compact?: boolean;
   className?: string;
-> = ({ label, value, groups, onChange, accent, compact = false, className = '' }) => {
+}> = ({ label, value, groups, onChange, accent, compact = false, className = '' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [openUpward, setOpenUpward] = useState(false);
