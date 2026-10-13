@@ -1530,7 +1530,7 @@ const isCloudflareFlux2Model = (model: string): boolean =>
     ['@cf/black-forest-labs/flux-2-dev', '@cf/black-forest-labs/flux-2-klein-4b', '@cf/black-forest-labs/flux-2-klein-9b'].includes(model);
 
 const isCloudflareSingleReferenceImageModel = (model: string): boolean =>
-    model === '@cf/runwayml/stable-diffusion-v1-5-img2img'
+    model === '@cf/runwayml/stable-diffusion-v1-5-inpainting'
     || model === '@cf/stabilityai/stable-diffusion-xl-base-1.0';
 
 const selectSingleCloudflareReference = (
@@ -1730,8 +1730,8 @@ export const generateSceneImage = async (
     if (currentImageModel.startsWith('cloudflare:')) {
         const model = currentImageModel.replace('cloudflare:', '');
         if (isCloudflareSingleReferenceImageModel(model)) {
-            const modelLabel = model === '@cf/runwayml/stable-diffusion-v1-5-img2img'
-                ? 'Runway Stable Diffusion 1.5 Img2Img'
+            const modelLabel = model === '@cf/runwayml/stable-diffusion-v1-5-inpainting'
+                ? 'Stable Diffusion 1.5 Inpainting'
                 : 'Stable Diffusion XL Base';
             const selectedReference = selectSingleCloudflareReference(relevantReferences, projectData, addLog, modelLabel);
             const singlePrompt = fullPrompt + `\n\nSingle image-to-image reference: ${describeReferenceForImagePrompt(selectedReference, projectData)} Use this source image for the transformation and follow the scene description for the requested changes.`;
@@ -2028,8 +2028,8 @@ export const generateSingleImage = async (
     if (currentImageModel.startsWith('cloudflare:')) {
         const model = currentImageModel.replace('cloudflare:', '');
         if (isCloudflareSingleReferenceImageModel(model)) {
-            const modelLabel = model === '@cf/runwayml/stable-diffusion-v1-5-img2img'
-                ? 'Runway Stable Diffusion 1.5 Img2Img'
+            const modelLabel = model === '@cf/runwayml/stable-diffusion-v1-5-inpainting'
+                ? 'Stable Diffusion 1.5 Inpainting'
                 : 'Stable Diffusion XL Base';
             const selectedReference = selectSingleCloudflareReference(orderedVisualReferences, projectData, addLog, modelLabel);
             const singlePrompt = (activePrompt || "A highly detailed cinematic scene") + `\n\nSingle image-to-image reference: ${describeReferenceForImagePrompt(selectedReference, projectData)} Use this source image for the transformation and follow the requested prompt for what should change.`;
