@@ -1903,20 +1903,26 @@ export const App: React.FC = () => {
           ) : activeTab === 'storyboard' ? (
             <div className="flex-1 min-h-0 bg-black/50 overflow-hidden flex flex-col">
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2">
+                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-white/40">
+                    <ImageIcon className="h-3.5 w-3.5 text-emerald-400" />
+                    Storyboard Image Model
+                  </div>
+                  <div className="w-[240px] max-w-full">
+                    <SearchableModelPicker
+                      label="Storyboard Image Model"
+                      value={imageModel}
+                      onChange={handleSelectImageModel}
+                      accent="emerald"
+                      compact
+                      groups={STORYBOARD_IMAGE_MODEL_GROUPS}
+                    />
+                  </div>
+                </div>
                 {directorPlan && (
                   <div className="flex-shrink-0 mb-6 flex flex-col xl:flex-row items-start xl:items-center justify-between pb-4 border-b border-white/5 gap-4">
                     <div className="flex items-center gap-3"><div className="p-2 bg-indigo-600/20 rounded-lg"><Clapperboard className="w-5 h-5 text-indigo-400" /></div><div><h2 className="text-lg font-bold text-white">Production Storyboard</h2><p className="text-xs text-white/50 font-mono uppercase tracking-widest">{directorPlan.title} • {directorPlan.scenes.length} Scenes</p></div></div>
                     <div className="flex flex-wrap items-center gap-2">
-                        <div className="w-[240px] max-w-full">
-                          <SearchableModelPicker
-                            label="Storyboard Image Model"
-                            value={imageModel}
-                            onChange={handleSelectImageModel}
-                            accent="emerald"
-                            compact
-                            groups={STORYBOARD_IMAGE_MODEL_GROUPS}
-                          />
-                        </div>
                         <div className="mr-2 flex items-center gap-2">
                           <AspectRatioDropdown 
                             value={projectData.aspectRatio} 
