@@ -1,3 +1,11 @@
+### 203. Add Zero-Price Cloudflare Runway Img2Img With Reference Support
+- **User request:** Inspect Cloudflare's model catalog and add another free image model compatible with MV Director.
+- **Official verification:** Cloudflare documents `@cf/runwayml/stable-diffusion-v1-5-img2img` as a Cloudflare-hosted, Beta Text-to-Image model with **$0.00 per step**. Its schema accepts a base64 `image_b64` input and supports up to 20 diffusion steps: https://developers.cloudflare.com/workers-ai/models/stable-diffusion-v1-5-img2img/.
+- **Changes:** Added the model to API Settings and created a dedicated reference-image adapter that resizes one selected reference to a maximum 1024px, sends the base64 payload, and configures the documented 20-step maximum. Its label states that one reference image is required.
+- **Reference safety:** The adapter rejects requests with no reference or more than one reference. It does not silently drop identity images. For requests that need multiple references, use the existing FLUX.2 reference-capable models.
+- **Cost caveat:** The model page lists $0.00 per step. Beta availability and account limits still apply, and zero unit price must not be interpreted as unlimited throughput.
+- **Verification:** Confirm GitHub Actions build results; no authenticated live generation request was made. Browser/model catalog pages list third-party models as well, but those are not treated as free Workers AI entries merely because they appear in the unified directory.
+
 ### 202. Add Free-Plan-Compatible and Zero-Unit-Price Cloudflare Models
 - **User request:** Check Cloudflare's public AI model catalog and add free options to MV Director.
 - **Official verification:** Cloudflare's unified catalog includes both Cloudflare-hosted Workers AI models and third-party models routed through other providers; the catalog page alone does not make every listed model free. The Workers AI pages for `@cf/runwayml/stable-diffusion-v1-5-inpainting` and `@cf/stabilityai/stable-diffusion-xl-base-1.0` list **$0.00 per step**. Cloudflare's July 28, 2026 Workers AI changelog lists `@cf/zai-org/glm-4.7-flash`, `@cf/google/gemma-4-26b-a4b-it`, and `@cf/nvidia/nemotron-3-120b-a12b` as still accessible on the Workers Free plan.
