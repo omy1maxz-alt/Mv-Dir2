@@ -232,6 +232,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
 
   const cloudflareTextGroup: ModelOptionGroup = (() => {
     const known: ModelOption[] = [
+      { value: 'cloudflare-text:@cf/meta/llama-3.2-1b-instruct', label: 'Llama 3.2 1B — lightweight, lowest-cost chat (Workers Free allowance eligible)' },
+      { value: 'cloudflare-text:@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B — compact multilingual chat (Workers Free allowance eligible)' },
+      { value: 'cloudflare-text:@cf/meta/llama-3.1-8b-instruct-fp8', label: 'Llama 3.1 8B FP8 — balanced chat (Workers Free allowance eligible)' },
       { value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B — general chat and reasoning' },
       { value: 'cloudflare-text:@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash — Workers Free plan eligible (multilingual)' },
       { value: 'cloudflare-text:@cf/google/gemma-4-26b-a4b-it', label: 'Gemma 4 26B A4B — Workers Free plan eligible (text mode; vision adapter not wired here)' },
@@ -239,6 +242,10 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-generation').map(model => model.id));
     const freePlanModelIds = new Set([
+      // These IDs are not in Cloudflare's current list of models that require a paid billing method.
+      '@cf/meta/llama-3.2-1b-instruct',
+      '@cf/meta/llama-3.2-3b-instruct',
+      '@cf/meta/llama-3.1-8b-instruct-fp8',
       '@cf/zai-org/glm-4.7-flash',
       '@cf/google/gemma-4-26b-a4b-it',
       '@cf/nvidia/nemotron-3-120b-a12b'
@@ -264,7 +271,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
       { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-4b', label: 'FLUX.2 [klein] 4B — Faster reference-guided drafts (4 fixed steps)' },
       { value: 'cloudflare:@cf/black-forest-labs/flux-2-klein-9b', label: 'FLUX.2 [klein] 9B — Reference-guided generation with enhanced quality (4 fixed steps)' },
       { value: 'cloudflare:@cf/lykon/dreamshaper-8-lcm', label: 'DreamShaper 8 LCM — Photorealistic / stylized exploration' },
-      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL 1.0 — General-purpose image generation ($0.00 per step in Cloudflare docs)' },
+      { value: 'cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0', label: 'Stable Diffusion XL Base — $0.00 per step; supports one reference image' },
       { value: 'cloudflare:@cf/bytedance/stable-diffusion-xl-lightning', label: 'Stable Diffusion XL Lightning — $0.00 per step (fast drafts)' },
       { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting', label: 'Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)' },
       { value: 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-img2img', label: 'Stable Diffusion 1.5 Img2Img — $0.00 per step (requires one reference image)' }
