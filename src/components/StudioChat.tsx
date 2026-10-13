@@ -55,7 +55,7 @@ import { CollapsibleFileAttachment, FileAttachmentItem } from './CollapsibleFile
 import { AutoLoopGuideModal } from './AutoLoopGuideModal';
 import { RepoStatusBar } from './RepoStatusBar';
 import { LongTextPasteModal, LongTextPasteData, detectSnippetFileName } from './LongTextPasteModal';
-import { KieMemoryDistillModal } from './KieMemoryDistillModal';
+import { KieMemoryDistillModal, DistillSessionItem } from './KieMemoryDistillModal';
 import { ChatSidebar } from './studio-chat/ChatSidebar';
 import { StudioConversation, StudioMessage } from '@/types/chat';
 import { 
@@ -290,6 +290,7 @@ export type ProxyPersonaType = 'user_proxy' | 'critic' | 'devil' | 'collaborator
 
 export const StudioChat = ({ apiKeys, apiKeySource, onLog, projectData, setProjectData, directorPlan, setDirectorPlan, setActiveTab }: any) => {
   const [conversations, setConversations] = useState<StudioConversation[]>([]);
+  const [distillSessions, setDistillSessions] = useState<DistillSessionItem[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -377,6 +378,38 @@ export const StudioChat = ({ apiKeys, apiKeySource, onLog, projectData, setProje
   const [indexedSummary, setIndexedSummary] = useState<any>(null);
   const [pasteModalData, setPasteModalData] = useState<LongTextPasteData | null>(null);
   const [showMemoryDistillModal, setShowMemoryDistillModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!showMemoryDistillModal) return;
+    let cancelled = false;
+
+    // Conversation metadata is stored separately from message bodies in IndexedDB.
+    // Load each conversation's actual message list before opening the distiller;
+    // the metadata objects in "conversations" do not contain a populated messages array.
+    const loadDistillHistory = async () => {
+      const loaded = await Promise.all(conversations.map(async (conversation) => {
+        const storedMessages = await loadConversationMessages(conversation.id);
+        const sourceMessages = conversation.id === activeConversationId ? messages : storedMessages;
+        return {
+          id: conversation.id,
+          title: conversation.title || 'Untitled Chat',
+          messages: sourceMessages.map((message: any) => ({
+            id: message.id,
+            role: message.sender === 'user' ? 'user' : (message.role || 'assistant'),
+            content: message.text || message.content || '',
+            name: message.agentName || message.name,
+          })),
+          systemPrompt: (conversation as any).systemPrompt,
+          updatedAt: conversation.updatedAt ? new Date(conversation.updatedAt).getTime() : Date.now(),
+        };
+      }));
+      if (!cancelled) setDistillSessions(loaded);
+    };
+
+    void loadDistillHistory();
+    return () => { cancelled = true; };
+  }, [showMemoryDistillModal, conversations, activeConversationId, messages]);
+
   const [isLoopEnabled, setIsLoopEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem('mv_studio_loop_enabled') === 'true';
@@ -3837,18 +3870,7 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
       <KieMemoryDistillModal
         isOpen={showMemoryDistillModal}
         onClose={() => setShowMemoryDistillModal(false)}
-        sessions={conversations.map(c => ({
-          id: c.id,
-          title: c.title,
-          messages: ((c as any).messages || []).map((m: any) => ({
-            id: m.id,
-            role: m.sender === 'user' ? 'user' : (m.role || 'assistant'),
-            content: m.text || m.content || '',
-            name: m.agentName || m.name
-          })),
-          systemPrompt: c.systemPrompt,
-          updatedAt: c.updatedAt ? new Date(c.updatedAt).getTime() : Date.now(),
-        }))}
+        sessions={distillSessions}
         activeSessionId={activeConversationId || ''}
         messages={messages.map(m => ({
           id: m.id,
