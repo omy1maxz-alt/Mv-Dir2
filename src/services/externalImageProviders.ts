@@ -73,6 +73,49 @@ const responseErrorText = async (response: Response, tokenToRedact?: string): Pr
     : text.replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]');
 };
 
+/** Keep Cloudflare data URLs intact; only wrap values that are plain base64. */
+const cloudflareImageDataUrl = (value: string): string => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) throw new Error('Cloudflare Workers AI returned empty image data.');
+  if (/^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(trimmed)) return trimmed;
+  const payload = trimmed.replace(/\s+/g, '');
+  const mimeType = payload.startsWith('/9j/') ? 'image/jpeg' : payload.startsWith('UklGR') ? 'image/webp' : 'image/png';
+  return 'data:' + mimeType + ';base64,' + payload;
+};
+
+/** Reject only obviously empty results (nearly all transparent or nearly black pixels). */
+const inspectCloudflareImage = async (dataUrl: string): Promise<{ width: number; height: number; blank: boolean }> => {
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Cloudflare returned image data that the browser could not decode.'));
+    image.src = dataUrl;
+  });
+  if (!image.naturalWidth || !image.naturalHeight) throw new Error('Cloudflare returned an image with zero dimensions.');
+  const canvas = document.createElement('canvas');
+  canvas.width = 24;
+  canvas.height = 24;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return { width: image.naturalWidth, height: image.naturalHeight, blank: false };
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const count = canvas.width * canvas.height;
+  let transparent = 0, black = 0, luminanceTotal = 0, visible = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const alpha = pixels[i + 3];
+    if (alpha < 8) { transparent++; continue; }
+    const luminance = 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
+    luminanceTotal += luminance;
+    visible++;
+    if (pixels[i] < 8 && pixels[i + 1] < 8 && pixels[i + 2] < 8) black++;
+  }
+  return {
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    blank: transparent / count >= 0.995 || (visible > 0 && black / visible >= 0.995 && luminanceTotal / visible < 8)
+  };
+};
+
 const isCloudflareMultipartImageModel = (model: string) =>
   model === '@cf/black-forest-labs/flux-2-dev'
   || model === '@cf/black-forest-labs/flux-2-klein-4b'
@@ -330,7 +373,7 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     if (references.length > 0) {
       addLog?.(`Preparing ${references.length} reference image(s) for FLUX.2 multipart editing (max 4, resized to 512px).`, 'info');
     }
-  } else if ((model === '@cf/stabilityai/stable-diffusion-xl-base-1.0' || model === '@cf/runwayml/stable-diffusion-v1-5-inpainting') && (options.referenceImages || []).length > 0) {
+  } else if ((model === '@cf/stabilityai/stable-diffusion-xl-base-1.0' || model === '@cf/runwayml/stable-diffusion-v1-5-inpainting' || model === '@cf/lykon/dreamshaper-8-lcm') && (options.referenceImages || []).length > 0) {
     const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
     if (references.length !== 1) {
       throw new Error(`Cloudflare ${model} supports one reference image in this MV Director adapter. ${references.length} references were supplied. Select one face/reference image, or use FLUX.2 for up to four references.`);
@@ -370,6 +413,7 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     // Keep the step count aligned with the model's fast 8-step workflow.
     modelInput.num_steps = 8;
     modelInput.guidance = 2;
+    if ((options.referenceImages || []).length > 0) modelInput.strength = 0.65;
   }
 
   addLog?.(`Connecting to Cloudflare Workers AI (${model})...`, 'info');
@@ -384,62 +428,77 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     proxyToken
   });
 
-  if (!response.ok) {
-    const errorText = await responseErrorText(response, apiToken || proxyToken);
-    if (isMultipartModel && /required properties.*multipart/i.test(errorText)) {
-      throw new Error(
-        'FLUX.2 requires multipart/form-data, but the configured Worker appears to be forwarding this request as JSON. Deploy the latest cloudflare-worker-proxy/worker.js from GitHub to the exact Worker URL saved in API Settings, then retry. GitHub source changes do not automatically update the live Cloudflare Worker.'
-      );
-    }
-    throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${errorText || response.statusText || 'Request rejected'}`);
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    let data: any;
-    try {
-      data = await response.json();
-    } catch {
-      throw new Error('Cloudflare Workers AI returned invalid JSON.');
+  const readImageResponse = async (imageResponse: Response): Promise<string> => {
+    if (!imageResponse.ok) {
+      const errorText = await responseErrorText(imageResponse, apiToken || proxyToken);
+      if (isMultipartModel && /required properties.*multipart/i.test(errorText)) {
+        throw new Error(
+          'FLUX.2 requires multipart/form-data, but the configured Worker appears to be forwarding this request as JSON. Deploy the latest cloudflare-worker-proxy/worker.js from GitHub to the exact Worker URL saved in API Settings, then retry. GitHub source changes do not automatically update the live Cloudflare Worker.'
+        );
+      }
+      throw new Error('Cloudflare Workers AI Error (HTTP ' + imageResponse.status + '): ' + (errorText || imageResponse.statusText || 'Request rejected'));
     }
 
-    const encodedImage = typeof data.result?.image === 'string'
-      ? data.result.image
-      : typeof data.result === 'string'
-        ? data.result
-        : '';
-    if (encodedImage) {
-      addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
-      return `data:image/png;base64,${encodedImage}`;
+    const contentType = imageResponse.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      let data: any;
+      try {
+        data = await imageResponse.json();
+      } catch {
+        throw new Error('Cloudflare Workers AI returned invalid JSON.');
+      }
+      const encodedImage = typeof data.result?.image === 'string'
+        ? data.result.image
+        : typeof data.result === 'string'
+          ? data.result
+          : '';
+      if (encodedImage) return cloudflareImageDataUrl(encodedImage);
+
+      const providerMessage = typeof data.errors?.[0]?.message === 'string'
+        ? data.errors[0].message
+        : typeof data.error === 'string'
+          ? data.error
+          : 'No image data was returned.';
+      throw new Error('Cloudflare Workers AI returned an unexpected JSON response: ' + providerMessage.slice(0, 300));
     }
 
-    const providerMessage = typeof data.errors?.[0]?.message === 'string'
-      ? data.errors[0].message
-      : typeof data.error === 'string'
-        ? data.error
-        : 'No image data was returned.';
-    throw new Error(`Cloudflare Workers AI returned an unexpected JSON response: ${providerMessage.slice(0, 300)}`);
+    if (!contentType.startsWith('image/')) {
+      const body = (await imageResponse.text()).slice(0, 300);
+      throw new Error('Cloudflare Workers AI returned an unexpected content type (' + (contentType || 'unknown') + '): ' + body);
+    }
+    const blob = await imageResponse.blob();
+    if (!blob.size) throw new Error('Cloudflare Workers AI returned an empty image response.');
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => typeof reader.result === 'string'
+        ? resolve(reader.result)
+        : reject(new Error('Unable to encode the Cloudflare image response.'));
+      reader.onerror = () => reject(new Error('Unable to read the Cloudflare image response.'));
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  let imageDataUrl = await readImageResponse(response);
+  let inspection = await inspectCloudflareImage(imageDataUrl);
+  if (inspection.blank && model === '@cf/lykon/dreamshaper-8-lcm') {
+    addLog?.('DreamShaper returned a blank image. Retrying once with documented default sampling settings (20 steps, guidance 7.5).', 'warning');
+    const retryResponse = await postCloudflareModel({
+      action: 'image',
+      model,
+      input: { ...modelInput, num_steps: 20, guidance: 7.5 },
+      accountId,
+      apiToken,
+      proxyUrl,
+      proxyToken
+    });
+    imageDataUrl = await readImageResponse(retryResponse);
+    inspection = await inspectCloudflareImage(imageDataUrl);
   }
-
-  if (!contentType.startsWith('image/')) {
-    const body = (await response.text()).slice(0, 300);
-    throw new Error(`Cloudflare Workers AI returned an unexpected content type (${contentType || 'unknown'}): ${body}`);
+  if (inspection.blank) {
+    throw new Error('Cloudflare Workers AI returned a blank/black image (' + inspection.width + 'x' + inspection.height + ') for ' + model + '; it was not marked as a successful render. Retry or select another model.');
   }
-
-  const blob = await response.blob();
-  if (!blob.size) throw new Error('Cloudflare Workers AI returned an empty image response.');
-
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => typeof reader.result === 'string'
-      ? resolve(reader.result)
-      : reject(new Error('Unable to encode the Cloudflare image response.'));
-    reader.onerror = () => reject(new Error('Unable to read the Cloudflare image response.'));
-    reader.readAsDataURL(blob);
-  });
-
-  addLog?.('Cloudflare Workers AI successfully rendered image.', 'success');
-  return base64;
+  addLog?.('Cloudflare Workers AI successfully rendered image (' + inspection.width + 'x' + inspection.height + ').', 'success');
+  return imageDataUrl;
 }
 
 /**

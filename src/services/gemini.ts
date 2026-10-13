@@ -1610,7 +1610,8 @@ const isCloudflareFlux2Model = (model: string): boolean =>
 
 const isCloudflareSingleReferenceImageModel = (model: string): boolean =>
     model === '@cf/runwayml/stable-diffusion-v1-5-inpainting'
-    || model === '@cf/stabilityai/stable-diffusion-xl-base-1.0';
+    || model === '@cf/stabilityai/stable-diffusion-xl-base-1.0'
+    || model === '@cf/lykon/dreamshaper-8-lcm';
 
 const selectSingleCloudflareReference = (
     references: ReferenceImage[],
@@ -1812,7 +1813,9 @@ export const generateSceneImage = async (
         if (isCloudflareSingleReferenceImageModel(model)) {
             const modelLabel = model === '@cf/runwayml/stable-diffusion-v1-5-inpainting'
                 ? 'Stable Diffusion 1.5 Inpainting'
-                : 'Stable Diffusion XL Base';
+                : model === '@cf/lykon/dreamshaper-8-lcm'
+                    ? 'DreamShaper 8 LCM'
+                    : 'Stable Diffusion XL Base';
             const selectedReference = selectSingleCloudflareReference(relevantReferences, projectData, addLog, modelLabel);
             const singlePrompt = fullPrompt + `\n\nSingle image-to-image reference: ${describeReferenceForImagePrompt(selectedReference, projectData)} Use this source image for the transformation and follow the scene description for the requested changes.`;
             return await generateImageCloudflare({
