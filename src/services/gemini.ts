@@ -19,8 +19,6 @@ export const setImageModel = (model: string) => {
     currentImageModel = model;
 };
 export const getCurrentImageModel = () => currentImageModel;
-export const getCurrentImageModel = () => currentImageModel;
-export const getCurrentImageModel = () => currentImageModel;
 
 export let customOpenAIBaseUrl: string | undefined;
 export let customOpenAIApiKey: string | undefined;
