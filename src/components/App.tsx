@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ArtStylePresetsModal } from '@/components/ArtStylePresetsModal';
 import { YouTubeImportModal } from '@/components/YouTubeImportModal';
 import { ProjectData, DirectorPlan, Scene, LogEntry, ApiKeys, AspectRatio, CharacterProfile, ReferenceImage, ExportedProject, ApiKeySource, AppSettings, InstructionPreset, ArtStylePreset } from '@/types';
-import { createDirectorPlan, continueDirectorPlan, generateSceneImage, enhanceAndSanitizePrompt, enhanceMotionPrompt, extractCharacterDNA, generateCharacterDNAFromText, autoStyleCharacterDNA, setTextModel as setTextModelInService, setImageModel as setImageModelInService, setCustomOpenAISettings, setKieSettings, changeReferenceBackground } from '@/services/gemini';
+import { createDirectorPlan, continueDirectorPlan, generateSceneImage, enhanceAndSanitizePrompt, enhanceMotionPrompt, extractCharacterDNA, generateCharacterDNAFromText, autoStyleCharacterDNA, setTextModel as setTextModelInService, setImageModel as setImageModelInService, getCurrentImageModel, setCustomOpenAISettings, setKieSettings, changeReferenceBackground } from '@/services/gemini';
 import { generateSunoCover, checkSunoTaskStatus, generateSunoCoverArt } from '@/services/kie';
 import { saveProjectToDB, loadProjectFromDB, savePlanToDB, loadPlanFromDB, clearDB } from '@/services/db';
 import { exportAllChatData, importChatData } from '@/services/studioChatStorage';
@@ -1160,7 +1160,8 @@ export const App: React.FC = () => {
     setDirectorPlan(c => c && { ...c, scenes: c.scenes.map((s, i) => i === index ? { ...s, isEnhancing: true } : s) });
     addLog(`[S${index+1}] Enhancing & sanitizing prompt...`, 'info');
     try {
-      const enhanced = await enhanceAndSanitizePrompt(directorPlan.scenes[index].imagePrompt, projectData, key);
+      const selectedImageModel = getCurrentImageModel();
+      const enhanced = await enhanceAndSanitizePrompt(directorPlan.scenes[index].imagePrompt, projectData, key, selectedImageModel);
       
       const newDisabledCharacterIds: string[] = [];
       if (projectData.characters && projectData.characters.length > 0) {
