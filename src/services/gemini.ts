@@ -757,6 +757,12 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
             guidance: 'Use a concise, visual-first positive prompt: subject and action, essential appearance, setting, composition, lighting, palette, and one coherent style. Prefer direct visual descriptors; avoid long procedural wording, repeated quality claims, and contradictory details.'
         };
     }
+    if (cloudflareId.includes('dreamshaper-8-lcm')) {
+        return {
+            label: 'Cloudflare DreamShaper 8 LCM',
+            guidance: 'Use a short, direct, natural-language visual prompt, not JSON, a schema, or a long instruction block. Lead with the subject and action, then add only the most important environment, composition, lighting, colors, and art style. Favor concrete visual descriptors and a coherent frozen moment. This is an LCM diffusion model; avoid long prompt prose, repeated quality slogans, contradictory clauses, and unsupported negative-prompt assumptions.'
+        };
+    }
     if (cloudflareId.includes('stable-diffusion-xl') || cloudflareId.includes('dreamshaper-8-lcm')) {
         return {
             label: 'Cloudflare diffusion model (' + cloudflareId + ')',
@@ -813,7 +819,79 @@ const getImageModelPromptDirective = (rawModel: string = currentImageModel): str
         '- Do not claim unsupported controls (including masks, negative prompts, reference inputs, or aspect-ratio parameters) are available unless the selected adapter actually supplies them.\n' +
         '- Use visible lettering only when requested, and do not promise exact text rendering without a verified model capability.\n' +
         '- Keep videoMotionPrompt separate; never leak camera movement over time into the static image prompt.\n' +
-        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n';
+        '- imagePrompt must be usable natural-language visual text, never a JSON object/array or serialized schema. Use the selected model\'s preferred prompt style instead of forcing every model into the same format.\\n' +\n        '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n';
+};
+
+/**
+ * Image models consume visual prompts, not the JSON envelope used by the
+ * storyboard/analyzer APIs. Convert accidental JSON prompt strings to readable
+ * visual text before any provider branch, including Cloudflare and KIE early returns.
+ */
+const normalizeImagePromptForModel = (
+    rawPrompt: string,
+    selectedImageModel: string,
+    addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
+): string => {
+    const source = String(rawPrompt || '').trim();
+    if (!source || !/^[{[]/.test(source)) return source;
+
+    let parsed: any;
+    try {
+        parsed = JSON.parse(extractJSON(source));
+    } catch {
+        return source;
+    }
+    if (!parsed || typeof parsed !== 'object') return source;
+
+    const entries: Array<{ key: string; value: string }> = [];
+    const visit = (value: any, key = ''): void => {
+        if (value === null || value === undefined) return;
+        if (Array.isArray(value)) {
+            value.forEach((item) => {
+                if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') entries.push({ key, value: String(item).trim() });
+                else if (item && typeof item === 'object') Object.entries(item).forEach(([childKey, childValue]) => visit(childValue, childKey));
+            });
+            return;
+        }
+        if (typeof value === 'object') {
+            Object.entries(value).forEach(([childKey, childValue]) => visit(childValue, childKey));
+            return;
+        }
+        const text = String(value).trim();
+        if (text) entries.push({ key, value: text });
+    };
+    visit(parsed);
+    if (!entries.length) return source;
+
+    const rank = (key: string): number => {
+        const normalized = key.toLowerCase().replace(/[_-]/g, ' ');
+        if (/subject|character|person|action|pose/.test(normalized)) return 0;
+        if (/environment|setting|background|location|weather|time of day/.test(normalized)) return 1;
+        if (/composition|framing|camera|shot|perspective/.test(normalized)) return 2;
+        if (/lighting|light|shadow/.test(normalized)) return 3;
+        if (/color|palette/.test(normalized)) return 4;
+        if (/style|medium|render|texture|material/.test(normalized)) return 5;
+        if (/mood|atmosphere/.test(normalized)) return 6;
+        return 7;
+    };
+    entries.sort((a, b) => rank(a.key) - rank(b.key));
+    const model = String(selectedImageModel || '').toLowerCase();
+    const compact = model.includes('dreamshaper-8-lcm') || model.includes('stable-diffusion-xl-lightning') || model.includes('flux-1-schnell');
+    const seen = new Set<string>();
+    const phrases = entries.map(({ value }) => {
+        const cleanValue = value.replace(/\s+/g, ' ').trim();
+        const dedupeKey = cleanValue.toLowerCase();
+        if (!cleanValue || seen.has(dedupeKey)) return '';
+        seen.add(dedupeKey);
+        return cleanValue;
+    }).filter(Boolean);
+    const normalized = phrases.join(compact ? ', ' : '. ').replace(/\s+([,.])/g, '$1').trim();
+    if (normalized) {
+        const profile = getImageModelPromptProfile(selectedImageModel);
+        addLog?.(`Converted structured JSON prompt to ${compact ? 'a compact visual prompt' : 'natural-language art direction'} for ${profile.label}.`, 'info');
+        return normalized;
+    }
+    return source;
 };
 
 const buildSystemPrompt = (projectData: ProjectData, selectedImageModel: string = currentImageModel): string => {
@@ -1564,6 +1642,7 @@ export const generateSceneImage = async (
     addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void,
     disabledCharacterIds?: string[]
 ): Promise<string> => {
+    prompt = normalizeImagePromptForModel(prompt, currentImageModel, addLog);
     addLog("Connecting to image generation service...", 'info');
 
     // Resolve references before selecting a provider so text-only providers can
@@ -1978,7 +2057,7 @@ export const generateSingleImage = async (
     apiKey: string | undefined,
     addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
 ): Promise<string> => {
-    let activePrompt = prompt.trim();
+    let activePrompt = normalizeImagePromptForModel(prompt, currentImageModel, addLog);
 
     // Collect the exact visual assets selected for this single-image task before
     // choosing a provider. The old early-return branches sent only prompt text to
@@ -2070,46 +2149,7 @@ export const generateSingleImage = async (
 
     addLog("Preparing reference-guided image generation...", 'info');
 
-    // If the prompt is a JSON string (e.g. from analyzeImageToJson), format it into a cohesive paragraph
-    try {
-        if (activePrompt.startsWith('{') && activePrompt.endsWith('}')) {
-            const parsed = JSON.parse(extractJSON(activePrompt));
-            let formattedPrompt = "";
-            if (parsed.subject) formattedPrompt += `Subject: ${parsed.subject}\n`;
-            if (parsed.environment) formattedPrompt += `Environment: ${parsed.environment}\n`;
-            if (parsed.lighting) formattedPrompt += `Lighting: ${parsed.lighting}\n`;
-            if (parsed.composition) formattedPrompt += `Composition: ${parsed.composition}\n`;
-            if (parsed.style) formattedPrompt += `Style: ${parsed.style}\n`;
-            if (parsed.mood) formattedPrompt += `Mood: ${parsed.mood}\n`;
-            if (parsed.colors) formattedPrompt += `Colors: ${parsed.colors}\n`;
-            if (parsed.masterArtStyle) formattedPrompt += `Master Art Style: ${parsed.masterArtStyle}\n`;
-            
-            if (formattedPrompt.trim()) {
-                activePrompt = formattedPrompt.trim();
-            } else {
-                // Not standard layout, flatten arbitrary JSON
-                const flattenJson = (obj: any, indent = 0): string => {
-                    let text = "";
-                    for (const key in obj) {
-                        if (typeof obj[key] === 'object' && obj[key] !== null) {
-                            text += `${"  ".repeat(indent)}${key}:\n${flattenJson(obj[key], indent + 1)}`;
-                        } else {
-                            text += `${"  ".repeat(indent)}${key}: ${obj[key]}\n`;
-                        }
-                    }
-                    return text;
-                };
-                activePrompt = flattenJson(parsed).trim();
-            }
-            
-            // If the subject contains excessive facial details, we try to rely on the Character Reference image instead.
-            addLog("Parsed JSON prompt into formatted text for better generation.", 'info');
-        }
-    } catch (e) {
-        // Not JSON or invalid JSON, ignore and use as-is
-    }
-    
-    if (!activePrompt && frameReferenceBase64) {
+    // Prompt normalization already ran before provider selection, including Cloudflare/KIE routes.\n    \n    if (!activePrompt && frameReferenceBase64) {
         // Auto-describe the frame if no prompt was provided.
         // This provides the image generation model with a concrete textual description of the scene.
         addLog("No prompt provided. Analyzing frame reference to generate a scene description...", 'info');
