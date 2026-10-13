@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **DreamShaper 8 LCM Reference and Blank Output Handling**: Added the model's documented `image_b64` img2img path for one selected reference, corrected Cloudflare image data URL normalization, and validate returned bitmaps instead of logging every non-empty response as successful. A clearly black/transparent DreamShaper result is retried once with documented default sampling settings; if still blank, the app reports an actionable error.
 - **Frame Reference Auto-Description Syntax**: Fixed an escaped newline embedded literally in a line comment, which had commented out the opening `if` statement and caused an unmatched closing brace at the end of `generateSingleImage`.
 - **generateSingleImage Catch Closure**: Corrected the extra brace at the end of `generateSingleImage` after the previous attempt left the same invalid catch/function closing sequence.
 - **Generate Image Build Syntax**: Corrected the extra closing brace at the end of `generateSingleImage` that prevented Vite from compiling `src/services/gemini.ts`.

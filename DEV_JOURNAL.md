@@ -1,3 +1,10 @@
+### 211. Fix DreamShaper 8 LCM Reference Routing and Blank Image Responses
+- **Official model contract checked with TinyFish:** Cloudflare's `dreamshaper-8-lcm` page exposes text-to-image and img2img inputs, including `image_b64`; `num_steps` allows up to 20 and `guidance` is configurable. Source: https://developers.cloudflare.com/workers-ai/models/dreamshaper-8-lcm/.
+- **Reference routing bug:** The app's Cloudflare single-reference allowlist included SDXL Base and Runway Inpainting, but not DreamShaper, so scene generation and standalone Generate Image rejected references before reaching the provider. Added DreamShaper to both routes, labeled it correctly, and pass one selected reference through `image_b64`.
+- **Response parsing:** Cloudflare output may be raw base64 or an existing image data URL. Preserve an existing data URL rather than prefixing it a second time.
+- **Blank output handling:** Decode-check the image and conservatively identify fully transparent or almost entirely black results. Do not report success for a blank bitmap. For DreamShaper only, retry a provably blank result once with documented default sampling settings (20 steps, guidance 7.5); if it remains blank, raise an explicit error.
+- **Verification:** Follow the new GitHub Actions build. This was not tested with the user's stored Cloudflare credentials; visual generation still needs runtime confirmation in the configured app.
+
 ### 210. Fix Root Cause of Repeated Vite Parse Failure
 - **CI evidence:** Run 38485530870 failed again at the final brace in `generateSingleImage`, even after the visible function ending was corrected.
 - **Actual root cause:** Line 2153 contained literal backslash-n characters inside a `//` comment, followed by the `if (!activePrompt && frameReferenceBase64)` opener on the same physical source line. JavaScript treated that opener as comment text, leaving its closing brace unmatched.
