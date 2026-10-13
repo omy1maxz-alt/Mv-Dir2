@@ -1704,6 +1704,21 @@ export const generateSceneImage = async (
     
     if (currentImageModel.startsWith('cloudflare:')) {
         const model = currentImageModel.replace('cloudflare:', '');
+        if (isCloudflareSingleReferenceImageModel(model)) {
+            const modelLabel = model === '@cf/runwayml/stable-diffusion-v1-5-img2img'
+                ? 'Runway Stable Diffusion 1.5 Img2Img'
+                : 'Stable Diffusion XL Base';
+            const selectedReference = selectSingleCloudflareReference(relevantReferences, projectData, addLog, modelLabel);
+            const singlePrompt = fullPrompt + `\n\nSingle image-to-image reference: ${describeReferenceForImagePrompt(selectedReference, projectData)} Use this source image for the transformation and follow the scene description for the requested changes.`;
+            return await generateImageCloudflare({
+                prompt: singlePrompt,
+                aspectRatio: aspectRatio as string,
+                model,
+                seed,
+                referenceImages: [{ data: selectedReference.data, description: describeReferenceForImagePrompt(selectedReference, projectData) }],
+                addLog
+            });
+        }
         if (relevantReferences.length > 0 && !isCloudflareFlux2Model(model)) {
             throw new Error(`The selected Cloudflare model (${model}) does not accept reference images through MV Director's current adapter. Your character reference was not dropped silently. Choose a Cloudflare FLUX.2 model or a Gemini/KIE Nano Banana reference-capable model.`);
         }
