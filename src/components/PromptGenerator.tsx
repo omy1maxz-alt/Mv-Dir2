@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Wand2, Sparkles, Settings, Trash2, Copy, Check, Image as ImageIcon, Upload, Loader2, Palette, ChevronDown, Download, List, Maximize, Layers } from 'lucide-react';
-import { analyzeImageToJson, enhancePrompt, generateSingleImage, generateComboBatchScenes, generateMultiSwapImage, generateExtendedImage, generateEditedImage } from '@/services/gemini';
+import { analyzeImageToJson, enhancePrompt, generateSingleImage, generateComboBatchScenes, generateMultiSwapImage, generateExtendedImage, generateEditedImage, getCurrentImageModel } from '@/services/gemini';
 import { compressImage } from '@/utils/imageUtils';
 import { ALL_COMBINATIONS } from '@/data/comboData';
 import { AspectRatio } from '@/types';
@@ -417,11 +417,14 @@ export const PromptGenerator = ({ projectData, apiKeys, apiKeySource, onLog }: a
     onLog("Enhancing prompt with Gemini...", 'info');
     try {
         const key = apiKeySource === 'custom' ? apiKeys.google : undefined;
+        // Snapshot the UI-selected image model so prompt strategy matches the next render.
+        const selectedImageModel = getCurrentImageModel();
         const variations = await enhancePrompt(
             labState.basePrompt,
             labState.styleModifier,
             labState.qualityModifier,
-            key
+            key,
+            selectedImageModel
         );
         setLabState(s => ({ ...s, generatedPrompts: [...variations, ...s.generatedPrompts] }));
         onLog("Prompt enhancement complete.", 'success');
