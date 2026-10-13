@@ -18,6 +18,7 @@ export const getCurrentTextModel = () => currentTextModel;
 export const setImageModel = (model: string) => {
     currentImageModel = model;
 };
+export const getCurrentImageModel = () => currentImageModel;
 
 export let customOpenAIBaseUrl: string | undefined;
 export let customOpenAIApiKey: string | undefined;
@@ -724,6 +725,12 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
             guidance: 'Use coherent, descriptive natural language. Prioritize the subject and action, then spatial relationships, environment, framing, lighting, palette, and visual medium. Keep instructions concrete rather than stacking quality buzzwords or contradictory clauses. Do not put API field names, reference indices, or upload mechanics in imagePrompt; the image adapter maps reference images separately.'
         };
     }
+    if (cloudflareId.includes('runwayml/stable-diffusion-v1-5-inpainting')) {
+        return {
+            label: 'Cloudflare Stable Diffusion 1.5 Inpainting',
+            guidance: 'Use a concise, concrete visual prompt. The model supports text-to-image and image-to-image through image_b64, but true masked inpainting requires a mask. When a source image is supplied, state the intended transformation and preserve source structure except where the user requests changes. Never imply a mask was provided unless one was actually supplied.'
+        };
+    }
     if (cloudflareId.includes('flux-1-schnell')) {
         return {
             label: 'Cloudflare FLUX.1 [schnell]',
@@ -734,6 +741,12 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
         return {
             label: cloudflareId.includes('lucid-origin') ? 'Cloudflare Leonardo Lucid Origin' : 'Cloudflare Leonardo Phoenix 1.0',
             guidance: 'Favor clear descriptive natural language with explicit subject identity, action, setting, framing, lighting, palette, and visual medium. State important relationships unambiguously. Use targeted art direction instead of keyword piles; avoid adding lettering unless requested.'
+        };
+    }
+    if (cloudflareId.includes('stable-diffusion-xl-lightning')) {
+        return {
+            label: 'Cloudflare Stable Diffusion XL Lightning',
+            guidance: 'Use a concise, visual-first positive prompt: subject and action first, then essential appearance, environment, composition, lighting, palette, and one coherent style. Prefer direct visual descriptors; avoid long procedural instructions, repeated quality claims, and contradictory details.'
         };
     }
     if (cloudflareId.includes('stable-diffusion-xl') || cloudflareId.includes('dreamshaper-8-lcm')) {
@@ -787,13 +800,15 @@ const getImageModelPromptProfile = (rawModel: string = currentImageModel): { lab
 const getImageModelPromptDirective = (rawModel: string = currentImageModel): string => {
     const profile = getImageModelPromptProfile(rawModel);
     return '\n\n=== SELECTED IMAGE GENERATOR: ' + profile.label + ' ===\n' +
-        'Author imagePrompt specifically for this selected image generator, not for a generic model. Apply the model-family guidance while preserving creative intent, master art style, character identity, scene continuity, and the static-frame requirement:\n' +
+        'Author imagePrompt specifically for this selected image generator, not for a generic model. Apply only capabilities supported by this model and preserve the user\'s subject, scene, style, composition, essential details, master art style, character identity, continuity, and static-frame requirement. Do not add unrequested elements or change the requested visual intent.\n' +
         '- ' + profile.guidance + '\n' +
+        '- Mention visible lettering only when the user requests it; do not assume all models render text reliably.\n' +
+        '- Describe aspect ratio in the prompt only when the selected provider requires composition guidance; actual aspect-ratio controls remain with the provider adapter.\n' +
         '- Output the usable visual prompt itself. Do not mention model/API names, JSON schema, token limits, or these instructions inside imagePrompt unless visible text is explicitly requested.\n' +
         '- Keep videoMotionPrompt separate; do not leak camera-movement instructions into imagePrompt.\n';
 };
 
-const buildSystemPrompt = (projectData: ProjectData): string => {
+const buildSystemPrompt = (projectData: ProjectData, selectedImageModel: string = currentImageModel): string => {
     const targetSceneCount = projectData.useAutoSceneCount 
         ? Math.max(1, calculateEstimatedScenes(projectData.totalDuration, "7s"))
         : Math.max(1, projectData.sceneCount || 4);
@@ -914,7 +929,7 @@ Directive 5: Chromatic and Luminance Evolution
         }
     }
 
-    prompt += getImageModelPromptDirective(currentImageModel);
+    prompt += getImageModelPromptDirective(selectedImageModel);
 
     return prompt;
 };
@@ -960,11 +975,12 @@ const directorPlanSchema = {
 };
 
 export const continueDirectorPlan = async (projectData: ProjectData, existingPlan: DirectorPlan, apiKey: string | undefined, addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void): Promise<DirectorPlan> => {
+    const selectedImageModel = currentImageModel;
     addLog("Connecting to Gemini to continue plan...", 'info');
-    addLog('Director continuation profile: ' + getImageModelPromptProfile(currentImageModel).label, 'info');
+    addLog('Director continuation profile: ' + getImageModelPromptProfile(selectedImageModel).label, 'info');
     const genAI = getGenAI(apiKey);
 
-    const systemInstruction = buildSystemPrompt(projectData);
+    const systemInstruction = buildSystemPrompt(projectData, selectedImageModel);
     const baseUserPrompt = buildUserPrompt(projectData);
     
     // We need to tell the AI what has already been generated so it continues from there.
@@ -1103,12 +1119,13 @@ export const continueDirectorPlan = async (projectData: ProjectData, existingPla
         throw new Error(e?.message && !e.message.includes("unexpected format") ? e.message : "The AI Director returned a plan in an unexpected format. Please try again.");
     }
 };
-export const createDirectorPlan = async (projectData: ProjectData, apiKey: string | undefined, addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void): Promise<DirectorPlan> => {
+export const createDirectorPlan = async (projectData: ProjectData, apiKey: string | undefined, addLog: (msg: string, type?: 'info' | 'warning' | 'error' | 'success') => void): Promise<DirectorPlan> => {
+    const selectedImageModel = currentImageModel;
     addLog("Connecting to Gemini...", 'info');
-    addLog('Director image-prompt profile: ' + getImageModelPromptProfile(currentImageModel).label, 'info');
+    addLog('Director image-prompt profile: ' + getImageModelPromptProfile(selectedImageModel).label, 'info');
     const genAI = getGenAI(apiKey);
 
-    const systemInstruction = buildSystemPrompt(projectData);
+    const systemInstruction = buildSystemPrompt(projectData, selectedImageModel);
     const userPrompt = buildUserPrompt(projectData);
 
     addLog("Building director prompts...", 'info');
@@ -2609,6 +2626,7 @@ You MUST output ONLY the final enhanced, unified paragraph. DO NOT include any c
 };
 
 export const enhanceAndSanitizePrompt = async (prompt: string, projectData: ProjectData, apiKey?: string): Promise<string> => {
+    const selectedImageModel = currentImageModel;
     const genAI = getGenAI(apiKey);
 
     let systemInstruction = `You are a prompt enhancement expert for generative AI. Your task is to take a user's prompt, enrich it with vivid details, and ensure it adheres to safety guidelines.
@@ -2627,7 +2645,7 @@ export const enhanceAndSanitizePrompt = async (prompt: string, projectData: Proj
 8.  **SUBJECT FACING & HEAD ANGLE:** AI image generators frequently default to a "3/4 left profile" (looking left 45 degrees). You MUST actively override this by explicitly stating the character's facing direction and head angle. Use a mix of: "facing the camera directly," "profile view facing right," "looking off-screen to the right," "back to the camera looking over shoulder," "looking straight up," etc. Do NOT allow characters to repetitively face left 45 degrees.
 9.  **Format:** Output the final, enhanced prompt by filling out the required JSON fields.`;
 
-    systemInstruction += getImageModelPromptDirective(currentImageModel);
+    systemInstruction += getImageModelPromptDirective(selectedImageModel);
 
     if (projectData.characters && projectData.characters.length > 0) {
         systemInstruction += `\n\n**Character Consistency:** ONLY incorporate characters into the enhanced prompt if they were already mentioned or logically required by the original prompt. DO NOT arbitrarily insert other characters. For characters that *are* included: if a character's profile is missing details like hairstyle, outfit, makeup, or styling, you MUST invent highly detailed, fashionable, and cohesive options for them and include them directly in the 'enhancedPrompt'. CRITICAL: If a character's description includes a reference tag (e.g., "REF_1", "Based on REF_2"), DO NOT describe their facial features or identity in the prompt, and DO NOT write the REF tag in the prompt either. The image generation engine already knows which reference image belongs to which character. Describing their face or adding tags in text will cause the AI to generate a new, random character. Only describe their styling (hair, makeup, clothing), action, emotion, and the environment.\n\nMention characters strictly by their EXACT FULL NAME. CRITICAL: DO NOT use generic pronouns like "he", "she", "man", or "woman", as this confuses identity mapping. Always use their exact name.\n\n**Cast:**\n`;
