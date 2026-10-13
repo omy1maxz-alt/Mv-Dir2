@@ -39,6 +39,7 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
   const [distillResult, setDistillResult] = useState<DistillMemoryResult | null>(null);
   const [editableMemory, setEditableMemory] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedTurns, setSelectedTurns] = useState<number>(maxTurns || 6);
   
   // Multi-window Source and Target selections
@@ -65,7 +66,9 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
       }];
 
   const runDistillation = async (sourceWindowId: string, turnsCount: number) => {
+    if (isLoading) return;
     setIsLoading(true);
+    setErrorMessage('');
     try {
       const activeWindowObj = availableSessions.find(s => s.id === sourceWindowId);
       const promptToUse = activeWindowObj?.systemPrompt || currentSystemPrompt;
@@ -80,6 +83,7 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
       setEditableMemory(res.executiveMemory);
     } catch (err) {
       console.error('Failed to distill memory with Gemini:', err);
+      setErrorMessage(err instanceof Error ? err.message : 'Gemini could not distill this history. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -90,11 +94,15 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
       const initialSource = activeSessionId || (availableSessions[0]?.id || 'current');
       setSelectedSourceWindowId(initialSource);
       setTargetApplyWindowId(initialSource);
-      runDistillation(initialSource, selectedTurns);
+      // Opening the modal must not consume Gemini quota. Distillation is user-triggered.
+      setDistillResult(null);
+      setEditableMemory('');
+      setErrorMessage('');
     } else {
       setDistillResult(null);
       setEditableMemory('');
       setCopied(false);
+      setErrorMessage('');
     }
   }, [isOpen, activeSessionId]);
 
@@ -157,7 +165,9 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
                 onChange={(e) => {
                   const newSource = e.target.value;
                   setSelectedSourceWindowId(newSource);
-                  runDistillation(newSource, selectedTurns);
+                  setDistillResult(null);
+                  setEditableMemory('');
+                  setErrorMessage('');
                 }}
                 disabled={isLoading}
                 aria-label="Select source chat window to distill"
@@ -198,7 +208,9 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
                   type="button"
                   onClick={() => {
                     setSelectedTurns(opt.val);
-                    runDistillation(selectedSourceWindowId, opt.val);
+                    setDistillResult(null);
+                    setEditableMemory('');
+                    setErrorMessage('');
                   }}
                   disabled={isLoading}
                   className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-colors ${
@@ -220,7 +232,7 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
             className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white rounded-lg text-[10px] font-semibold flex items-center gap-1 transition-colors border border-white/10"
           >
             <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-purple-400' : ''}`} />
-            <span>Re-distill</span>
+            <span>{distillResult ? 'Re-distill now' : 'Distill now'}</span>
           </button>
         </div>
 
@@ -242,11 +254,19 @@ export const KieMemoryDistillModal: React.FC<KieMemoryDistillModalProps> = ({
             </div>
           ) : (
             <>
+              {errorMessage && (
+                <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/30 p-3 text-xs text-red-200">{errorMessage}</div>
+              )}
+              {!distillResult && !errorMessage && (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/60">
+                  Opening this panel does not call a model. Choose the source and history range, then select <strong className="text-white/80">Distill now</strong> when you want Gemini to analyze it.
+                </div>
+              )}
               {distillResult && (
                 <div className="flex items-center justify-between text-[11px] bg-purple-950/20 border border-purple-500/20 p-2.5 rounded-xl text-purple-200">
                   <div className="flex items-center gap-1.5 font-medium">
                     <ShieldCheck className="w-4 h-4 text-purple-400 shrink-0" />
-                    <span>Memory Compressed ~{distillResult.savedPercent}%</span>
+                    <span>Text reduced ~{distillResult.savedPercent}%</span>
                     <span className="text-[10px] text-purple-300/60 font-normal">
                       ({distillResult.sourceWindowsCount} window{distillResult.sourceWindowsCount > 1 ? 's' : ''})
                     </span>
