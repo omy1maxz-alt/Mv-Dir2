@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+- **Additional Free/Zero-Unit-Price Cloudflare Workers AI Options**: Added the Cloudflare-hosted `@cf/runwayml/stable-diffusion-v1-5-inpainting` text-to-image model, whose official Cloudflare page lists **$0.00 per step**, and `@cf/zai-org/glm-4.7-flash` as a Workers Free-plan-compatible text model. Added the Runway model's supported `num_steps: 20` input mapping. The Runway adapter is prompt-to-image only in MV Director; when face/reference images are selected, the existing guard rejects this model rather than silently dropping those references. Cloudflare's model catalog groups hosted models and third-party provider models, so external models are not presented as free Workers AI models.
+
+
 ### Improved
 - **Image-Model-Aware AI Director Prompts**: The Director now receives a prompt profile for the image generator selected in API Settings. It tailors new and continued scene prompts, plus manual prompt enhancement, for Gemini/Nano Banana, KIE image models, Cloudflare FLUX.2, FLUX.1 [schnell], Leonardo, SDXL/DreamShaper, Imagen, and prompt-only fallbacks. Profiles retain the user's art direction and character continuity while avoiding unsupported negative-prompt/reference syntax. The active profile is written to the log for easier troubleshooting.
 
