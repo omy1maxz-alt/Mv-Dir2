@@ -3862,7 +3862,7 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
           const mergeMemory = (existingPrompt?: string) => {
             const marker = '## Distilled Conversation Memory';
             const base = (existingPrompt || '').split(marker)[0].trimEnd();
-            return [base, marker, distilledText.trim()].filter(Boolean).join('\\n\\n');
+            return [base, marker, distilledText.trim()].filter(Boolean).join('\n\n');
           };
           if (targetSessionId === 'all') {
             setConversations(prev => {
