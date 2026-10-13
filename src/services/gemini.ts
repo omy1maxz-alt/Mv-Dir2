@@ -834,7 +834,7 @@ const normalizeImagePromptForModel = (
     addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void
 ): string => {
     const source = String(rawPrompt || '').trim();
-    if (!source || !/^[{[]/.test(source)) return source;
+    if (!source || (source[0] !== '{' && source[0] !== '[')) return source;
 
     let parsed: any;
     try {
