@@ -1,0 +1,9 @@
+{
+  "name": "mv-dir2",
+  "main": "cloudflare-worker-proxy/worker.js",
+  "compatibility_date": "2024-09-23",
+  "vars": {
+    "CLOUDFLARE_ACCOUNT_ID": "c952002c48e267c4c14062c2ec2a91dc"
+  },
+  "previews": {}
+}
