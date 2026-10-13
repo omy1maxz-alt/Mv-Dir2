@@ -237,7 +237,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-generation').map(model => model.id));
     const options = catalogState.kind === 'success'
-      ? known.filter(option => found.has(option.value.slice('cloudflare-text:'.length)))
+      ? known.filter(option => found.has(option.value.slice('cloudflare-text:'.length))
+          // The official Workers AI changelog confirms GLM-4.7-Flash remains usable on the Workers Free plan.
+          || option.value === 'cloudflare-text:@cf/zai-org/glm-4.7-flash')
       : known;
     return {
       label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog)' : ' (Fallback List)'),
@@ -259,9 +261,11 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-to-image').map(model => model.id));
     const options = catalogState.kind === 'success'
-      ? known.filter(option => found.has(option.value.slice('cloudflare:'.length)))
+      ? known.filter(option => found.has(option.value.slice('cloudflare:'.length))
+          // Cloudflare marks this documented $0/step Runway model as Beta, and the live catalog request hides experimental models.
+          || option.value === 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting')
       : known;
-    return { label: 'Cloudflare Workers AI (' + (catalogState.kind === 'success' ? 'Live Catalog' : 'Fallback') + ')', options: options.length ? options : known };
+    return { label: 'Cloudflare Workers AI (' + (catalogState.kind === 'success' ? 'Live Catalog + supported Beta' : 'Fallback') + ')', options: options.length ? options : known };
   })();
 
   const refreshCloudflareCatalog = async () => {
