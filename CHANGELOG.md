@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 ### Added
-- **Additional Free/Zero-Unit-Price Cloudflare Workers AI Options**: Added the Cloudflare-hosted `@cf/runwayml/stable-diffusion-v1-5-inpainting` text-to-image model, whose official Cloudflare page lists **$0.00 per step**, and `@cf/zai-org/glm-4.7-flash` as a Workers Free-plan-compatible text model. Added the Runway model's supported `num_steps: 20` input mapping. The Runway adapter is prompt-to-image only in MV Director; when face/reference images are selected, the existing guard rejects this model rather than silently dropping those references. Cloudflare's model catalog groups hosted models and third-party provider models, so external models are not presented as free Workers AI models.
+- **Additional Free/Zero-Unit-Price Cloudflare Workers AI Options**: Added the Cloudflare-hosted `@cf/runwayml/stable-diffusion-v1-5-inpainting` text-to-image model, whose official Cloudflare page lists **$0.00 per step**, and `@cf/zai-org/glm-4.7-flash`, `@cf/google/gemma-4-26b-a4b-it`, and `@cf/nvidia/nemotron-3-120b-a12b` as Workers Free-plan-eligible text models, based on Cloudflare's official plan-availability notice. These text models use the Free plan's shared 10,000-Neuron daily allowance; eligibility does not mean unlimited usage or $0 per million tokens. Added the Runway model's supported `num_steps: 20` input mapping. The Runway adapter is prompt-to-image only in MV Director; when face/reference images are selected, the existing guard rejects this model rather than silently dropping those references. Cloudflare's model catalog groups hosted models and third-party provider models, so external models are not presented as free Workers AI models.
 
 
 ### Improved
