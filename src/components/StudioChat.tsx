@@ -2496,7 +2496,7 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
                   ? 'bg-emerald-600/25 hover:bg-emerald-600/35 text-emerald-200 border border-emerald-500/40 shadow-sm ring-1 ring-emerald-500/30'
                   : 'bg-white/5 hover:bg-white/10 text-white/50 border border-white/5 hover:text-white/80'
               }`}
-              title={isLoopEnabled ? `Chat Loop ON: Autonomous multi-turn AI execution.` : 'Chat Loop OFF: Single-pass direct generation.'}
+              title={isLoopEnabled ? `Chat Loop ON (${loopIterations} turns): may trigger multiple model calls. Turn OFF for ordinary questions.` : 'Chat Loop OFF: single-pass generation; enable only when multi-step reasoning is needed.'}
             >
               <RefreshCw className={`w-3 h-3 ${isLoopEnabled ? 'text-emerald-400 animate-spin-slow' : 'text-white/40'}`} />
               <span className="hidden xs:inline">Loop</span>
