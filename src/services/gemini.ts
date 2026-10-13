@@ -657,9 +657,9 @@ Return ONLY a valid JSON object. Do not include markdown formatting or extra tex
     }
 };
 
-export const enhancePrompt = async (basePrompt: string, styleModifier: string, qualityModifier: string, apiKey?: string) => {
+export const enhancePrompt = async (basePrompt: string, styleModifier: string, qualityModifier: string, apiKey?: string, targetImageModel: string = currentImageModel) => {
     const ai = getGenAI(apiKey);
-    const selectedImageModel = currentImageModel;
+    const selectedImageModel = targetImageModel;
     const profile = getImageModelPromptProfile(selectedImageModel);
 
     const prompt = `You are optimizing prompts for the exact image model selected by the user. Preserve the original subject and user intent: do not arbitrarily change the scene, add extra characters/props, change the composition, or replace the requested style. Add only details that help express the user's request clearly for this model.
@@ -2635,8 +2635,8 @@ You MUST output ONLY the final enhanced, unified paragraph. DO NOT include any c
     return response.text?.trim() || prompt;
 };
 
-export const enhanceAndSanitizePrompt = async (prompt: string, projectData: ProjectData, apiKey?: string): Promise<string> => {
-    const selectedImageModel = currentImageModel;
+export const enhanceAndSanitizePrompt = async (prompt: string, projectData: ProjectData, apiKey?: string, targetImageModel: string = currentImageModel): Promise<string> => {
+    const selectedImageModel = targetImageModel;
     const genAI = getGenAI(apiKey);
 
     let systemInstruction = `You are a prompt enhancement expert for generative AI. Your task is to take a user's prompt, enrich it with vivid details, and ensure it adheres to safety guidelines.
