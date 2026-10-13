@@ -3859,11 +3859,16 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
         currentSystemPrompt={activeConversation?.systemPrompt || ''}
         onApplyExecutiveMemory={(distilledText, targetSessionId) => {
           const nowStr = new Date().toISOString();
+          const mergeMemory = (existingPrompt?: string) => {
+            const marker = '## Distilled Conversation Memory';
+            const base = (existingPrompt || '').split(marker)[0].trimEnd();
+            return [base, marker, distilledText.trim()].filter(Boolean).join('\\n\\n');
+          };
           if (targetSessionId === 'all') {
             setConversations(prev => {
               const updated = prev.map(c => ({
                 ...c,
-                systemPrompt: distilledText,
+                systemPrompt: mergeMemory(c.systemPrompt),
                 updatedAt: nowStr,
               }));
               saveConversationsList(updated);
@@ -3874,7 +3879,7 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
             setConversations(prev => {
               const updated = prev.map(c => c.id === targetSessionId ? {
                 ...c,
-                systemPrompt: distilledText,
+                systemPrompt: mergeMemory(c.systemPrompt),
                 updatedAt: nowStr,
               } : c);
               saveConversationsList(updated);
@@ -3886,7 +3891,7 @@ CRITICAL PROTOCOL: Conclude with [NEXT_STEP: <action>] or [LOOP_COMPLETE: <summa
               setConversations(prev => {
                 const updated = prev.map(c => c.id === activeConversationId ? {
                   ...c,
-                  systemPrompt: distilledText,
+                  systemPrompt: mergeMemory(c.systemPrompt),
                   updatedAt: nowStr,
                 } : c);
                 saveConversationsList(updated);
