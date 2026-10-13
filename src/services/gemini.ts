@@ -1504,6 +1504,31 @@ const describeReferenceForImagePrompt = (ref: ReferenceImage, projectData: Proje
 const isCloudflareFlux2Model = (model: string): boolean =>
     ['@cf/black-forest-labs/flux-2-dev', '@cf/black-forest-labs/flux-2-klein-4b', '@cf/black-forest-labs/flux-2-klein-9b'].includes(model);
 
+const isCloudflareSingleReferenceImageModel = (model: string): boolean =>
+    model === '@cf/runwayml/stable-diffusion-v1-5-img2img'
+    || model === '@cf/stabilityai/stable-diffusion-xl-base-1.0';
+
+const selectSingleCloudflareReference = (
+    references: ReferenceImage[],
+    projectData: ProjectData,
+    addLog: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void,
+    modelLabel: string
+): ReferenceImage => {
+    const ordered = sortReferencesForIdentity(references, projectData);
+    const identities = ordered.filter(ref => isCharacterIdentityReference(ref, projectData));
+    if (identities.length > 1) {
+        throw new Error(modelLabel + ' accepts one reference image, but ' + identities.length + ' character identity references are active. Keep only the intended face/identity reference enabled, then retry.');
+    }
+    const selected = identities[0] || ordered[0];
+    if (!selected || typeof selected.data !== 'string' || !selected.data.trim()) {
+        throw new Error(modelLabel + ' requires one enabled reference image. Add or enable a face, frame, or other reference image, then retry.');
+    }
+    if (ordered.length > 1) {
+        addLog(modelLabel + ' accepts only one reference image. Using ' + (identities.length ? 'the character identity image' : 'the highest-priority available reference') + '; ' + (ordered.length - 1) + ' additional reference image(s) will not be sent.', 'warning');
+    }
+    return selected;
+};
+
 export const generateSceneImage = async (
     prompt: string,
     aspectRatio: AspectRatio,
