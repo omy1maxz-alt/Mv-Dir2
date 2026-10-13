@@ -657,17 +657,22 @@ Return ONLY a valid JSON object. Do not include markdown formatting or extra tex
 
 export const enhancePrompt = async (basePrompt: string, styleModifier: string, qualityModifier: string, apiKey?: string) => {
     const ai = getGenAI(apiKey);
-    
-    const prompt = `Take the original written prompt and transform it into a more detailed, vivid, and technically refined version.
-    
+    const selectedImageModel = currentImageModel;
+    const profile = getImageModelPromptProfile(selectedImageModel);
+
+    const prompt = `You are optimizing prompts for the exact image model selected by the user. Preserve the original subject and user intent: do not arbitrarily change the scene, add extra characters/props, change the composition, or replace the requested style. Add only details that help express the user's request clearly for this model.
+
+SELECTED IMAGE MODEL: ${profile.label}
+MODEL-SPECIFIC STRATEGY:
+${profile.guidance}
+
 Original Base Prompt: "${basePrompt}"
 Style Modifier: "${styleModifier}"
 Quality/Details: "${qualityModifier}"
 
-Generate 4 distinct variations of this prompt. Each variation should be a single, highly descriptive paragraph suitable for a generative AI image model. 
-Focus on composition, lighting, atmosphere, and specific details.
+Generate 4 variations that all preserve the same requested subject and scene. Variations may explore emphasis or wording, but must not switch to unrelated scenes, invent new subjects, or contradict the specified style/composition. Each variation should be a single usable visual prompt, following the selected model's supported prompting style and documented limitations. Don't claim that the provider supports features that are not actually wired through the app.
 
-Return ONLY a valid JSON array of strings. Do not include markdown formatting or extra text.
+Return ONLY a valid JSON array of strings. Do not include markdown or commentary.
 Example: ["Variation 1...", "Variation 2...", "Variation 3...", "Variation 4..."]`;
 
     const response = await withRetry(() => callTextModel(ai, {
@@ -675,21 +680,24 @@ Example: ["Variation 1...", "Variation 2...", "Variation 3...", "Variation 4..."
         contents: prompt,
         config: {
             responseMimeType: 'application/json',
-            temperature: 0.7,
+            temperature: 0.6,
             safetySettings,
         }
     }));
 
     const text = response.text?.trim() || "[]";
     try {
-        return JSON.parse(extractJSON(text));
+        const variations = JSON.parse(extractJSON(text));
+        return Array.isArray(variations) && variations.every(item => typeof item === 'string')
+            ? variations
+            : [basePrompt];
     } catch (e) {
         console.warn("Failed to parse JSON from Gemini:", text);
         return [
-            `${basePrompt}, ${styleModifier}, high contrast, dramatic shadows, ${qualityModifier}`,
-            `${basePrompt}, ${styleModifier}, vibrant colors, pop art, ${qualityModifier}`,
-            `Close up shot of ${basePrompt}, ${styleModifier}, detailed face, ${qualityModifier}`,
-            `Wide angle shot of ${basePrompt}, ${styleModifier}, vast landscape, ${qualityModifier}`
+            [basePrompt, styleModifier, qualityModifier].filter(Boolean).join(', '),
+            [basePrompt, styleModifier, 'clear subject, composition, lighting, and color', qualityModifier].filter(Boolean).join(', '),
+            [basePrompt, styleModifier, 'visually specific details that retain the original scene', qualityModifier].filter(Boolean).join(', '),
+            [basePrompt, styleModifier, 'a coherent single frozen moment', qualityModifier].filter(Boolean).join(', ')
         ];
     }
 };
