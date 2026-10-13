@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Frame Reference Auto-Description Syntax**: Fixed an escaped newline embedded literally in a line comment, which had commented out the opening `if` statement and caused an unmatched closing brace at the end of `generateSingleImage`.
 - **generateSingleImage Catch Closure**: Corrected the extra brace at the end of `generateSingleImage` after the previous attempt left the same invalid catch/function closing sequence.
 - **Generate Image Build Syntax**: Corrected the extra closing brace at the end of `generateSingleImage` that prevented Vite from compiling `src/services/gemini.ts`.
 - **Mobile Model Picker Keyboard Overlay**: Removed the search input from text-generation, image-generation, and storyboard image-model dropdowns. Opening a picker no longer focuses an input or opens the phone keyboard; all models remain available in the scrollable provider-grouped list.

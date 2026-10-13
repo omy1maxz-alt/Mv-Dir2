@@ -1,3 +1,9 @@
+### 210. Fix Root Cause of Repeated Vite Parse Failure
+- **CI evidence:** Run 38485530870 failed again at the final brace in `generateSingleImage`, even after the visible function ending was corrected.
+- **Actual root cause:** Line 2153 contained literal backslash-n characters inside a `//` comment, followed by the `if (!activePrompt && frameReferenceBase64)` opener on the same physical source line. JavaScript treated that opener as comment text, leaving its closing brace unmatched.
+- **Fix:** Replaced the literal escaped newline sequence with real line breaks so the frame auto-description conditional is active code again. Searched for other line comments with the same escaped-newline pattern; none were found.
+- **Verification:** Follow the new Actions run for Vite/build status. The prior failed runs are not treated as passed.
+
 ### 209. Correct generateSingleImage Catch Closure
 - **CI evidence:** Run 38485194878 still failed in Vite at `src/services/gemini.ts:2456` with `Unexpected "}"`.
 - **Root cause:** The function's `catch` block was already closed, but the end retained an extra brace before the function terminator. The prior correction reproduced the same three-line closure and therefore did not fix the parser error.

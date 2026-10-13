@@ -2150,7 +2150,9 @@ export const generateSingleImage = async (
 
     addLog("Preparing reference-guided image generation...", 'info');
 
-    // Prompt normalization already ran before provider selection, including Cloudflare/KIE routes.\n    \n    if (!activePrompt && frameReferenceBase64) {
+    // Prompt normalization already ran before provider selection, including Cloudflare/KIE routes.
+
+    if (!activePrompt && frameReferenceBase64) {
         // Auto-describe the frame if no prompt was provided.
         // This provides the image generation model with a concrete textual description of the scene.
         addLog("No prompt provided. Analyzing frame reference to generate a scene description...", 'info');
