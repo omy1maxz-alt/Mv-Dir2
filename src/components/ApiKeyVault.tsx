@@ -10,13 +10,15 @@ type ModelOption = { value: string; label: string };
 type ModelOptionGroup = { label: string; options: ModelOption[] };
 type CloudflareCatalogModel = { id: string; name: string; description: string; task: string; source: string; properties: string[]; tags: string[] };
 
-const SearchableModelPicker: React.FC<{
+export const SearchableModelPicker: React.FC<{
   label: string;
   value: string;
   groups: ModelOptionGroup[];
   onChange: (value: string) => void;
   accent: 'indigo' | 'emerald';
-}> = ({ label, value, groups, onChange, accent }) => {
+  compact?: boolean;
+  className?: string;
+> = ({ label, value, groups, onChange, accent, compact = false, className = '' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [openUpward, setOpenUpward] = useState(false);
@@ -50,23 +52,23 @@ const SearchableModelPicker: React.FC<{
   const activeBg = accent === 'indigo' ? 'bg-indigo-500/15' : 'bg-emerald-500/15';
 
   return (
-    <div className="relative w-full" ref={rootRef}>
+    <div className={`relative w-full ${className}`} ref={rootRef}>
       <button
         type="button"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
         aria-label={label}
         onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const spaceBelow = window.innerHeight - rect.bottom; setOpenUpward(spaceBelow < Math.min(420, window.innerHeight * 0.48) && rect.top > spaceBelow); setIsOpen(open => !open); setQuery(''); }}
-        className={`w-full min-w-0 flex items-center gap-3 rounded-xl border border-white/10 bg-black/40 px-3.5 py-3 text-left transition-colors hover:border-white/20 hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/10 ${isOpen ? accentBorder : ''}`}
+        className={`w-full min-w-0 flex items-center ${compact ? 'gap-2 rounded-lg px-2.5 py-1.5' : 'gap-3 rounded-xl px-3.5 py-3'} border border-white/10 bg-black/40 text-left transition-colors hover:border-white/20 hover:bg-white/[0.04] focus:outline-none focus:ring-2 focus:ring-white/10 ${isOpen ? accentBorder : ''}`}
       >
-        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] ${accentText}`}>
-          {label.startsWith('Text') ? <MessageSquareText className="h-4 w-4" /> : <ImageIcon className="h-4 w-4" />}
+        <span className={`${compact ? 'flex h-6 w-6' : 'flex h-9 w-9'} shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] ${accentText}`}>
+          {label.startsWith('Text') ? <MessageSquareText className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} /> : <ImageIcon className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold text-white">{selected?.label || 'Choose a model'}</span>
-          <span className="mt-0.5 block truncate text-[11px] text-white/45">{selected?.value || 'Select a provider and model'}</span>
+          <span className={`block truncate ${compact ? 'text-xs' : 'text-sm'} font-semibold text-white`}>{selected?.label || 'Choose a model'}</span>
+          <span className={`mt-0.5 block truncate text-white/45 ${compact ? 'text-[9px]' : 'text-[11px]'}`}>{selected?.value || 'Select a provider and model'}</span>
         </span>
-        <span className="shrink-0 text-white/50">{isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</span>
+        <span className="shrink-0 text-white/50">{isOpen ? (compact ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronUp className="h-4 w-4" />) : (compact ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronDown className="h-4 w-4" />)}</span>
       </button>
 
       {isOpen && (
