@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed
+- **Model-Native Image Prompt Formatting**: Storyboard generation now explicitly asks for each selected image model's preferred natural-language prompt style instead of embedding JSON inside scene image prompts. Both storyboard scene rendering and the standalone Generate Image action now normalize accidental JSON prompt strings before provider selection, including Cloudflare/KIE early-return routes. DreamShaper 8 LCM receives concise visual-first guidance and model-specific generation settings (8 steps, guidance 2). The app's internal storyboard response remains structured for reliable parsing; only the image prompt sent to image models is converted to readable visual text.
+
 ### Added
 - **Free Reference-Guided SDXL Base**: Enabled the existing `@cf/stabilityai/stable-diffusion-xl-base-1.0` model's documented `image_b64` input for one selected reference image, resized to a maximum edge of 1024px, with `num_steps: 20`. Prompt-only generation remains available when no reference is selected. Multiple references are rejected clearly rather than silently dropped. Cloudflare documents this model at $0.00 per step.
 - **Additional Workers Free-Eligible Text Choices**: Added Llama 3.2 1B, Llama 3.2 3B, and Llama 3.1 8B FP8 as low-cost text choices through the existing JSON/messages adapter. They can use the shared 10,000-Neuron daily Free allowance; usage is not unlimited, and overage requires Workers Paid. The default Gemini model is unchanged.
