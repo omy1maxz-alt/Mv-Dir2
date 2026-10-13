@@ -3203,7 +3203,7 @@ Carefully review the conversation and your previous replies above.
           const mergeMemory = (existingPrompt?: string) => {
             const marker = '## Distilled Conversation Memory';
             const base = (existingPrompt || '').split(marker)[0].trimEnd();
-            return [base, marker, distilledText.trim()].filter(Boolean).join('\\n\\n');
+            return [base, marker, distilledText.trim()].filter(Boolean).join('\n\n');
           };
           if (targetSessionId === 'all') {
             setSessions(prev => {
