@@ -314,37 +314,6 @@ export const StudioChat = ({ apiKeys, apiKeySource, onLog, projectData, setProje
 
   const [messages, setMessages] = useState<Message[]>([]);
 
-  useEffect(() => {
-    if (!showMemoryDistillModal) return;
-    let cancelled = false;
-
-    // Conversation metadata is stored separately from message bodies in IndexedDB.
-    // Load each conversation's actual message list before opening the distiller;
-    // the metadata objects in "conversations" do not contain a populated messages array.
-    const loadDistillHistory = async () => {
-      const loaded = await Promise.all(conversations.map(async (conversation) => {
-        const storedMessages = await loadConversationMessages(conversation.id);
-        const sourceMessages = conversation.id === activeConversationId ? messages : storedMessages;
-        return {
-          id: conversation.id,
-          title: conversation.title || 'Untitled Chat',
-          messages: sourceMessages.map((message: any) => ({
-            id: message.id,
-            role: message.sender === 'user' ? 'user' : (message.role || 'assistant'),
-            content: message.text || message.content || '',
-            name: message.agentName || message.name,
-          })),
-          systemPrompt: (conversation as any).systemPrompt,
-          updatedAt: conversation.updatedAt ? new Date(conversation.updatedAt).getTime() : Date.now(),
-        };
-      }));
-      if (!cancelled) setDistillSessions(loaded);
-    };
-
-    void loadDistillHistory();
-    return () => { cancelled = true; };
-  }, [showMemoryDistillModal, conversations, activeConversationId, messages]);
-
   // Compute sequential turn number for each message in the conversation
   const { messageTurns, totalTurns } = useMemo(() => {
     const map = new Map<string, number>();
@@ -409,6 +378,38 @@ export const StudioChat = ({ apiKeys, apiKeySource, onLog, projectData, setProje
   const [indexedSummary, setIndexedSummary] = useState<any>(null);
   const [pasteModalData, setPasteModalData] = useState<LongTextPasteData | null>(null);
   const [showMemoryDistillModal, setShowMemoryDistillModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!showMemoryDistillModal) return;
+    let cancelled = false;
+
+    // Conversation metadata is stored separately from message bodies in IndexedDB.
+    // Load each conversation's actual message list before opening the distiller;
+    // the metadata objects in "conversations" do not contain a populated messages array.
+    const loadDistillHistory = async () => {
+      const loaded = await Promise.all(conversations.map(async (conversation) => {
+        const storedMessages = await loadConversationMessages(conversation.id);
+        const sourceMessages = conversation.id === activeConversationId ? messages : storedMessages;
+        return {
+          id: conversation.id,
+          title: conversation.title || 'Untitled Chat',
+          messages: sourceMessages.map((message: any) => ({
+            id: message.id,
+            role: message.sender === 'user' ? 'user' : (message.role || 'assistant'),
+            content: message.text || message.content || '',
+            name: message.agentName || message.name,
+          })),
+          systemPrompt: (conversation as any).systemPrompt,
+          updatedAt: conversation.updatedAt ? new Date(conversation.updatedAt).getTime() : Date.now(),
+        };
+      }));
+      if (!cancelled) setDistillSessions(loaded);
+    };
+
+    void loadDistillHistory();
+    return () => { cancelled = true; };
+  }, [showMemoryDistillModal, conversations, activeConversationId, messages]);
+
   const [isLoopEnabled, setIsLoopEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem('mv_studio_loop_enabled') === 'true';
