@@ -48,8 +48,7 @@ export const STORYBOARD_IMAGE_MODEL_GROUPS: ImageModelOptionGroup[] = [
       { value: "cloudflare:@cf/lykon/dreamshaper-8-lcm", label: "DreamShaper 8 LCM — Photorealistic / stylized exploration" },
       { value: "cloudflare:@cf/stabilityai/stable-diffusion-xl-base-1.0", label: "Stable Diffusion XL Base — $0.00 per step; supports one reference image" },
       { value: "cloudflare:@cf/bytedance/stable-diffusion-xl-lightning", label: "Stable Diffusion XL Lightning — $0.00 per step (fast drafts)" },
-      { value: "cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting", label: "Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)" },
-      { value: "cloudflare:@cf/runwayml/stable-diffusion-v1-5-img2img", label: "Stable Diffusion 1.5 Img2Img — $0.00 per step (requires one reference image)" }
+      { value: "cloudflare:@cf/runwayml/stable-diffusion-v1-5-inpainting", label: "Stable Diffusion 1.5 Inpainting — $0.00 per step (prompt-only in MV Director)" }
     ]
   },
   {
