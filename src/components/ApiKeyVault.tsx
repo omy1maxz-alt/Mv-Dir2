@@ -233,16 +233,25 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const cloudflareTextGroup: ModelOptionGroup = (() => {
     const known: ModelOption[] = [
       { value: 'cloudflare-text:@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B — general chat and reasoning' },
-      { value: 'cloudflare-text:@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash — free-plan compatible, multilingual reasoning' }
+      { value: 'cloudflare-text:@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash — Workers Free plan eligible (multilingual)' },
+      { value: 'cloudflare-text:@cf/google/gemma-4-26b-a4b-it', label: 'Gemma 4 26B A4B — Workers Free plan eligible (text mode; vision adapter not wired here)' },
+      { value: 'cloudflare-text:@cf/nvidia/nemotron-3-120b-a12b', label: 'Nemotron 3 120B — Workers Free plan eligible (large model; uses daily Neuron allowance quickly)' }
     ];
     const found = new Set(cloudflareCatalog.filter(model => normalizedTask(model) === 'text-generation').map(model => model.id));
+    const freePlanModelIds = new Set([
+      '@cf/zai-org/glm-4.7-flash',
+      '@cf/google/gemma-4-26b-a4b-it',
+      '@cf/nvidia/nemotron-3-120b-a12b'
+    ]);
     const options = catalogState.kind === 'success'
-      ? known.filter(option => found.has(option.value.slice('cloudflare-text:'.length))
-          // The official Workers AI changelog confirms GLM-4.7-Flash remains usable on the Workers Free plan.
-          || option.value === 'cloudflare-text:@cf/zai-org/glm-4.7-flash')
+      ? known.filter(option => {
+          const id = option.value.slice('cloudflare-text:'.length);
+          // Cloudflare's July 2026 Workers AI update explicitly lists these as still available on Workers Free.
+          return found.has(id) || freePlanModelIds.has(id);
+        })
       : known;
     return {
-      label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog)' : ' (Fallback List)'),
+      label: 'Cloudflare Workers AI — Text Generation' + (catalogState.kind === 'success' ? ' (Live Catalog + Free-plan options)' : ' (Fallback List)'),
       options: options.length ? options : known
     };
   })();
