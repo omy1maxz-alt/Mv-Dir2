@@ -1,3 +1,9 @@
+### 209. Correct generateSingleImage Catch Closure
+- **CI evidence:** Run 38485194878 still failed in Vite at `src/services/gemini.ts:2456` with `Unexpected "}"`.
+- **Root cause:** The function's `catch` block was already closed, but the end retained an extra brace before the function terminator. The prior correction reproduced the same three-line closure and therefore did not fix the parser error.
+- **Fix:** Replaced the ending with the required `throw error;`, catch-block close, and function terminator only.
+- **Verification:** Pushed a targeted follow-up. Await the new Actions run before claiming a successful build.
+
 ### 208. Fix Remaining generateSingleImage Brace Error
 - **Failed build evidence:** GitHub Actions run 38484845939 reached Vite transformation but failed at `src/services/gemini.ts:2456` with `Unexpected "}"`. The end of the function had an extra closing brace after its catch block.
 - **Fix:** Corrected the function closure at the end of `generateSingleImage`; retained its existing fallback and error-handling paths.

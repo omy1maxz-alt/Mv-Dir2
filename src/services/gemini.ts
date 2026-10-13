@@ -2451,10 +2451,8 @@ Your task is to generate a new scene based EXACTLY on the text description provi
             }
         }
         throw error;
-
     }
 };
-
 export const generateChatImage = async (
     prompt: string,
     aspectRatio: string,

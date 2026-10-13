@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **generateSingleImage Catch Closure**: Corrected the extra brace at the end of `generateSingleImage` after the previous attempt left the same invalid catch/function closing sequence.
 - **Generate Image Build Syntax**: Corrected the extra closing brace at the end of `generateSingleImage` that prevented Vite from compiling `src/services/gemini.ts`.
 - **Mobile Model Picker Keyboard Overlay**: Removed the search input from text-generation, image-generation, and storyboard image-model dropdowns. Opening a picker no longer focuses an input or opens the phone keyboard; all models remain available in the scrollable provider-grouped list.
 - **Image Prompt Directive Build Failure**: Corrected the escaped apostrophe/newline in the selected image model directive that caused Vite to fail parsing `src/services/gemini.ts`.
