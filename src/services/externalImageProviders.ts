@@ -130,7 +130,7 @@ const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
   // Cloudflare requires each FLUX.2 reference image to be smaller than 512x512.
   const scale = Math.min(1, 511 / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -141,8 +141,7 @@ const imageToCloudflareDataUrl = async (source: string): Promise<string> => {
 };
 
 /**
- * Prepare one reference image for JSON-schema Cloudflare image-to-image models.
- * These models accept a single base64 image_b64 field (without a data: prefix).
+ * Prepare one reference image for Cloudflare models that use an image_b64 input.
  */
 const imageToCloudflareImageBase64 = async (source: string): Promise<string> => {
   const trimmed = String(source || '').trim();
@@ -265,7 +264,7 @@ const postCloudflareModel = async (args: {
 
   if (!accountId || !apiToken) {
     throw new Error(
-      'Cloudflare credentials or a working proxy are missing. In Google AI Studio, deploy the included Cloudflare Worker Proxy, then configure its URL and access token in Settings -> API Vault.'
+      'Cloudflare credentials or a working proxy are missing. In Google AI Studio, deploy the included Cloudflare Worker Proxy, then configure its URL and access token in API Vault.'
     );
   }
 
@@ -331,28 +330,18 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     if (references.length > 0) {
       addLog?.(`Preparing ${references.length} reference image(s) for FLUX.2 multipart editing (max 4, resized to 512px).`, 'info');
     }
-  } else if (model === '@cf/stabilityai/stable-diffusion-xl-base-1.0' && (options.referenceImages || []).length > 0) {
+  } else if ((model === '@cf/stabilityai/stable-diffusion-xl-base-1.0' || model === '@cf/runwayml/stable-diffusion-v1-5-inpainting') && (options.referenceImages || []).length > 0) {
     const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
     if (references.length !== 1) {
-      throw new Error(`Cloudflare Stable Diffusion XL Base is documented at $0.00 per step and supports one reference image in this MV Director adapter. ${references.length} references were supplied. Select one face/reference image, or use FLUX.2 for up to four references.`);
+      throw new Error(`Cloudflare ${model} supports one reference image in this MV Director adapter. ${references.length} references were supplied. Select one face/reference image, or use FLUX.2 for up to four references.`);
     }
     modelInput.image_b64 = await imageToCloudflareImageBase64(references[0].data);
     modelInput.num_steps = 20;
     modelInput.strength = 0.72;
     modelInput.guidance = 7.5;
-    addLog?.('Preparing one reference image for Stable Diffusion XL Base (1024px max; 20 steps).', 'info');
-  } else if (model === '@cf/runwayml/stable-diffusion-v1-5-img2img') {
-    const references = (options.referenceImages || []).filter(reference => typeof reference?.data === 'string' && reference.data.trim());
-    if (references.length !== 1) {
-      throw new Error(`Cloudflare Stable Diffusion 1.5 Img2Img is a $0.00-per-step model that requires exactly one selected reference image. ${references.length} were supplied. Use one face/reference image, or choose another model for multiple references.`);
-    }
-    modelInput.image_b64 = await imageToCloudflareImageBase64(references[0].data);
-    modelInput.num_steps = 20;
-    modelInput.strength = 0.72;
-    modelInput.guidance = 7.5;
-    addLog?.('Preparing one reference image for Runway Stable Diffusion 1.5 Img2Img (1024px max; 20 steps).', 'info');
+    addLog?.(`Preparing one reference image for ${model} (1024px max; 20 steps).`, 'info');
   } else if ((options.referenceImages || []).length > 0) {
-    throw new Error(`The selected Cloudflare model (${model}) has no reference-image input in this adapter. MV Director will not discard the selected face/frame images. Choose FLUX.2 [dev], Klein 4B/9B, Runway Img2Img (one reference), or a Gemini/KIE reference-capable model.`);
+    throw new Error(`The selected Cloudflare model (${model}) has no reference-image input in this adapter. MV Director will not discard the selected face/frame images. Choose FLUX.2 [dev], Klein 4B/9B, SDXL Base, or a Gemini/KIE reference-capable model.`);
   }
   if (model === '@cf/black-forest-labs/flux-1-schnell') {
     // FLUX.1 schnell only accepts prompt/steps; dimensions are not in its schema.
@@ -365,8 +354,7 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     // Cloudflare's official schema supports up to 20 diffusion steps.
     modelInput.num_steps = 20;
   } else if (model === '@cf/runwayml/stable-diffusion-v1-5-inpainting') {
-    // Cloudflare documents this prompt-to-image model at $0.00 per step.
-    // Its mask/image inputs are intentionally not populated by this prompt-only adapter.
+    // Supports text-to-image and optional img2img; mask-based editing requires a mask.
     modelInput.num_steps = 20;
   } else if (model === '@cf/leonardo/lucid-origin') {
     modelInput.width = Math.min(width, 2500);
@@ -396,7 +384,7 @@ export async function generateImageCloudflare(options: CloudflareOptions): Promi
     const errorText = await responseErrorText(response, apiToken || proxyToken);
     if (isMultipartModel && /required properties.*multipart/i.test(errorText)) {
       throw new Error(
-        'FLUX.2 requires multipart/form-data, but the configured Worker appears to be forwarding this request as JSON. Redeploy the latest cloudflare-worker-proxy/worker.js from GitHub, then retry. GitHub source changes do not automatically update the live Cloudflare Worker.'
+        'FLUX.2 requires multipart/form-data, but the configured Worker appears to be forwarding this request as JSON. Deploy the latest cloudflare-worker-proxy/worker.js from GitHub to the exact Worker URL saved in API Settings, then retry. GitHub source changes do not automatically update the live Cloudflare Worker.'
       );
     }
     throw new Error(`Cloudflare Workers AI Error (HTTP ${response.status}): ${errorText || response.statusText || 'Request rejected'}`);
