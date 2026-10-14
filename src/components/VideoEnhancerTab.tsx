@@ -20,6 +20,8 @@ export const VideoEnhancerTab: React.FC = () => {
   const [preset, setPreset] = useState('faithful');
   const [showSetup, setShowSetup] = useState(false);
   const [error, setError] = useState('');
+  const [jobState, setJobState] = useState<{ id?: string; status?: string; message?: string; progress?: number; stage?: string } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (!file) {
@@ -161,12 +163,51 @@ export const VideoEnhancerTab: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => setShowSetup(true)}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold transition hover:bg-violet-400"
+                disabled={!file || isSubmitting}
+                onClick={async () => {
+                  setError('');
+                  setJobState(null);
+                  const apiBase = (import.meta as any).env?.VITE_VIDEO_WORKER_API_URL?.trim();
+                  const apiKey = (import.meta as any).env?.VITE_VIDEO_WORKER_API_KEY?.trim();
+                  if (!apiBase || !apiKey) {
+                    setShowSetup(true);
+                    setError('Video worker is not connected. Configure the server-side worker URL and authentication before submitting videos. Never put a private worker secret in a VITE_ variable in production.');
+                    return;
+                  }
+                  setIsSubmitting(true);
+                  try {
+                    const body = new FormData();
+                    body.append('file', file);
+                    const settings = { scale, preset, denoise, sharpen, face_restore: faceRestore, interpolate };
+                    const response = await fetch(`${apiBase.replace(/\\/$/, '')}/v1/jobs`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) },
+                      body
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(data.detail || data.message || `Worker request failed (HTTP ${response.status}).`);
+                    setJobState({ id: data.job_id, status: data.status, message: data.message, progress: data.progress, stage: data.stage });
+                  } catch (e: any) {
+                    setError(e?.message || 'Could not submit this video to the worker.');
+                  } finally {
+                    setIsSubmitting(false);
+                  }
+                }}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <WandSparkles className="h-4 w-4" /> Enhance video
+                {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />} {isSubmitting ? 'Submitting…' : 'Submit enhancement job'}
               </button>
-              <p className="mt-3 text-center text-xs leading-5 text-white/40">Cloud GPU processing must be configured before exports can be generated.</p>
+              <p className="mt-3 text-center text-xs leading-5 text-white/40">Submits to the configured worker. Processing only succeeds once a real model adapter is deployed.</p>
+              {jobState && (
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-violet-200">Job status</span>
+                    <span className="rounded-full bg-white/10 px-2 py-1 text-xs">{jobState.status || 'submitted'}</span>
+                  </div>
+                  <p className="mt-2 break-all text-xs text-white/55">{jobState.id || ''}</p>
+                  <p className="mt-2 text-sm text-white/75">{jobState.message || jobState.stage || 'Worker accepted the job.'}</p>
+                </div>
+              )}
             </section>
           </aside>
         </div>
@@ -195,7 +236,7 @@ export const VideoEnhancerTab: React.FC = () => {
 
         <div className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.025] p-4 text-xs leading-5 text-white/45">
           <Clock3 className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>Selected settings are ready for backend integration. Current version supports file selection and source preview only; it does not yet upload to a cloud GPU or claim to enhance video.</p>
+          <p>This frontend can submit a job to a configured worker endpoint. The included worker scaffold intentionally reports that model inference is not configured; no enhanced output is claimed until a real model adapter is deployed. For production, keep API credentials on a trusted server-side proxy rather than in browser environment variables.</p>
         </div>
       </div>
     </div>
