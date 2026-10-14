@@ -1268,11 +1268,11 @@ app.post('/api/tinyfish/context', async (req: Request, res: Response) => {
     }
 
     const payload: any = await upstream.json();
-    const candidates = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload.results) ? payload.results
-      : Array.isArray(payload.data) ? payload.data
-      : Array.isArray(payload.organic_results) ? payload.organic_results
+    // TinyFish Search returns results inside a top-level { results: [...] } object.
+    const candidates = Array.isArray(payload?.results) ? payload.results
+      : Array.isArray(payload) ? payload
+      : Array.isArray(payload?.data) ? payload.data
+      : Array.isArray(payload?.organic_results) ? payload.organic_results
       : [];
 
     const sources = candidates.slice(0, 6).flatMap((item: any) => {
