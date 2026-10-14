@@ -20,6 +20,49 @@ export const VideoEnhancerTab: React.FC = () => {
   const [preset, setPreset] = useState('faithful');
   const [showSetup, setShowSetup] = useState(false);
   const [error, setError] = useState('');
+  const apiBase = (import.meta as any).env?.VITE_VIDEO_WORKER_API_URL?.trim() || '';
+  const apiConfigured = Boolean(apiBase);
+  const [jobState, setJobState] = useState<{ id?: string; status?: string; message?: string; progress?: number; stage?: string; resultUrl?: string } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const refreshJob = async (jobId: string) => {
+    if (!apiBase || !jobId) return;
+    try {
+      const response = await fetch(`/api/video-enhancer/jobs/${encodeURIComponent(jobId)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || data.detail || 'Could not refresh job status.');
+      let resultUrl: string | undefined;
+      if (data.result_available || data.status === 'completed') {
+        resultUrl = `/api/video-enhancer/jobs/${encodeURIComponent(jobId)}/result`;
+      }
+      setJobState({ id: data.job_id || jobId, status: data.status, message: data.message, progress: data.progress, stage: data.stage, resultUrl });
+    } catch (e: any) {
+      setError(e?.message || 'Could not refresh job status.');
+    }
+  };
+
+  const submitJob = async () => {
+    if (!file) return;
+    setError('');
+    setJobState(null);
+    setIsSubmitting(true);
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      body.append('settings', JSON.stringify({ scale, preset, denoise, sharpen, face_restore: faceRestore, interpolate }));
+      const response = await fetch('/api/video-enhancer/jobs', { method: 'POST', body });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || data.detail || `Video submission failed (HTTP ${response.status}).`);
+      setJobState({ id: data.job_id, status: data.status, message: data.message, progress: data.progress, stage: data.stage });
+      if (data.job_id) await refreshJob(data.job_id);
+    } catch (e: any) {
+      setError(e?.message || 'Could not submit this video to the worker.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+
   const [jobState, setJobState] = useState<{ id?: string; status?: string; message?: string; progress?: number; stage?: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -138,50 +181,31 @@ export const VideoEnhancerTab: React.FC = () => {
                 <select value={sharpen} onChange={e => setSharpen(e.target.value as Strength)} className={selectClass}>
                   <option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
                 </select>
-              </label>
-              <div className="mt-4 space-y-3">
-                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3">
-                  <input type="checkbox" checked={faceRestore} onChange={e => setFaceRestore(e.target.checked)} className="mt-1 accent-violet-400" />
-                  <span><span className="block text-sm font-semibold">Face restoration</span><span className="mt-1 block text-xs leading-5 text-white/45">Optional; may alter facial details.</span></span>
-                </label>
-                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3">
-                  <input type="checkbox" checked={interpolate} onChange={e => setInterpolate(e.target.checked)} className="mt-1 accent-violet-400" />
-                  <span><span className="block text-sm font-semibold">Double frame rate</span><span className="mt-1 block text-xs leading-5 text-white/45">Use AI interpolation for smoother motion.</span></span>
-                </label>
-              </div>
-              <div className="mt-5 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.06] p-3">
-                <div className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><ShieldCheck className="h-4 w-4" /> Faithful restoration</div>
-                <p className="mt-1 text-xs leading-5 text-white/50">Preserve original content. Optional detail recovery can introduce artifacts, so use it conservatively.</p>
-              </div>
-            </section>
-
-            <section className={panelClass}>
-              <h2 className="font-bold">Export</h2>
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-xs text-white/40">Container</p><p className="mt-1 text-sm font-semibold">MP4</p></div>
-                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-xs text-white/40">Audio</p><p className="mt-1 text-sm font-semibold">Preserve source</p></div>
-              </div>
-              <button
+               <button
                 type="button"
-                disabled={!file || isSubmitting}
-                onClick={async () => {
-                  setError('');
-                  setJobState(null);
-                  const apiBase = (import.meta as any).env?.VITE_VIDEO_WORKER_API_URL?.trim();
-                  const apiKey = (import.meta as any).env?.VITE_VIDEO_WORKER_API_KEY?.trim();
-                  if (!apiBase || !apiKey) {
-                    setShowSetup(true);
-                    setError('Video worker is not connected. Configure the server-side worker URL and authentication before submitting videos. Never put a private worker secret in a VITE_ variable in production.');
-                    return;
-                  }
-                  setIsSubmitting(true);
-                  try {
-                    const body = new FormData();
-                    body.append('file', file);
-                    const settings = { scale, preset, denoise, sharpen, face_restore: faceRestore, interpolate };
-                    const response = await fetch(`${apiBase.replace(/\\/$/, '')}/v1/jobs`, {
-                      method: 'POST',
-                      headers: { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) },
+                disabled={!file || isSubmitting || !apiConfigured}
+                onClick={submitJob}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
+                {isSubmitting ? 'Submitting…' : 'Submit enhancement job'}
+              </button>
+              {!apiConfigured && <p className="mt-3 text-xs leading-5 text-amber-200/80">Worker API URL is not configured. Connect the app server to the private worker before uploading.</p>}
+              {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
+              {jobState && (
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-violet-200">Job status</span>
+                    <span className="rounded-full bg-white/10 px-2 py-1 text-xs">{jobState.status || 'submitted'}</span>
+                  </div>
+                  <p className="mt-2 break-all text-xs text-white/55">{jobState.id || ''}</p>
+                  <p className="mt-2 text-sm text-white/75">{jobState.message || jobState.stage || 'Worker accepted the job.'}</p>
+                  {jobState.status === 'blocked' && <p className="mt-2 text-xs leading-5 text-amber-200/75">The worker received the upload, but model inference is not installed; no enhanced output exists.</p>}
+                  {jobState.resultUrl && <a href={jobState.resultUrl} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-white"><Download className="h-4 w-4" /> Download enhanced video</a>}
+                  {jobState.id && !['completed', 'failed', 'cancelled', 'blocked'].includes(jobState.status || '') && <button onClick={() => void refreshJob(jobState.id!)} className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold hover:bg-white/5"><LoaderCircle className="h-3.5 w-3.5" /> Refresh status</button>}
+                </div>
+              )}
+   headers: { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) },
                       body
                     });
                     const data = await response.json().catch(() => ({}));
@@ -236,7 +260,7 @@ export const VideoEnhancerTab: React.FC = () => {
 
         <div className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.025] p-4 text-xs leading-5 text-white/45">
           <Clock3 className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>This frontend can submit a job to a configured worker endpoint. The included worker scaffold intentionally reports that model inference is not configured; no enhanced output is claimed until a real model adapter is deployed. For production, keep API credentials on a trusted server-side proxy rather than in browser environment variables.</p>
+          <p>Uploads go through the app server to keep worker credentials out of browser code. The included worker scaffold explicitly reports when inference is unavailable; no enhanced output is claimed until a real model adapter is deployed.</p>
         </div>
       </div>
     </div>
