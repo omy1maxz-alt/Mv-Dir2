@@ -20,13 +20,12 @@ export const VideoEnhancerTab: React.FC = () => {
   const [preset, setPreset] = useState('faithful');
   const [showSetup, setShowSetup] = useState(false);
   const [error, setError] = useState('');
-  const apiBase = (import.meta as any).env?.VITE_VIDEO_WORKER_API_URL?.trim() || '';
-  const apiConfigured = Boolean(apiBase);
+  const apiConfigured = true; // requests go through the same-origin server gateway
   const [jobState, setJobState] = useState<{ id?: string; status?: string; message?: string; progress?: number; stage?: string; resultUrl?: string } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const refreshJob = async (jobId: string) => {
-    if (!apiBase || !jobId) return;
+    if (!jobId) return;
     try {
       const response = await fetch(`/api/video-enhancer/jobs/${encodeURIComponent(jobId)}`);
       const data = await response.json().catch(() => ({}));
