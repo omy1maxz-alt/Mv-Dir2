@@ -1203,6 +1203,180 @@ app.get('/api/youtube/subtitles', async (req: Request, res: Response) => {
   }
 });
 
+
+// Video enhancer gateway. The browser talks only to these same-origin endpoints;
+// the private worker credential remains on the app server.
+function validateEnhancerSettings(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Enhancement settings must be an object.');
+  const input = value as Record<string, unknown>;
+  const allowed: Record<string, string[]> = {
+    scale: ['original', '1080p', '1440p', '4k'],
+    preset: ['faithful', 'old', 'compressed', 'animation', 'lowlight'],
+    denoise: ['off', 'low', 'medium', 'high'],
+    sharpen: ['off', 'low', 'medium', 'high']
+  };
+  const result: Record<string, unknown> = {};
+  for (const [key, values] of Object.entries(allowed)) {
+    const val = input[key];
+    if (val !== undefined && (typeof val !== 'string' || !values.includes(val))) {
+      throw new Error(`Invalid enhancement setting: ${key}`);
+    }
+    if (val !== undefined) result[key] = val;
+  }
+  for (const key of ['face_restore', 'interpolate']) {
+    const val = input[key];
+    if (val !== undefined && typeof val !== 'boolean') throw new Error(`Invalid enhancement setting: ${key}`);
+    if (val !== undefined) result[key] = val;
+  }
+  return result;
+}
+
+function enhancerWorkerConfig() {
+  const baseUrl = (process.env.VIDEO_WORKER_URL || '').trim().replace(/\\/$/, '');
+  const apiKey = (process.env.VIDEO_WORKER_API_KEY || '').trim();
+  if (!baseUrl || !apiKey) throw new Error('Video worker is not configured on the server. Set VIDEO_WORKER_URL and VIDEO_WORKER_API_KEY.');
+  let parsed: URL;
+  try { parsed = new URL(baseUrl); } catch { throw new Error('VIDEO_WORKER_URL must be an absolute HTTPS URL.'); }
+  if (parsed.protocol !== 'https:' && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+    throw new Error('Video worker URL must use HTTPS outside local development.');
+  }
+  return { baseUrl, apiKey };
+}
+
+function parseWorkerError(text: string): string {
+  try {
+    const data = JSON.parse(text);
+    return String(data.detail || data.message || data.error || 'Video worker request failed.').slice(0, 500);
+  } catch {
+    return 'Video worker request failed.';
+  }
+}
+
+app.get('/api/video-enhancer/health', async (_req: Request, res: Response) => {
+  try {
+    const { baseUrl, apiKey } = enhancerWorkerConfig();
+    const upstream = await fetch(`${baseUrl}/health`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000)
+    });
+    const raw = await upstream.text();
+    if (!upstream.ok) return res.status(502).json({ ok: false, error: 'Worker health check failed.' });
+    let data: any = {};
+    try { data = JSON.parse(raw); } catch {}
+    return res.json({ ok: true, model_ready: data.model_ready === true, message: data.message || 'Worker reachable.' });
+  } catch (error: any) {
+    return res.status(503).json({ ok: false, error: error?.message || 'Video worker is not configured.' });
+  }
+});
+
+app.post('/api/video-enhancer/jobs', async (req: Request, res: Response) => {
+  let uploadPath = '';
+  try {
+    const { baseUrl, apiKey } = enhancerWorkerConfig();
+    const contentType = req.headers['content-type'] || '';
+    if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
+      return res.status(415).json({ error: 'Submit multipart/form-data with a video file and settings.' });
+    }
+    const maxBytes = Math.max(1, Number(process.env.VIDEO_ENHANCER_PROXY_MAX_MB || 64)) * 1024 * 1024;
+    let total = 0;
+    let tooLarge = false;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    await new Promise<void>((resolve, reject) => {
+      req.on('end', resolve);
+      req.on('error', reject);
+    });
+    if (tooLarge) return res.status(413).json({ error: 'Upload exceeds the gateway limit. Use resumable cloud storage uploads for larger videos.' });
+    const rawBody = Buffer.concat(chunks);
+    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!boundaryMatch) return res.status(400).json({ error: 'Multipart boundary is missing.' });
+    const delimiter = Buffer.from(`--${boundaryMatch[1] || boundaryMatch[2]}`);
+    const parts = rawBody.toString('latin1').split(delimiter.toString('latin1'));
+    let filename = '';
+    let fileBytes: Buffer | null = null;
+    let settingsJson = '{}';
+    for (const part of parts) {
+      const split = part.indexOf('\\r\\n\\r\\n');
+      if (split < 0) continue;
+      const headers = part.slice(0, split);
+      const value = part.slice(split + 4).replace(/\\r\\n$/, '').replace(/\\r\\n--$/, '');
+      if (/name="file"/i.test(headers)) {
+        const nameMatch = headers.match(/filename="([^"]*)"/i);
+        filename = (nameMatch?.[1] || 'video.mp4').split(/[\\/]/).pop() || 'video.mp4';
+        fileBytes = Buffer.from(value, 'latin1');
+      } else if (/name="settings"/i.test(headers)) {
+        settingsJson = Buffer.from(value, 'latin1').toString('utf8');
+      }
+    }
+    if (!fileBytes?.length) return res.status(400).json({ error: 'A non-empty video file is required.' });
+    if (!/\\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(filename)) {
+      return res.status(415).json({ error: 'Unsupported video extension.' });
+    }
+    let settings: Record<string, unknown>;
+    try { settings = validateEnhancerSettings(JSON.parse(settingsJson)); }
+    catch (error: any) { return res.status(400).json({ error: error?.message || 'Invalid enhancement settings.' }); }
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(fileBytes)], { type: 'application/octet-stream' }), filename);
+    const upstreamHeaders = { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) };
+    const upstream = await fetch(`${baseUrl}/v1/jobs`, {
+      method: 'POST',
+      headers: upstreamHeaders,
+      body: form,
+      signal: AbortSignal.timeout(120000)
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) return res.status(upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502).json({ error: parseWorkerError(text) });
+    res.status(202).type('application/json').send(text);
+  } catch (error: any) {
+    res.status(502).json({ error: error?.message || 'Could not submit video to worker.' });
+  }
+});
+
+app.get('/api/video-enhancer/jobs/:jobId', async (req: Request, res: Response) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.jobId)) return res.status(400).json({ error: 'Invalid job ID.' });
+    const { baseUrl, apiKey } = enhancerWorkerConfig();
+    const upstream = await fetch(`${baseUrl}/v1/jobs/${encodeURIComponent(req.params.jobId)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000)
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) return res.status(upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502).json({ error: parseWorkerError(text) });
+    res.type('application/json').send(text);
+  } catch (error: any) {
+    res.status(503).json({ error: error?.message || 'Could not fetch video job status.' });
+  }
+});
+
+app.get('/api/video-enhancer/jobs/:jobId/result', async (req: Request, res: Response) => {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.jobId)) return res.status(400).json({ error: 'Invalid job ID.' });
+    const { baseUrl, apiKey } = enhancerWorkerConfig();
+    const upstream = await fetch(`${baseUrl}/v1/jobs/${encodeURIComponent(req.params.jobId)}/result`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!upstream.ok) return res.status(upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502).json({ error: parseWorkerError(await upstream.text()) });
+    const bytes = Buffer.from(await upstream.arrayBuffer());
+    if (!bytes.length || !upstream.headers.get('content-type')?.includes('video')) {
+      return res.status(502).json({ error: 'Worker did not return a valid video result.' });
+    }
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="enhanced-${req.params.jobId}.mp4"`);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(bytes);
+  } catch (error: any) {
+    res.status(503).json({ error: error?.message || 'Could not retrieve video result.' });
+  }
+});
+
 // 4. Mount Vite Dev Middlewares or Production Static Files
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
