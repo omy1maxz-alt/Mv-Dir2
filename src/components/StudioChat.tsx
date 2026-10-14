@@ -47,7 +47,6 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { sendStudioChatMessage, generateChatImage, StudioGroundingSource, StudioGitRepoContext } from '@/services/gemini';
- 
 interface TinyFishSource { title: string; url: string; snippet: string; domain: string; }
 async function queryTinyFishContext(query: string, purpose: 'chat' | 'caption' = 'chat'): Promise<{ sources: TinyFishSource[]; message?: string }> {
   const response = await fetch('/api/tinyfish/context', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, purpose }) });
@@ -55,6 +54,7 @@ async function queryTinyFishContext(query: string, purpose: 'chat' | 'caption' =
   if (!response.ok) throw new Error(data.error || 'TinyFish search failed.');
   return { sources: Array.isArray(data.sources) ? data.sources : [], message: data.message };
 }
+ 
 import { compressImage } from '@/utils/imageUtils';
 import { get, set, del } from 'idb-keyval';
 import { saveProjectToDB, savePlanToDB } from '@/services/db';
