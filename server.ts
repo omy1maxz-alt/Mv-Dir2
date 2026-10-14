@@ -1239,6 +1239,9 @@ app.post('/api/tinyfish/context', async (req: Request, res: Response) => {
     ? `${rawQuery} language usage slang idioms cultural context translation references`
     : rawQuery;
 
+  // Search result snippets are treated as untrusted external content. Avoid forwarding
+  // the search query or credentials to any host other than TinyFish's fixed API endpoint.
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
