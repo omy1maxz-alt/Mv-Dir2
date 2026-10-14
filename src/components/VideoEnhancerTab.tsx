@@ -1,0 +1,203 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertTriangle, CheckCircle2, CircleHelp, Clock3, Download, Film, Gauge,
+  ImagePlus, LoaderCircle, Maximize2, ScanEye, Settings2, ShieldCheck,
+  Sparkles, UploadCloud, WandSparkles, X
+} from 'lucide-react';
+
+type Scale = 'original' | '1080p' | '1440p' | '4k';
+type Strength = 'off' | 'low' | 'medium' | 'high';
+
+export const VideoEnhancerTab: React.FC = () => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [scale, setScale] = useState<Scale>('4k');
+  const [denoise, setDenoise] = useState<Strength>('low');
+  const [sharpen, setSharpen] = useState<Strength>('low');
+  const [faceRestore, setFaceRestore] = useState(false);
+  const [interpolate, setInterpolate] = useState(false);
+  const [preset, setPreset] = useState('faithful');
+  const [showSetup, setShowSetup] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl('');
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  const chooseFile = (candidate?: File) => {
+    setError('');
+    if (!candidate) return;
+    if (!candidate.type.startsWith('video/')) {
+      setError('Choose a supported video file (MP4, MOV, or WebM).');
+      return;
+    }
+    setFile(candidate);
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const selectClass = 'mt-2 w-full rounded-xl border border-white/10 bg-[#111318] px-3 py-3 text-sm text-white outline-none focus:border-violet-400';
+  const panelClass = 'rounded-2xl border border-white/10 bg-[#101116] p-4 md:p-5';
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto bg-[#090a0e] text-white">
+      <div className="mx-auto max-w-7xl space-y-6 p-4 pb-24 md:p-8">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.22em] text-violet-300">
+              <Sparkles className="h-4 w-4" /> Video tools
+            </div>
+            <h1 className="text-3xl font-black tracking-tight md:text-4xl">AI Video Enhancer</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
+              Upscale and restore existing footage with a faithful, detail-preserving workflow.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 self-start rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs font-semibold text-amber-200 sm:self-auto">
+            <AlertTriangle className="h-4 w-4" /> GPU backend not connected
+          </div>
+        </header>
+
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.85fr)]">
+          <section className={panelClass}>
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-bold">Source video</h2>
+                <p className="mt-1 text-xs text-white/45">Your original file stays unchanged.</p>
+              </div>
+              {file && <button onClick={() => { setFile(null); setError(''); }} className="rounded-lg p-2 text-white/50 hover:bg-white/10 hover:text-white" aria-label="Remove video"><X className="h-4 w-4" /></button>}
+            </div>
+
+            {previewUrl ? (
+              <div className="overflow-hidden rounded-xl border border-white/10 bg-black">
+                <video src={previewUrl} controls className="max-h-[460px] w-full bg-black object-contain" />
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => inputRef.current?.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); chooseFile(e.dataTransfer.files?.[0]); }}
+                className="flex min-h-[300px] w-full flex-col items-center justify-center rounded-xl border border-dashed border-white/20 bg-white/[0.025] p-8 text-center transition hover:border-violet-400/70 hover:bg-violet-400/[0.04]"
+              >
+                <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-400/10 text-violet-300"><UploadCloud className="h-7 w-7" /></span>
+                <span className="text-base font-bold">Drop a video here</span>
+                <span className="mt-2 text-sm text-white/45">or browse files · MP4, MOV, WebM</span>
+                <span className="mt-5 rounded-lg bg-violet-500 px-4 py-2.5 text-sm font-bold text-white">Choose video</span>
+              </button>
+            )}
+            <input ref={inputRef} type="file" accept="video/mp4,video/quicktime,video/webm,video/*" className="hidden" onChange={e => chooseFile(e.target.files?.[0])} />
+            {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
+
+            {file && (
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-[11px] uppercase tracking-wider text-white/40">File</p><p className="mt-1 truncate text-sm font-semibold" title={file.name}>{file.name}</p></div>
+                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-[11px] uppercase tracking-wider text-white/40">Size</p><p className="mt-1 text-sm font-semibold">{formatSize(file.size)}</p></div>
+                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-[11px] uppercase tracking-wider text-white/40">Type</p><p className="mt-1 truncate text-sm font-semibold">{file.type || 'Video'}</p></div>
+              </div>
+            )}
+          </section>
+
+          <aside className="space-y-5">
+            <section className={panelClass}>
+              <div className="mb-4 flex items-center gap-2"><Settings2 className="h-5 w-5 text-violet-300" /><h2 className="font-bold">Enhancement settings</h2></div>
+              <label className="block text-sm font-medium">Restoration preset
+                <select value={preset} onChange={e => setPreset(e.target.value)} className={selectClass}>
+                  <option value="faithful">Natural / faithful</option>
+                  <option value="old">Old or noisy footage</option>
+                  <option value="compressed">Compressed online video</option>
+                  <option value="animation">Anime / animation</option>
+                  <option value="lowlight">Low-light footage</option>
+                </select>
+              </label>
+              <label className="mt-4 block text-sm font-medium">Output resolution
+                <select value={scale} onChange={e => setScale(e.target.value as Scale)} className={selectClass}>
+                  <option value="original">Keep original resolution</option>
+                  <option value="1080p">1080p Full HD</option>
+                  <option value="1440p">1440p QHD</option>
+                  <option value="4k">4K UHD</option>
+                </select>
+              </label>
+              <label className="mt-4 block text-sm font-medium">Denoise
+                <select value={denoise} onChange={e => setDenoise(e.target.value as Strength)} className={selectClass}>
+                  <option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+                </select>
+              </label>
+              <label className="mt-4 block text-sm font-medium">Deblur / sharpening
+                <select value={sharpen} onChange={e => setSharpen(e.target.value as Strength)} className={selectClass}>
+                  <option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+                </select>
+              </label>
+              <div className="mt-4 space-y-3">
+                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3">
+                  <input type="checkbox" checked={faceRestore} onChange={e => setFaceRestore(e.target.checked)} className="mt-1 accent-violet-400" />
+                  <span><span className="block text-sm font-semibold">Face restoration</span><span className="mt-1 block text-xs leading-5 text-white/45">Optional; may alter facial details.</span></span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 p-3">
+                  <input type="checkbox" checked={interpolate} onChange={e => setInterpolate(e.target.checked)} className="mt-1 accent-violet-400" />
+                  <span><span className="block text-sm font-semibold">Double frame rate</span><span className="mt-1 block text-xs leading-5 text-white/45">Use AI interpolation for smoother motion.</span></span>
+                </label>
+              </div>
+              <div className="mt-5 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.06] p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><ShieldCheck className="h-4 w-4" /> Faithful restoration</div>
+                <p className="mt-1 text-xs leading-5 text-white/50">Preserve original content. Optional detail recovery can introduce artifacts, so use it conservatively.</p>
+              </div>
+            </section>
+
+            <section className={panelClass}>
+              <h2 className="font-bold">Export</h2>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-xs text-white/40">Container</p><p className="mt-1 text-sm font-semibold">MP4</p></div>
+                <div className="rounded-xl bg-white/[0.04] p-3"><p className="text-xs text-white/40">Audio</p><p className="mt-1 text-sm font-semibold">Preserve source</p></div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSetup(true)}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold transition hover:bg-violet-400"
+              >
+                <WandSparkles className="h-4 w-4" /> Enhance video
+              </button>
+              <p className="mt-3 text-center text-xs leading-5 text-white/40">Cloud GPU processing must be configured before exports can be generated.</p>
+            </section>
+          </aside>
+        </div>
+
+        <section className={panelClass}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-white/[0.05] p-3"><Gauge className="h-5 w-5 text-violet-300" /></div>
+              <div><h2 className="font-bold">Processing pipeline</h2><p className="mt-1 text-sm text-white/45">Upload → analyze → restore frames → encode → export</p></div>
+            </div>
+            <button onClick={() => setShowSetup(v => !v)} className="inline-flex items-center gap-2 self-start rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-white/65 hover:bg-white/5"><CircleHelp className="h-4 w-4" /> Backend setup</button>
+          </div>
+          {showSetup && (
+            <div className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.05] p-4">
+              <h3 className="font-bold text-amber-100">Cloud GPU backend required</h3>
+              <p className="mt-2 text-sm leading-6 text-white/60">This tab currently provides the interface and local preview. To produce a real enhanced video, connect an authenticated API and asynchronous GPU worker. Recommended worker stack: Python/FastAPI, PyTorch, FFmpeg, cloud object storage, and a persistent job queue. No output is fabricated while that service is missing.</p>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-white/60">
+                <span className="rounded-lg bg-white/5 px-3 py-2">Real-ESRGAN · upscaling</span>
+                <span className="rounded-lg bg-white/5 px-3 py-2">BasicVSR++ · video restoration</span>
+                <span className="rounded-lg bg-white/5 px-3 py-2">RIFE · frame interpolation</span>
+                <span className="rounded-lg bg-white/5 px-3 py-2">FFmpeg · export</span>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <div className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.025] p-4 text-xs leading-5 text-white/45">
+          <Clock3 className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>Selected settings are ready for backend integration. Current version supports file selection and source preview only; it does not yet upload to a cloud GPU or claim to enhance video.</p>
+        </div>
+      </div>
+    </div>
+  );
+};
