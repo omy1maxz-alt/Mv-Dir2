@@ -221,6 +221,10 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
     const [isFetchingYoutubeCaptions, setIsFetchingYoutubeCaptions] = useState(false);
     const [youtubeCaptionFetchStatus, setYoutubeCaptionFetchStatus] = useState<string | null>(null);
+    const [tinyFishCaptionQuery, setTinyFishCaptionQuery] = useState('');
+    const [tinyFishCaptionLoading, setTinyFishCaptionLoading] = useState(false);
+    const [tinyFishCaptionStatus, setTinyFishCaptionStatus] = useState<string | null>(null);
+    const [tinyFishCaptionSources, setTinyFishCaptionSources] = useState<Array<{ title: string; url: string; snippet: string; domain: string }>>([]);
     const [isFetchingYoutubeManifests, setIsFetchingYoutubeManifests] = useState(false);
     const [youtubeManifestResult, setYoutubeManifestResult] = useState<Awaited<ReturnType<typeof fetchYouTubeManifestDetails>> | null>(null);
 
@@ -264,6 +268,26 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         } finally {
             setIsFetchingYoutubeCaptions(false);
         }
+    };
+
+    const handleTinyFishCaptionResearch = async () => {
+        const query = tinyFishCaptionQuery.trim();
+        if (!query) return;
+        setTinyFishCaptionLoading(true);
+        setTinyFishCaptionStatus(null);
+        setTinyFishCaptionSources([]);
+        try {
+            const response = await fetch('/api/tinyfish/context', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ purpose: 'caption', query: `Caption research for source language "${sourceLanguage || 'Auto-detect'}" and target language "${targetLanguage || 'Original'}": ${query}` })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'TinyFish caption research failed.');
+            setTinyFishCaptionSources(Array.isArray(data.sources) ? data.sources : []);
+            setTinyFishCaptionStatus(data.message || 'Caption research complete.');
+        } catch (err: any) {
+            setTinyFishCaptionStatus(err?.message || 'Could not retrieve caption research.');
+        } finally { setTinyFishCaptionLoading(false); }
     };
 
     const handleFetchYoutubeManifests = async () => {
@@ -1192,6 +1216,17 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                             className="w-full bg-[#111] border border-white/10 text-white rounded-xl p-3 outline-none focus:border-indigo-500 placeholder:text-white/20 text-sm resize-none h-24 custom-scrollbar"
                         />
                         <p className="text-xs text-white/40">Provide details about the video, character names, or specific instructions for the AI generator.</p>
+                    </div>
+
+                    <div className="mb-6 rounded-2xl border border-teal-500/25 bg-teal-950/15 p-4 space-y-3">
+                        <div className="flex items-center gap-2 text-sm font-bold text-teal-200"><Globe className="w-4 h-4 text-teal-300" /><span>TinyFish Caption Research</span><span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-500/15 border border-teal-400/25 uppercase">Live web</span></div>
+                        <p className="text-[11px] text-white/55">Research names, idioms, slang, cultural references, or translation nuances. This enriches context; speech transcription and timed SRT generation still use your configured transcription model.</p>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                            <input value={tinyFishCaptionQuery} onChange={(e) => setTinyFishCaptionQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleTinyFishCaptionResearch(); } }} placeholder="e.g. Research slang in this song or a character's name spelling" className="flex-1 min-w-0 bg-black/40 border border-white/10 text-white rounded-xl px-3 py-2.5 text-xs outline-none focus:border-teal-500 placeholder:text-white/25" maxLength={1000} />
+                            <button type="button" onClick={() => void handleTinyFishCaptionResearch()} disabled={!tinyFishCaptionQuery.trim() || tinyFishCaptionLoading} className="px-4 py-2.5 bg-teal-600/25 hover:bg-teal-600/40 border border-teal-500/30 disabled:opacity-40 rounded-xl text-xs font-bold text-teal-100 flex items-center justify-center gap-2">{tinyFishCaptionLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}{tinyFishCaptionLoading ? 'Researching…' : 'Research captions'}</button>
+                        </div>
+                        {tinyFishCaptionStatus && <p className="text-[11px] text-white/65">{tinyFishCaptionStatus}</p>}
+                        {tinyFishCaptionSources.length > 0 && <div className="space-y-2">{tinyFishCaptionSources.map((source, index) => <a key={source.url + index} href={source.url} target="_blank" rel="noopener noreferrer" className="block rounded-xl border border-white/10 bg-black/30 p-3 hover:border-teal-500/30"><div className="text-xs font-semibold text-teal-100">{source.title}</div><div className="text-[10px] text-white/40 mt-0.5">{source.domain}</div>{source.snippet && <p className="text-[11px] text-white/65 mt-1">{source.snippet}</p>}</a>)}</div>}
                     </div>
 
                     <button 
