@@ -1292,10 +1292,9 @@ app.post('/api/tinyfish/context', async (req: Request, res: Response) => {
 
     const sources = candidates.slice(0, 6).flatMap((item: any) => {
       const rawUrl = item?.url || item?.link || item?.href;
-      if (typeof rawUrl !== 'string') return [];
+      if (typeof rawUrl !== 'string' || !tinyFishIsPublicWebUrl(rawUrl)) return [];
       let parsed: URL;
       try { parsed = new URL(rawUrl); } catch { return []; }
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return [];
       return [{
         title: String(item.title || item.name || parsed.hostname).slice(0, 220),
         url: parsed.toString(),
