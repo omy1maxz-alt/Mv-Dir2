@@ -1275,53 +1275,59 @@ app.post('/api/video-enhancer/jobs', async (req: Request, res: Response) => {
     const { baseUrl, apiKey } = enhancerWorkerConfig();
     const contentType = req.headers['content-type'] || '';
     if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
-      return res.status(415).json({ error: 'Submit a multipart/form-data request with a video file.' });
+      return res.status(415).json({ error: 'Submit multipart/form-data with a video file and settings.' });
     }
-    const rawSettings = typeof req.body?.settings === 'string' ? JSON.parse(req.body.settings) : {};
-    const settings = validateEnhancerSettings(rawSettings);
-    const chunks: Buffer[] = [];
-    const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
-    if (!boundary) return res.status(400).json({ error: 'Multipart boundary is missing.' });
-
-    // Use a bounded in-memory body only for modest uploads; production should use
-    // resumable signed storage URLs. express.json does not parse multipart input.
     const maxBytes = Math.max(1, Number(process.env.VIDEO_ENHANCER_PROXY_MAX_MB || 64)) * 1024 * 1024;
     let total = 0;
+    let tooLarge = false;
+    const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => {
       total += chunk.length;
-      if (total <= maxBytes) chunks.push(chunk);
+      if (total > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      chunks.push(chunk);
     });
     await new Promise<void>((resolve, reject) => {
       req.on('end', resolve);
       req.on('error', reject);
     });
-    if (total > maxBytes) return res.status(413).json({ error: 'Upload exceeds this gateway limit. Configure resumable cloud storage uploads for larger videos.' });
+    if (tooLarge) return res.status(413).json({ error: 'Upload exceeds the gateway limit. Use resumable cloud storage uploads for larger videos.' });
     const rawBody = Buffer.concat(chunks);
-    const delimiter = Buffer.from(`--${boundary[1] || boundary[2]}`);
+    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!boundaryMatch) return res.status(400).json({ error: 'Multipart boundary is missing.' });
+    const delimiter = Buffer.from(`--${boundaryMatch[1] || boundaryMatch[2]}`);
     const parts = rawBody.toString('latin1').split(delimiter.toString('latin1'));
     let filename = '';
     let fileBytes: Buffer | null = null;
+    let settingsJson = '{}';
     for (const part of parts) {
       const split = part.indexOf('\\r\\n\\r\\n');
       if (split < 0) continue;
       const headers = part.slice(0, split);
-      const body = part.slice(split + 4).replace(/\\r\\n$/, '').replace(/\\r\\n--$/, '');
+      const value = part.slice(split + 4).replace(/\\r\\n$/, '').replace(/\\r\\n--$/, '');
       if (/name="file"/i.test(headers)) {
         const nameMatch = headers.match(/filename="([^"]*)"/i);
         filename = (nameMatch?.[1] || 'video.mp4').split(/[\\/]/).pop() || 'video.mp4';
-        fileBytes = Buffer.from(body, 'latin1');
-        break;
+        fileBytes = Buffer.from(value, 'latin1');
+      } else if (/name="settings"/i.test(headers)) {
+        settingsJson = Buffer.from(value, 'latin1').toString('utf8');
       }
     }
     if (!fileBytes?.length) return res.status(400).json({ error: 'A non-empty video file is required.' });
     if (!/\\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(filename)) {
       return res.status(415).json({ error: 'Unsupported video extension.' });
     }
+    let settings: Record<string, unknown>;
+    try { settings = validateEnhancerSettings(JSON.parse(settingsJson)); }
+    catch (error: any) { return res.status(400).json({ error: error?.message || 'Invalid enhancement settings.' }); }
     const form = new FormData();
     form.append('file', new Blob([new Uint8Array(fileBytes)], { type: 'application/octet-stream' }), filename);
+    const upstreamHeaders = { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) };
     const upstream = await fetch(`${baseUrl}/v1/jobs`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) },
+      headers: upstreamHeaders,
       body: form,
       signal: AbortSignal.timeout(120000)
     });
