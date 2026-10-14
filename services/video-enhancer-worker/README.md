@@ -1,18 +1,18 @@
-# Video Enhancer GPU Worker (backend scaffold)
+# Clarity Video Worker API scaffold
 
-This directory defines a first API contract for the Enhancer tab. It deliberately does **not** claim to enhance footage until a real model adapter is installed. The first iteration accepts uploads, validates requests, tracks an explicit blocked state, and provides job-status/cancel/result routes. It is suitable for wiring and deployment smoke tests, not production video processing.
+The FastAPI service is an API contract and development scaffold. It is **not yet a video enhancer**: `GET /health` returns `model_ready: false`, and newly uploaded jobs enter `blocked` instead of pretending that inference occurred.
 
-## API
+## Endpoints
 
-- `GET /health` — health and model readiness (currently `model_ready: false`).
-- `POST /v1/jobs` — authenticated multipart upload and JSON settings in `X-Enhancement-Settings`.
-- `GET /v1/jobs/{job_id}` — status.
-- `POST /v1/jobs/{job_id}/cancel` — cancellation.
-- `GET /v1/jobs/{job_id}/result` — returns 409 until a model adapter created a real MP4.
+- `GET /health` — liveness and model readiness.
+- `POST /v1/jobs` — authenticated multipart upload; settings are JSON in `X-Enhancement-Settings`.
+- `GET /v1/jobs/{job_id}` — fetch job state.
+- `POST /v1/jobs/{job_id}/cancel` — cancel a non-terminal job.
+- `GET /v1/jobs/{job_id}/result` — returns a real MP4 only after a configured adapter has marked a result available.
 
-All API routes except `/health` require `Authorization: Bearer <VIDEO_WORKER_API_KEY>`.
+All endpoints other than `/health` require `Authorization: Bearer <VIDEO_WORKER_API_KEY>`.
 
-## Run locally
+## Local development
 
 ```bash
 cd services/video-enhancer-worker
@@ -23,23 +23,13 @@ export VIDEO_WORKER_API_KEY='replace-with-a-long-random-secret'
 uvicorn app:app --host 127.0.0.1 --port 8080
 ```
 
-Docker smoke test:
+## Production prerequisites
 
-```bash
-docker build -t clarity-video-worker services/video-enhancer-worker
-docker run --rm -p 8080:8080 -e VIDEO_WORKER_API_KEY='replace-me' clarity-video-worker
-```
+1. Put a trusted server-side gateway in front of the worker. Do not send the worker API key to browser code or expose it through a `VITE_*` variable.
+2. Replace in-memory job records and local disk with a durable queue/database and private object storage using short-lived signed URLs.
+3. Implement a GPU model adapter in a separate worker process. This API intentionally contains no placeholder transcoding that could be mistaken for AI restoration.
+4. Apply authentication and per-user ownership on every job, request limits, quotas, timeouts, retention cleanup, private network/TLS, and FFmpeg sandbox/resource limits.
+5. Add a real health/readiness check for CUDA, weights, and model warm-up, then verify output metadata and original-audio behavior.
+6. Check the licenses and compatibility of all model code and weights before commercial use.
 
-## Before production
-
-1. Replace in-memory job state with Redis/PostgreSQL or a managed job queue. Current state is lost on restart and does not work across replicas.
-2. Move incoming and completed assets to private object storage using signed URLs; local disk is only a development scaffold.
-3. Implement a queue consumer/GPU worker and a genuine model adapter. Keep the API and GPU process separate for long jobs.
-4. Add FFmpeg probing, codec/duration/pixel limits, isolated transcoding, per-user authorization/quotas, rate limiting, retention cleanup, and audit-safe logs.
-5. Confirm model weights, CUDA/PyTorch compatibility, and licenses before commercial use.
-6. Configure secrets only in your hosting provider; never commit keys or expose them in frontend bundles.
-7. Set API CORS, TLS, authentication, and storage ownership rules for your deployment environment.
-
-## Model adapter contract
-
-A processing implementation should accept a source path plus validated `EnhancementSettings`, run real inference, and return an actual MP4 path with verified duration, frame rate, dimensions and audio policy. Suggested candidates for evaluation: Real-ESRGAN for image super-resolution, BasicVSR++ for temporal video restoration, RIFE for interpolation, and FFmpeg for media muxing. No model is bundled by default.
+Possible model candidates to evaluate include Real-ESRGAN for image super-resolution, BasicVSR++ for temporal video restoration, RIFE for interpolation, and FFmpeg for media inspection/encoding. No model weights are bundled or implied to be installed.
