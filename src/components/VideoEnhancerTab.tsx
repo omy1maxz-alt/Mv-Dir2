@@ -62,8 +62,6 @@ export const VideoEnhancerTab: React.FC = () => {
   };
 
 
-  const [jobState, setJobState] = useState<{ id?: string; status?: string; message?: string; progress?: number; stage?: string } | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (!file) {
@@ -204,18 +202,7 @@ export const VideoEnhancerTab: React.FC = () => {
                   {jobState.id && !['completed', 'failed', 'cancelled', 'blocked'].includes(jobState.status || '') && <button onClick={() => void refreshJob(jobState.id!)} className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold hover:bg-white/5"><LoaderCircle className="h-3.5 w-3.5" /> Refresh status</button>}
                 </div>
               )}
-   headers: { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) },
-                      body
-                    });
-                    const data = await response.json().catch(() => ({}));
-                    if (!response.ok) throw new Error(data.detail || data.message || `Worker request failed (HTTP ${response.status}).`);
-                    setJobState({ id: data.job_id, status: data.status, message: data.message, progress: data.progress, stage: data.stage });
-                  } catch (e: any) {
-                    setError(e?.message || 'Could not submit this video to the worker.');
-                  } finally {
-                    setIsSubmitting(false);
-                  }
-                }}
+
                 className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />} {isSubmitting ? 'Submitting…' : 'Submit enhancement job'}
