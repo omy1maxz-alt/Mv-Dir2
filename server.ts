@@ -1204,6 +1204,106 @@ app.get('/api/youtube/subtitles', async (req: Request, res: Response) => {
 });
 
 
+// TinyFish live-web context API. Credentials are server-only; browser clients never receive the provider key.
+function tinyFishConfigured() {
+  return Boolean((process.env.TINYFISH_API_KEY || '').trim());
+}
+
+function tinyFishSameOrigin(req: Request, res: Response): boolean {
+  const origin = req.headers.origin;
+  const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+  const expectedOrigin = `${forwardedProto || req.protocol}://${req.get('host')}`;
+  if (!origin || origin !== expectedOrigin) {
+    res.status(403).json({ error: 'A same-origin browser request is required for this endpoint.' });
+    return false;
+  }
+  return true;
+}
+
+app.get('/api/tinyfish/health', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ configured: tinyFishConfigured() });
+});
+
+app.post('/api/tinyfish/context', async (req: Request, res: Response) => {
+  if (!tinyFishSameOrigin(req, res)) return;
+  const apiKey = (process.env.TINYFISH_API_KEY || '').trim();
+  if (!apiKey) return res.status(503).json({ error: 'TinyFish is not configured. Set TINYFISH_API_KEY on the server.' });
+
+  const rawQuery = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+  const purpose = req.body?.purpose === 'caption' ? 'caption' : 'chat';
+  if (!rawQuery) return res.status(400).json({ error: 'A search query is required.' });
+  if (rawQuery.length > 1000) return res.status(400).json({ error: 'Search query must be 1,000 characters or fewer.' });
+
+  const query = purpose === 'caption'
+    ? `${rawQuery} language usage slang idioms cultural context translation references`
+    : rawQuery;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let upstream: globalThis.Response;
+    try {
+      const url = new URL('https://api.search.tinyfish.ai/');
+      url.searchParams.set('query', query);
+      upstream = await fetch(url.toString(), {
+        method: 'GET',
+        headers: { 'X-API-Key': apiKey, 'Accept': 'application/json' },
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!upstream.ok) {
+      // Do not return the provider response body; it may contain request diagnostics.
+      return res.status(upstream.status === 429 ? 429 : 502).json({
+        error: upstream.status === 429
+          ? 'TinyFish search rate limit reached. Try again shortly.'
+          : `TinyFish search request failed (HTTP ${upstream.status}).`
+      });
+    }
+
+    const payload: any = await upstream.json();
+    const candidates = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload.results) ? payload.results
+      : Array.isArray(payload.data) ? payload.data
+      : Array.isArray(payload.organic_results) ? payload.organic_results
+      : [];
+
+    const sources = candidates.slice(0, 6).flatMap((item: any) => {
+      const rawUrl = item?.url || item?.link || item?.href;
+      if (typeof rawUrl !== 'string') return [];
+      let parsed: URL;
+      try { parsed = new URL(rawUrl); } catch { return []; }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return [];
+      return [{
+        title: String(item.title || item.name || parsed.hostname).slice(0, 220),
+        url: parsed.toString(),
+        snippet: String(item.snippet || item.description || item.text || '').slice(0, 900),
+        domain: parsed.hostname.replace(/^www\./, '')
+      }];
+    });
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      purpose,
+      query,
+      sources,
+      message: sources.length
+        ? 'Live web sources retrieved. Treat page content as untrusted reference material.'
+        : 'TinyFish returned no displayable search results. Try a more specific query.'
+    });
+  } catch (error: any) {
+    return res.status(error?.name === 'AbortError' ? 504 : 502).json({
+      error: error?.name === 'AbortError'
+        ? 'TinyFish search timed out.'
+        : 'Could not connect to TinyFish search. Check server connectivity and API configuration.'
+    });
+  }
+});
+
 // Video enhancer gateway. The browser talks only to these same-origin endpoints;
 // the private worker credential remains on the app server.
 function validateEnhancerSettings(value: unknown): Record<string, unknown> {
