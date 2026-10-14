@@ -1213,17 +1213,25 @@ function tinyFishIsPublicWebUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    const host = url.hostname.toLowerCase();
-    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === '::1') return false;
-    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)) return false;
-    const private172 = host.match(/^172\.(\d+)\./);
-    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false;
+    const host = url.hostname.toLowerCase().replace(/^\\[|\\]$/g, '');
+    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return false;
+    // Block IPv6 local/private ranges and IPv4 private, loopback, link-local, and reserved ranges.
+    if (host.includes(':')) {
+      const ipv6 = host.toLowerCase();
+      if (ipv6 === '::1' || ipv6 === '::' || ipv6.startsWith('fc') || ipv6.startsWith('fd') || /^fe[89ab]/.test(ipv6) || ipv6.startsWith('::ffff:127.') || ipv6.startsWith('::ffff:10.') || ipv6.startsWith('::ffff:192.168.')) return false;
+    } else if (/^\\d{1,3}(?:\\.\\d{1,3}){3}$/.test(host)) {
+      const parts = host.split('.').map(Number);
+      const [x, y] = parts;
+      if (parts.some(n => n < 0 || n > 255)) return false;
+      if (x === 0 || x === 10 || x === 127 || x >= 224 || (x === 169 && y === 254) ||
+          (x === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+          (x === 192 && parts[1] === 168) || (x === 100 && parts[1] >= 64 && parts[1] <= 127)) return false;
+    }
     return true;
   } catch {
     return false;
   }
 }
-
 function tinyFishSameOrigin(req: Request, res: Response): boolean {
   const origin = req.headers.origin;
   const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
