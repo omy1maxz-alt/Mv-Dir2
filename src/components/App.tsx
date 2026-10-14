@@ -36,6 +36,7 @@ import { SubtitlesTab } from '@/components/SubtitlesTab';
 import { KeepAwake } from '@/components/KeepAwake';
 import { KeyframeAnalyzer } from "@/components/KeyframeAnalyzer";
 import { XploreTab } from "@/components/XploreTab";
+import { VideoEnhancerTab } from '@/components/VideoEnhancerTab';
 import { PWAInstallButton } from '@/components/PWAInstallButton';
 import { OfflineIndicator } from '@/components/OfflineIndicator';
 import ReactPlayer from 'react-player';
@@ -242,7 +243,7 @@ export const App: React.FC = () => {
   const [isDirecting, setIsDirecting] = useState(false);
   const [directorError, setDirectorError] = useState<string | null>(null);
   const [isBatchGenerating, setIsBatchGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'browser' | 'director' | 'storyboard' | 'studio' | 'lab' | 'system' | 'music' | 'subtitles' | 'keyframes' | 'xplore'>('browser');
+  const [activeTab, setActiveTab] = useState<'browser' | 'director' | 'storyboard' | 'studio' | 'lab' | 'system' | 'music' | 'subtitles' | 'keyframes' | 'xplore' | 'enhancer'>('browser');
   const [showKeyVault, setShowKeyVault] = useState(false);
   const [googleUser, setGoogleUser] = useState<User | null>(null);
 
@@ -2014,6 +2015,9 @@ export const App: React.FC = () => {
           <div className={`flex-1 min-h-0 flex-col overflow-hidden ${activeTab === 'xplore' ? 'flex' : 'hidden'}`}>
             <XploreTab projectData={projectData} directorPlan={directorPlan} />
           </div>
+          <div className={`flex-1 min-h-0 flex-col overflow-hidden ${activeTab === 'enhancer' ? 'flex' : 'hidden'}`}>
+            <VideoEnhancerTab />
+          </div>
           <div className={`flex-1 min-h-0 flex-col overflow-hidden ${activeTab === 'music' ? 'flex' : 'hidden'}`}>
              <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
                  <div className="max-w-4xl mx-auto space-y-8">
@@ -2525,6 +2529,10 @@ export const App: React.FC = () => {
                 <button onClick={() => setActiveTab('keyframes')} className={`min-w-[44px] min-h-[44px] flex-1 flex flex-col items-center justify-center gap-1 py-1 rounded-lg text-[10px] font-bold transition-all ${activeTab === 'keyframes' ? 'text-emerald-400 bg-emerald-500/10' : 'text-white/40 hover:text-white'}`}>
                     <Scan className="w-4 h-4" />
                     <span>Keyframes</span>
+                </button>
+                <button onClick={() => setActiveTab('enhancer')} className={`min-w-[54px] min-h-[44px] flex-1 flex flex-col items-center justify-center gap-1 py-1 rounded-lg text-[10px] font-bold transition-all ${activeTab === 'enhancer' ? 'text-violet-300 bg-violet-500/10' : 'text-white/40 hover:text-white'}`}>
+                    <Wand2 className="w-4 h-4" />
+                    <span>Enhancer</span>
                 </button>
                 <button onClick={() => setActiveTab('music')} className={`min-w-[44px] min-h-[44px] flex-1 flex flex-col items-center justify-center gap-1 py-1 rounded-lg text-[10px] font-bold transition-all ${activeTab === 'music' ? 'text-pink-400 bg-pink-500/10' : 'text-white/40 hover:text-white'}`}>
                     <Music className="w-4 h-4" />
