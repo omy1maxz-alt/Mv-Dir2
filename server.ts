@@ -1209,6 +1209,21 @@ function tinyFishConfigured() {
   return Boolean((process.env.TINYFISH_API_KEY || '').trim());
 }
 
+function tinyFishIsPublicWebUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    const host = url.hostname.toLowerCase();
+    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host === '::1') return false;
+    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)) return false;
+    const private172 = host.match(/^172\.(\d+)\./);
+    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function tinyFishSameOrigin(req: Request, res: Response): boolean {
   const origin = req.headers.origin;
   const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
