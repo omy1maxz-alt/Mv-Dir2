@@ -62,8 +62,6 @@ export const VideoEnhancerTab: React.FC = () => {
   };
 
 
-  const [jobState, setJobState] = useState<{ id?: string; status?: string; message?: string; progress?: number; stage?: string } | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (!file) {
@@ -180,7 +178,8 @@ export const VideoEnhancerTab: React.FC = () => {
                 <select value={sharpen} onChange={e => setSharpen(e.target.value as Strength)} className={selectClass}>
                   <option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
                 </select>
-               <button
+              </label>
+              <button
                 type="button"
                 disabled={!file || isSubmitting || !apiConfigured}
                 onClick={submitJob}
@@ -189,7 +188,7 @@ export const VideoEnhancerTab: React.FC = () => {
                 {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
                 {isSubmitting ? 'Submitting…' : 'Submit enhancement job'}
               </button>
-              {!apiConfigured && <p className="mt-3 text-xs leading-5 text-amber-200/80">Worker API URL is not configured. Connect the app server to the private worker before uploading.</p>}
+              <p className="mt-3 text-center text-xs leading-5 text-white/40">Submits to the configured worker. Processing only succeeds once a real model adapter is deployed.</p>
               {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
               {jobState && (
                 <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3">
@@ -202,33 +201,6 @@ export const VideoEnhancerTab: React.FC = () => {
                   {jobState.status === 'blocked' && <p className="mt-2 text-xs leading-5 text-amber-200/75">The worker received the upload, but model inference is not installed; no enhanced output exists.</p>}
                   {jobState.resultUrl && <a href={jobState.resultUrl} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-white"><Download className="h-4 w-4" /> Download enhanced video</a>}
                   {jobState.id && !['completed', 'failed', 'cancelled', 'blocked'].includes(jobState.status || '') && <button onClick={() => void refreshJob(jobState.id!)} className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold hover:bg-white/5"><LoaderCircle className="h-3.5 w-3.5" /> Refresh status</button>}
-                </div>
-              )}
-   headers: { Authorization: `Bearer ${apiKey}`, 'X-Enhancement-Settings': JSON.stringify(settings) },
-                      body
-                    });
-                    const data = await response.json().catch(() => ({}));
-                    if (!response.ok) throw new Error(data.detail || data.message || `Worker request failed (HTTP ${response.status}).`);
-                    setJobState({ id: data.job_id, status: data.status, message: data.message, progress: data.progress, stage: data.stage });
-                  } catch (e: any) {
-                    setError(e?.message || 'Could not submit this video to the worker.');
-                  } finally {
-                    setIsSubmitting(false);
-                  }
-                }}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />} {isSubmitting ? 'Submitting…' : 'Submit enhancement job'}
-              </button>
-              <p className="mt-3 text-center text-xs leading-5 text-white/40">Submits to the configured worker. Processing only succeeds once a real model adapter is deployed.</p>
-              {jobState && (
-                <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-violet-200">Job status</span>
-                    <span className="rounded-full bg-white/10 px-2 py-1 text-xs">{jobState.status || 'submitted'}</span>
-                  </div>
-                  <p className="mt-2 break-all text-xs text-white/55">{jobState.id || ''}</p>
-                  <p className="mt-2 text-sm text-white/75">{jobState.message || jobState.stage || 'Worker accepted the job.'}</p>
                 </div>
               )}
             </section>
