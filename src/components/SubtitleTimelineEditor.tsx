@@ -9,7 +9,7 @@ import { alignSingleBlockWithGemini, alignAllSubtitlesWithGemini, generateYouTub
 import { syncSubtitleTranslations, translateSingleLine, fixSubtitleWithAgenticVideo, fixSubtitleWithAudio, uploadVideoToGemini, fixSubtitleWithFrame, getEffectiveGeminiApiKey } from '../services/gemini';
 import { normalizeYoutubeUrl, downloadYouTubeMediaStream } from '../services/youtube';
 import { smartSplitCueText, splitSingleBlockBySentences, splitSentences } from '../utils/subtitleParser';
-import { isVideoFile, isAudioFile, isMediaFile } from '../utils/mediaUtils';
+import { inferMediaMimeType, isVideoFile, isAudioFile, isMediaFile } from '../utils/mediaUtils';
 
 export interface SubtitleBlock {
     id: string;
@@ -985,9 +985,16 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         if (effectiveYoutubeUrl) {
             setMediaUrl(effectiveYoutubeUrl);
         } else if (effectiveAudioFile) {
-            // Use the selected File directly. Preserve the original, previously working
-            // media URL path rather than wrapping the file in a replacement Blob.
-            const url = URL.createObjectURL(effectiveAudioFile);
+            // Keep the original File URL when its MIME type is accurate. Some browsers and
+            // Android pickers report video as application/octet-stream or audio/*; give those
+            // cases a corrected MIME hint so the browser chooses the video decoder.
+            const inferredMime = inferMediaMimeType(effectiveAudioFile);
+            const declaredMime = (effectiveAudioFile.type || '').toLowerCase().split(';', 1)[0].trim();
+            const needsMimeCorrection = Boolean(inferredMime && inferredMime.startsWith('video/') && declaredMime !== inferredMime);
+            const mediaForPlayback = needsMimeCorrection
+                ? new Blob([effectiveAudioFile], { type: inferredMime })
+                : effectiveAudioFile;
+            const url = URL.createObjectURL(mediaForPlayback);
             setMediaUrl(url);
             return () => URL.revokeObjectURL(url);
         } else {
