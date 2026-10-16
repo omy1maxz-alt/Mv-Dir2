@@ -817,7 +817,7 @@ async function generateSinglePassSRT(
     const processingMode = opts.processingMode || 'video_audio';
     const isVideoSource = Boolean(youtubeUrl || (audioFile && (
         safeMimeType.startsWith('video/') ||
-        /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(audioFile.name || '')
+        /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts|mxf|vob|rm|rmvb|divx|f4v|asf)$/i.test(audioFile.name || '')
     )));
 
     let systemInstruction = `You are the AI VIDEO SUBTITLE ANALYSIS & PRECISION SYNC ENGINE.
@@ -1319,7 +1319,7 @@ export async function generateSRT(
     // Keep the input as a video container for Gemini, but change the instructions by mode:
     // Listen Only must attend to its embedded soundtrack and ignore frames; Watch & Listen may
     // use both soundtrack and visual frames. This avoids falsely labeling a video as audio/*.
-    const isVideoSource = safeMimeType.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
+    const isVideoSource = safeMimeType.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts|mxf|vob|rm|rmvb|divx|f4v|asf)$/i.test(lowerName);
     const isVideo = isVideoSource && processingMode === 'video_audio';
 
     let rawSRT = "";
