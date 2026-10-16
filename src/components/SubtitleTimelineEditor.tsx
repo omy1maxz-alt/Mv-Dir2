@@ -418,7 +418,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         }
     }, [primaryMediaMuted, primaryMediaVolume, isPrimaryVideo]);
 
-    // Visual Reference Media (Companion Video/Image used ONLY when primary media is Audio-only so user can match the view)
+    // Visual Reference Media (independent companion Video/Image for matching scenes while editing subtitles)
     const [localVisualMediaFile, setLocalVisualMediaFile] = useState<File | null>(visualMediaFileProp || null);
 
     useEffect(() => {
@@ -427,8 +427,8 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         }
     }, [visualMediaFileProp]);
 
-    // When primary media is already a video, companion visual media is completely bypassed
-    const activeVisualMediaFile = isPrimaryVideo ? null : (visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile);
+    // Keep the separately selected View Media companion available even when the primary source is a video.
+    const activeVisualMediaFile = visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile;
     const visualMediaFile = activeVisualMediaFile;
     const [visualMediaUrl, setVisualMediaUrl] = useState<string | null>(null);
     const visualVideoRef = useRef<HTMLVideoElement>(null);
@@ -2741,7 +2741,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                             allowFullScreen
                         />
                     </div>
-                ) : !isPrimaryVideo && visualMediaFile && visualMediaUrl ? (
+                ) : visualMediaFile && visualMediaUrl ? (
                     <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
                         {visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name) ? (
                             <img 

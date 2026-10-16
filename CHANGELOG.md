@@ -1,6 +1,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **Max Generator source and View Media separation**: Renamed the generator tab to “Max Generator”. Loading a saved primary video no longer deletes the separately uploaded View Media reference from IndexedDB. When View Media is selected, the timeline preview now renders that exact video/image ahead of the primary source preview, while the source media remains responsible for subtitle generation and its own audio element. Companion-video mute controls remain independent from the source audio.
+
+
+### Fixed
 - **Clarify Video vs Audio Roles & Fix Video Playback in Subtitles and Timeline Editor**:
   - Resolved conceptual confusion between AI Generator media and Timeline Editor visual companions: when a video file is uploaded in the AI Generator tab, it provides both video picture and dialogue audio. `SubtitleTimelineEditor` now detects `isPrimaryVideo` directly and shows a clear "Video + Audio Active" badge while completely disabling companion visual uploads.
   - Restricted "Match View (Video/Image)" strictly to audio-only tracks, allowing users to pair a background video or image preview with their AI audio soundtrack. Added an in-place "Match View" button on the audio track placeholder when no companion visual is set.

@@ -1,3 +1,8 @@
+### 217. Separate Max Generator source from View Media companion (16 Oct 2026)
+- **Problem:** The caption generator treated an uploaded video as both the subtitle source and the only allowed timeline visual, while a previously selected View Media companion was cleared during reload or ignored in the editor. This did not match the required workflow where source audio generates subtitles and View Media supplies a muted scene reference.
+- **Changes:** Renamed the “AI Generator” view toggle to “Max Generator”. Keep loading the persisted `mv_subtitles_visual_media` record even when the primary source is a video; stop deleting it automatically when changing or restoring the primary source. The timeline editor resolves the separately selected visual companion without forcibly suppressing it merely because the primary source is a video.
+- **Validation caveat:** Source changes are committed on a dedicated branch. Build/typecheck and actual browser/WebView synchronization still need to be run before declaring the issue fully verified.
+
 ### 216. Clarify Video vs Audio Roles & Fix Video Playback in Subtitles and Timeline Editor (16 Oct 2026 | 15:30)
 - **Trigger:** User reported: "here's the problem,i think the app confuse if i upload video or audio,media from ai generator tab is video and audio,while the media tht uplkaded from timeline editor is used when i upload audio on ai generator tab si can match the view" and "still wont play".
 - **Conceptual & Architectural Resolution:**
