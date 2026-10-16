@@ -1450,8 +1450,9 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 apiKey={apiKeySource === 'custom' ? apiKeys?.google : (localStorage.getItem('gemini_api_key') || undefined)}
                             />
                         ) : (
-                            <SubtitleTimelineEditor 
-                                initialContent={srtContent} 
+                            <SubtitleTimelineEditor
+                                key={audioFile ? audioFile.name + '-' + audioFile.size + '-' + audioFile.lastModified : 'no-primary-media'}
+                                initialContent={srtContent}
                                 audioFile={audioFile}
                                 visualMediaFile={visualMediaFile}
                                 onVisualMediaChange={updateVisualMediaFile}

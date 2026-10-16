@@ -389,18 +389,21 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     const [isPlaying, setIsPlaying] = useState(false);
     const [duration, setDuration] = useState(0);
     const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-    // Primary Audio/Video Media State (From AI Generator tab or manual file upload)
+    const [mediaPlaybackError, setMediaPlaybackError] = useState<string | null>(null);
+    // Primary Audio/Video Media State (from Max Generator or manual upload).
+    // Always follow the parent source, including when it is cleared, so a previous file
+    // selected in the timeline cannot silently override the latest Max Generator upload.
     const [localAudioFile, setLocalAudioFile] = useState<File | null>(audioFile || null);
 
     useEffect(() => {
+        setLocalAudioFile(audioFile || null);
+        setMediaPlaybackError(null);
         if (audioFile) {
-            setLocalAudioFile(audioFile);
             setLocalYoutubeUrl(null);
-            // A video file remains one primary video+audio source. Do not split it into a
-            // hidden soundtrack player plus a stale companion preview. View Media is only
-            // an alternate visual reference when the primary source is audio-only.
+            // The uploaded file is the single primary video+audio source. View Media remains
+            // a separate visual reference and must never replace the primary source.
         }
-    }, [audioFile, onVisualMediaChange]);
+    }, [audioFile]);
 
     const effectiveAudioFile = localAudioFile || audioFile;
     const isPrimaryVideo = Boolean(effectiveAudioFile && isVideoFile(effectiveAudioFile));
@@ -2863,15 +2866,18 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                 ) : effectiveAudioFile ? (
                     isPrimaryVideo ? (
                         <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
-                            <video 
-                                ref={mediaRef as React.RefObject<HTMLVideoElement>} 
-                                src={mediaUrl || undefined} 
+                            <video
+                                key={mediaUrl || (effectiveAudioFile ? effectiveAudioFile.name + '-' + effectiveAudioFile.size + '-' + effectiveAudioFile.lastModified : 'primary-video')}
+                                ref={mediaRef as React.RefObject<HTMLVideoElement>}
+                                src={mediaUrl || undefined}
                                 className="w-full h-full object-contain cursor-pointer"
                                 playsInline
                                 preload="auto"
                                 muted={primaryMediaMuted}
                                 onLoadedMetadata={handleMediaLoadedMetadata}
+                                onLoadedData={() => setMediaPlaybackError(null)}
                                 onCanPlay={() => {
+                                    setMediaPlaybackError(null);
                                     if (mediaRef.current) {
                                         const durMs = mediaRef.current.duration * 1000;
                                         if (!isNaN(durMs) && durMs > 0 && duration === 0) {
@@ -2879,11 +2885,26 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                         }
                                     }
                                 }}
+                                onError={() => {
+                                    const mediaError = mediaRef.current?.error;
+                                    setMediaPlaybackError(
+                                        mediaError?.code === 4
+                                            ? 'This video format or codec is not supported by the browser.'
+                                            : mediaError?.message || 'The uploaded video could not be loaded.'
+                                    );
+                                }}
                                 onClick={togglePlay}
                                 onPause={() => setIsPlaying(false)}
                                 onPlay={() => setIsPlaying(true)}
                                 onEnded={() => setIsPlaying(false)}
                             />
+                            {mediaPlaybackError && (
+                                <div className="absolute inset-x-3 bottom-3 z-30 rounded-lg border border-red-400/30 bg-black/90 px-3 py-2 text-xs text-red-200">
+                                    <div className="font-bold">Video playback failed</div>
+                                    <div className="mt-1">{mediaPlaybackError}</div>
+                                    <div className="mt-1 text-white/60">File: {effectiveAudioFile.name}</div>
+                                </div>
+                            )}
                             {/* Video overlay indicator pill with sound adjustment */}
                             <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl pointer-events-auto flex-wrap max-w-[95%]">
                                 <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
