@@ -428,7 +428,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     }, [visualMediaFileProp]);
 
     // When primary media is already a video, companion visual media is completely bypassed
-    const activeVisualMediaFile = isPrimaryVideo ? null : (visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile);
+    const activeVisualMediaFile = visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile;
     const visualMediaFile = activeVisualMediaFile;
     const [visualMediaUrl, setVisualMediaUrl] = useState<string | null>(null);
     const visualVideoRef = useRef<HTMLVideoElement>(null);
