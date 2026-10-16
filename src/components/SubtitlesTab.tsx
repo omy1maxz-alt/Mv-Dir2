@@ -793,7 +793,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                                 <div className="w-14 h-14 bg-white/5 rounded-full flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
                                                     <Upload className="w-7 h-7 text-white/50 group-hover:text-indigo-400" />
                                                 </div>
-                                                <h3 className="text-white font-bold text-base mb-1">Upload Media File for AI</h3>
+                                                <h3 className="text-white font-bold text-base mb-1">Select Media Source</h3>
                                                 <p className="text-white/40 text-xs">Click or drag & drop audio or video file</p>
                                             </label>
                                         </div>
