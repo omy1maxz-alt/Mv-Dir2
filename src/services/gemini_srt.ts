@@ -691,8 +691,27 @@ async function generateChunkedSRT(
         duration = Math.min(totalDurationSec, audioBuffer.duration);
     } catch (decodeErr) {
         console.warn('[SRT Generator] decodeAudioData failed on media file (likely video container or unsupported codec). Falling back to direct single-pass transcription:', decodeErr);
-        let safeMimeType = audioFile.type || 'audio/mpeg';
-        const isVideo = safeMimeType.startsWith('video/') && opts.processingMode === 'video_audio';
+        let safeMimeType = audioFile.type || '';
+        const lowerName = (audioFile.name || '').toLowerCase();
+        const extension = lowerName.split('.').pop() || '';
+        const inferredMimeTypes: Record<string, string> = {
+            mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
+            webm: 'video/webm', ogv: 'video/ogg', mkv: 'video/x-matroska',
+            avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg',
+            '3gp': 'video/3gpp', ts: 'video/mp2t',
+            mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
+            wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg',
+            flac: 'audio/flac', aiff: 'audio/aiff',
+        };
+        const inferredMimeType = inferredMimeTypes[extension];
+        const genericMimeType = !safeMimeType || safeMimeType === 'application/octet-stream' || safeMimeType === 'binary/octet-stream';
+        if (inferredMimeType && (genericMimeType || (inferredMimeType.startsWith('video/') && !safeMimeType.startsWith('video/')))) {
+            safeMimeType = inferredMimeType;
+        } else if (genericMimeType) {
+            safeMimeType = 'audio/mpeg';
+        }
+        const isVideoSource = safeMimeType.startsWith('video/') || /\\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
+        const isVideo = isVideoSource && opts.processingMode === 'video_audio';
         return await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, apiKey);
     }
 
@@ -766,11 +785,22 @@ async function generateSinglePassSRT(
         onProgress,
         resumeTime
     } = opts;
-    
+    const processingMode = opts.processingMode || 'video_audio';
+    const isVideoSource = Boolean(youtubeUrl || (audioFile && (
+        safeMimeType.startsWith('video/') ||
+        /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(audioFile.name || '')
+    )));
+
     let systemInstruction = `You are the AI VIDEO SUBTITLE ANALYSIS & PRECISION SYNC ENGINE.
 Your task is to transcribe and time-align the provided ${isVideo ? 'video' : 'audio soundtrack'} and generate an accurate, valid SRT file.
 
-The goal is to create subtitles that are: CORRECTLY WRITTEN + CORRECTLY TRANSLATED + CORRECTLY TIMED + SYNCHRONIZED WITH THE ACTUAL SPEECH + CONSISTENT WITH THE VISUAL SCENE.
+${isVideoSource && processingMode === 'audio'
+    ? 'LISTEN ONLY MODE: The source is a video file, but use ONLY its embedded audio/soundtrack for transcription and timing. Ignore video frames, facial expressions, lip movements, on-screen text, and visual scene context. Do not create captions from visual-only information. Keep all timestamps aligned to the embedded audio timeline.'
+    : isVideo
+        ? 'WATCH & LISTEN MODE: Use both the embedded audio and relevant video frames for transcription context. Audio remains the authority for spoken words and timing; never invent dialogue from visuals.'
+        : 'AUDIO MODE: Use the audio signal for transcription and timing. Do not infer speech from unrelated visual content.'}
+
+The goal is to create subtitles that are: CORRECTLY WRITTEN + CORRECTLY TRANSLATED + CORRECTLY TIMED + SYNCHRONIZED WITH THE ACTUAL SPEECH${isVideo && processingMode === 'video_audio' ? ' + CONSISTENT WITH THE VISUAL SCENE' : ''}.
 Do not process every video as if it were simple continuous speech.
 
 OUTPUT FORMAT:
@@ -832,6 +862,12 @@ CRITICAL RULE 6: CLEAN FORMATTING
 CRITICAL RULE 7: TOTAL COMPLETENESS
 - Transcribe the entire file continuously from start to finish. Never omit lines.`;
 
+    if (isVideoSource && processingMode === 'audio') {
+        systemInstruction += '\n\nSTRICT LISTEN-ONLY OVERRIDE: The input happens to be a video container, but use ONLY its embedded audio/soundtrack. Ignore all video frames, facial expressions, lip movements, on-screen text, scene changes, and any other visual evidence. Do not produce captions from visual-only content. Determine every word and timestamp exclusively from audible speech, singing, and vocalizations.';
+    } else if (isVideoSource && processingMode === 'video_audio') {
+        systemInstruction += '\n\nWATCH & LISTEN MODE: Use the embedded audio for exact words and timing. Video frames may provide supporting context, but never infer dialogue that cannot be heard.';
+    }
+
     if (sourceLang && sourceLang !== 'Auto-detect') {
         systemInstruction += `\nAUDIO LANGUAGE HINT: The primary spoken language in this media is "${sourceLang}". Use this acoustic context to ensure 100% phonetic recognition and eliminate transcription mistakes.`;
     }
@@ -850,7 +886,8 @@ CRITICAL RULE 7: TOTAL COMPLETENESS
 
     // --- PASS 1: TRANSCRIPTION & TIMING (Stopwatch) ---
     let pass1Instruction = `You are an expert audio segmentation and transcription engine.
-Your primary task is to identify the exact start and end of every spoken dialogue segment from the ${isVideo ? 'video' : 'audio'}.
+Your primary task is to identify the exact start and end of every spoken dialogue segment from the ${isVideo && processingMode === 'video_audio' ? 'video and its embedded audio' : 'audio soundtrack'}.
+${isVideoSource && processingMode === 'audio' ? 'LISTEN ONLY: Ignore video frames and all visual information. Transcribe only audible speech, singing, and vocalizations from the embedded soundtrack; use the audio for every timestamp.' : isVideo && processingMode === 'video_audio' ? 'WATCH & LISTEN: Audio determines the words and exact timing; use video frames only for relevant context, not to invent speech.' : 'Use the audio signal as the sole source for words and timing.'}
 
 For each dialogue:
 - Start the subtitle when the speaker actually begins speaking.
@@ -906,16 +943,24 @@ Output ONLY the raw SRT format.`;
         });
         if (onProgress) onProgress(50);
     } else if (audioFile) {
-        let safeMimeType = audioFile.type;
-        if (!safeMimeType || safeMimeType === 'application/octet-stream') {
-            const lowerName = (audioFile.name || '').toLowerCase();
-            if (lowerName.endsWith('.mp4')) safeMimeType = 'video/mp4';
-            else if (lowerName.endsWith('.webm')) safeMimeType = 'video/webm';
-            else if (lowerName.endsWith('.mov')) safeMimeType = 'video/quicktime';
-            else if (lowerName.endsWith('.wav')) safeMimeType = 'audio/wav';
-            else if (lowerName.endsWith('.ogg')) safeMimeType = 'audio/ogg';
-            else if (lowerName.endsWith('.flac')) safeMimeType = 'audio/flac';
-            else safeMimeType = 'audio/mpeg';
+        let safeMimeType = audioFile.type || '';
+        const lowerName = (audioFile.name || '').toLowerCase();
+        const extension = lowerName.split('.').pop() || '';
+        const inferredMimeTypes: Record<string, string> = {
+            mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
+            webm: 'video/webm', ogv: 'video/ogg', mkv: 'video/x-matroska',
+            avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg',
+            '3gp': 'video/3gpp', ts: 'video/mp2t',
+            mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
+            wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg',
+            flac: 'audio/flac', aiff: 'audio/aiff',
+        };
+        const inferredMimeType = inferredMimeTypes[extension];
+        const genericMimeType = !safeMimeType || safeMimeType === 'application/octet-stream' || safeMimeType === 'binary/octet-stream';
+        if (inferredMimeType && (genericMimeType || (inferredMimeType.startsWith('video/') && !safeMimeType.startsWith('video/')))) {
+            safeMimeType = inferredMimeType;
+        } else if (genericMimeType) {
+            safeMimeType = 'audio/mpeg';
         }
 
         const MAX_INLINE_SIZE = 15 * 1024 * 1024;
@@ -1205,19 +1250,44 @@ export async function generateSRT(
         }
     }
     
-    let safeMimeType = audioFile ? audioFile.type : 'audio/mpeg';
-    if (!safeMimeType || safeMimeType === 'application/octet-stream') {
-        const lowerName = (audioFile.name || '').toLowerCase();
-        if (lowerName.endsWith('.mp4')) safeMimeType = 'video/mp4';
-        else if (lowerName.endsWith('.webm')) safeMimeType = 'video/webm';
-        else if (lowerName.endsWith('.mov')) safeMimeType = 'video/quicktime';
-        else if (lowerName.endsWith('.wav')) safeMimeType = 'audio/wav';
-        else if (lowerName.endsWith('.ogg')) safeMimeType = 'audio/ogg';
-        else if (lowerName.endsWith('.flac')) safeMimeType = 'audio/flac';
-        else safeMimeType = 'audio/mpeg'; // MP3 fallback
+    let safeMimeType = audioFile ? (audioFile.type || '') : 'audio/mpeg';
+    const lowerName = (audioFile?.name || '').toLowerCase();
+    const extensionMimeTypes: Record<string, string> = {
+        mp4: 'video/mp4',
+        m4v: 'video/mp4',
+        mov: 'video/quicktime',
+        webm: 'video/webm',
+        ogv: 'video/ogg',
+        mkv: 'video/x-matroska',
+        avi: 'video/x-msvideo',
+        mpeg: 'video/mpeg',
+        mpg: 'video/mpeg',
+        '3gp': 'video/3gpp',
+        ts: 'video/mp2t',
+        mp3: 'audio/mpeg',
+        m4a: 'audio/mp4',
+        aac: 'audio/aac',
+        wav: 'audio/wav',
+        ogg: 'audio/ogg',
+        opus: 'audio/ogg',
+        flac: 'audio/flac',
+        aiff: 'audio/aiff',
+    };
+    const extension = lowerName.split('.').pop() || '';
+    const inferredMimeType = extensionMimeTypes[extension];
+    const genericMimeType = !safeMimeType || safeMimeType === 'application/octet-stream' || safeMimeType === 'binary/octet-stream';
+    const extensionIndicatesVideo = Boolean(inferredMimeType?.startsWith('video/'));
+    if (inferredMimeType && (genericMimeType || (extensionIndicatesVideo && !safeMimeType.startsWith('video/')))) {
+        safeMimeType = inferredMimeType;
+    } else if (genericMimeType) {
+        safeMimeType = 'audio/mpeg';
     }
-    
-    const isVideo = safeMimeType.startsWith('video/') && processingMode === 'video_audio';
+
+    // Keep the input as a video container for Gemini, but change the instructions by mode:
+    // Listen Only must attend to its embedded soundtrack and ignore frames; Watch & Listen may
+    // use both soundtrack and visual frames. This avoids falsely labeling a video as audio/*.
+    const isVideoSource = safeMimeType.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
+    const isVideo = isVideoSource && processingMode === 'video_audio';
 
     let rawSRT = "";
     try {
