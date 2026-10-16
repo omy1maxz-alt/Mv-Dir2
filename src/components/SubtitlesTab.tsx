@@ -142,12 +142,9 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
                 if (effectiveStoredFile) {
                     setAudioFile(effectiveStoredFile);
-                    if (isVideoFile(effectiveStoredFile)) {
-                        // Video file provides BOTH visual video and audio; companion visual media is completely bypassed
-                        setVisualMediaFile(null);
-                        try { await del('mv_subtitles_visual_media'); } catch (_) {}
-                        return;
-                    }
+                    // The saved primary media and View Media companion have independent roles.
+                    // Keep loading the companion record even when the primary source is a video.
+                    // The editor decides which preview to display based on the active source.
                 }
 
                 // If media is an audio track (or empty), check if user had a companion video/image to match the view
@@ -184,10 +181,8 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
             setMediaSourceType('upload');
             if (isVideoFile(newFile)) {
                 setProcessingMode('video_audio');
-                setVisualMediaFile(null); // Video file provides both video and audio directly
-                try {
-                    await del('mv_subtitles_visual_media');
-                } catch (e) {}
+                // Do not delete the saved View Media companion. It is a separate reference
+                // and can be useful again when the user switches back to an audio source.
             } else if (isAudioFile(newFile)) {
                 setProcessingMode('audio');
             }
@@ -649,7 +644,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                         onClick={() => setActiveView('generator')} 
                         className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md text-xs sm:text-sm font-bold transition-colors cursor-pointer ${activeView === 'generator' ? 'bg-indigo-600 text-white shadow-lg' : 'text-white/50 hover:text-white'}`}
                     >
-                        AI Generator
+                        Max Generator
                     </button>
                     <button 
                         onClick={() => setActiveView('editor')} 
