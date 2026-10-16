@@ -36,6 +36,12 @@ export async function callAudioTranscriptionModel(
     ];
 
     let lastError: any = null;
+    let lastVideoArgumentError: any = null;
+    const requestParts = Array.isArray(request?.contents?.parts) ? request.contents.parts : [];
+    const videoMimeTypes = [...new Set(requestParts
+        .map((part: any) => part?.inlineData?.mimeType || part?.fileData?.mimeType || '')
+        .filter((mime: string) => typeof mime === 'string' && mime.toLowerCase().startsWith('video/')))];
+    const containsVideoInput = videoMimeTypes.length > 0;
 
     for (const model of modelsToTry) {
         try {
@@ -46,13 +52,30 @@ export async function callAudioTranscriptionModel(
             const msg = (err?.message || '') + JSON.stringify(err || '');
             const is403 = err?.status === 403 || msg.includes('403') || msg.includes('PERMISSION_DENIED') || msg.includes('does not have permission');
             const is404 = err?.status === 404 || msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('is not found');
-            
+            const isInvalidArgument = containsVideoInput &&
+                (err?.status === 400 || msg.includes('INVALID_ARGUMENT') || msg.includes('Request contains an invalid argument'));
+
+            if (isInvalidArgument) {
+                lastVideoArgumentError = err;
+                console.warn(`[SRT Generator] Model "${model}" rejected video input (${videoMimeTypes.join(', ')}; INVALID_ARGUMENT). Trying a compatible fallback model...`);
+                continue;
+            }
+
             if (is403 || is404) {
                 console.warn(`[SRT Generator] Model "${model}" hit ${is403 ? '403 Permission Denied' : '404 Not Found'}. Trying fallback model...`);
                 continue;
             }
             throw err;
         }
+    }
+
+    if (lastVideoArgumentError) {
+        const mimeSummary = videoMimeTypes.join(', ') || 'unknown video MIME type';
+        const diagnostic = new Error(
+            `Gemini rejected the video input (${mimeSummary}) as INVALID_ARGUMENT after trying the available transcription models. The container or codec may not be supported by Gemini. If possible, try an MP4 encoded with H.264 video and AAC audio, then retry. Original API error: ${lastVideoArgumentError?.message || 'Request contains an invalid argument.'}`
+        );
+        (diagnostic as any).cause = lastVideoArgumentError;
+        throw diagnostic;
     }
 
     throw lastError || new Error("Permission Denied (403). Your API key does not have permission for the requested model. Please check your Gemini API key in Settings -> API Settings Vault.");
