@@ -2005,12 +2005,13 @@ export const App: React.FC = () => {
             <SubtitlesTab 
               apiKeys={apiKeys} 
               apiKeySource={apiKeySource} 
-              onMediaSwap={(file) => {
-                  const url = URL.createObjectURL(file);
-                  setProjectData(p => ({ ...p, soundtrackUrl: url, localPlaylist: undefined, currentTrackIndex: undefined, localFiles: [file] }));
+              onMediaSwap={() => {
+                  // Max Generator media is a subtitle source, not the app-wide Soundtrack.
+                  // Keep the existing global soundtrack/project playlist untouched and stop
+                  // its playback while the user edits subtitles.
                   setIsPlaying(false);
-                  if (file.type.includes('video')) {
-                      setShowVideo(true);
+                  if (audioRef.current && !audioRef.current.paused) {
+                      audioRef.current.pause();
                   }
               }} 
             />
@@ -2623,7 +2624,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {projectData.soundtrackUrl && (
+      {projectData.soundtrackUrl && activeTab !== 'subtitles' && (
         <motion.div 
             drag 
             dragMomentum={false}

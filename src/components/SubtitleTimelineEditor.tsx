@@ -396,15 +396,13 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         if (audioFile) {
             setLocalAudioFile(audioFile);
             setLocalYoutubeUrl(null);
-            if (isVideoFile(audioFile)) {
-                // If primary media from AI Generator is a video, clear companion visual view
-                setLocalVisualMediaFile(null);
-                if (onVisualMediaChange) onVisualMediaChange(null);
-            }
+            // A video file remains one primary video+audio source. Do not split it into a
+            // hidden soundtrack player plus a stale companion preview. View Media is only
+            // an alternate visual reference when the primary source is audio-only.
         }
     }, [audioFile, onVisualMediaChange]);
 
-    const effectiveAudioFile = audioFile || localAudioFile;
+    const effectiveAudioFile = localAudioFile || audioFile;
     const isPrimaryVideo = Boolean(effectiveAudioFile && isVideoFile(effectiveAudioFile));
 
     // Primary media audio/volume state (for when effectiveAudioFile is a Video containing both video + audio)
@@ -427,8 +425,12 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         }
     }, [visualMediaFileProp]);
 
-    // Keep the separately selected View Media companion available even when the primary source is a video.
-    const activeVisualMediaFile = visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile;
+    // Only audio-only source files can use View Media as a companion preview.
+    // A primary video must be rendered as the video itself and must never be replaced
+    // by a stale companion from IndexedDB or a previous project.
+    const activeVisualMediaFile = isPrimaryVideo
+        ? null
+        : (visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile);
     const visualMediaFile = activeVisualMediaFile;
     const [visualMediaUrl, setVisualMediaUrl] = useState<string | null>(null);
     const visualVideoRef = useRef<HTMLVideoElement>(null);
@@ -2741,7 +2743,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                             allowFullScreen
                         />
                     </div>
-                ) : visualMediaFile && visualMediaUrl ? (
+                ) : !isPrimaryVideo && visualMediaFile && visualMediaUrl ? (
                     <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
                         {visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name) ? (
                             <img 
@@ -3063,7 +3065,8 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                             <button 
                                 type="button"
                                 onClick={() => visualMediaInputRef.current?.click()} 
-                                className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer ${
+                                disabled={isPrimaryVideo}
+                                className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                                     visualMediaFile 
                                         ? visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)
                                             ? 'bg-blue-600/30 hover:bg-blue-600/40 text-blue-200 border-blue-400/40'
@@ -3106,7 +3109,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                             </button>
 
                             {/* Quick Sound Toggle for Visual Video View */}
-                            {visualMediaFile && !(visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)) && (
+                            {!isPrimaryVideo && visualMediaFile && !(visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)) && (
                                 <button
                                     type="button"
                                     onClick={() => {
