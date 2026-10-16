@@ -1,6 +1,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **Max Generator primary-video playback and stale soundtrack preview**: Keep an uploaded video as one primary HTML video source (picture and embedded audio together) in the timeline editor. The View Media companion is only rendered for an audio-only primary source, so an old reference can no longer replace the uploaded video or make it appear as a separate soundtrack player. Uploading source media in Max Generator no longer overwrites the app-wide soundtrack or playlist, and the floating Soundtrack panel is hidden while the subtitle workspace is active. Timeline-selected media takes precedence over stale source props, while preserving the Local/YouTube workflow separation.
+
+### Fixed
 - **Max Generator primary-video playback and stale soundtrack preview**: Keep an uploaded video as one primary HTML video source (picture and embedded audio together) in the timeline editor. The View Media companion is only rendered for an audio-only primary source, so an old reference can no longer replace the uploaded video or make it appear as a separate soundtrack player. Timeline-selected media takes precedence over stale source props, while preserving the Max Generator label and Local/YouTube workflow separation.
 
 ## [1.1.12] - 2026-08-16
