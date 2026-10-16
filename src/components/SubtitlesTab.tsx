@@ -35,6 +35,66 @@ interface SubtitlesTabProps {
     onMediaSwap?: (file: File) => void;
 }
 
+type PersistedMediaRecord = {
+    __mvDirectorMediaRecord: true;
+    name: string;
+    type: string;
+    lastModified: number;
+    data: ArrayBuffer;
+};
+
+/**
+ * Some embedded browser/Studio environments cannot structured-clone a File/Blob into
+ * IndexedDB and report DataError: Failed to write blobs (InvalidBlob). Store bytes as
+ * an ArrayBuffer in that case, while remaining backwards-compatible with old File/Blob
+ * entries already saved by previous app versions.
+ */
+async function restorePersistedMedia(value: unknown, fallbackName: string): Promise<File | null> {
+    if (typeof File !== 'undefined' && value instanceof File) return value;
+    if (typeof Blob !== 'undefined' && value instanceof Blob) {
+        const storedName = (value as Blob & { name?: string }).name || fallbackName;
+        return new File([value], storedName, { type: value.type });
+    }
+
+    if (value && typeof value === 'object') {
+        const record = value as Partial<PersistedMediaRecord>;
+        if (record.__mvDirectorMediaRecord === true && record.data instanceof ArrayBuffer) {
+            return new File([record.data], record.name || fallbackName, {
+                type: record.type || 'application/octet-stream',
+                lastModified: record.lastModified || Date.now(),
+            });
+        }
+    }
+    return null;
+}
+
+async function persistMediaFile(key: string, file: File): Promise<void> {
+    try {
+        await set(key, file);
+    } catch (blobStorageError) {
+        // Fallback for IndexedDB implementations that reject File/Blob structured cloning.
+        const data = await file.arrayBuffer();
+        const record: PersistedMediaRecord = {
+            __mvDirectorMediaRecord: true,
+            name: file.name,
+            type: file.type || 'application/octet-stream',
+            lastModified: file.lastModified || Date.now(),
+            data,
+        };
+        try {
+            await set(key, record);
+        } catch (recordStorageError) {
+            console.warn('[Media Storage] Blob and ArrayBuffer persistence both failed.', {
+                blobStorageError,
+                recordStorageError,
+                fileName: file.name,
+                fileSize: file.size,
+            });
+            throw recordStorageError;
+        }
+    }
+}
+
 export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKeySource, onMediaSwap }) => {
     const [isGenerating, setIsGenerating] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
@@ -146,12 +206,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         const loadAllMedia = async () => {
             try {
                 const storedFile = await get('mv_subtitles_media');
-                let effectiveStoredFile: File | null = null;
-                if (storedFile instanceof File) {
-                    effectiveStoredFile = storedFile;
-                } else if (storedFile instanceof Blob) {
-                    effectiveStoredFile = new File([storedFile], (storedFile as any).name || 'uploaded_media.mp4', { type: storedFile.type });
-                }
+                const effectiveStoredFile = await restorePersistedMedia(storedFile, 'uploaded_media.mp4');
 
                 if (effectiveStoredFile) {
                     setAudioFile(effectiveStoredFile);
@@ -161,10 +216,9 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
                 // If media is an audio track (or empty), check if user had a companion video/image to match the view
                 const storedVisual = await get('mv_subtitles_visual_media');
-                if (storedVisual instanceof File) {
-                    setVisualMediaFile(storedVisual);
-                } else if (storedVisual instanceof Blob) {
-                    setVisualMediaFile(new File([storedVisual], (storedVisual as any).name || 'visual_view.mp4', { type: storedVisual.type }));
+                const restoredVisual = await restorePersistedMedia(storedVisual, 'visual_view.mp4');
+                if (restoredVisual) {
+                    setVisualMediaFile(restoredVisual);
                 }
             } catch (err) {
                 console.warn('Failed to load persisted media', err);
@@ -177,7 +231,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         setVisualMediaFile(newFile);
         try {
             if (newFile) {
-                await set('mv_subtitles_visual_media', newFile);
+                await persistMediaFile('mv_subtitles_visual_media', newFile);
             } else {
                 await del('mv_subtitles_visual_media');
             }
@@ -207,7 +261,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         }
         try {
             if (newFile) {
-                await set('mv_subtitles_media', newFile);
+                await persistMediaFile('mv_subtitles_media', newFile);
             } else {
                 await del('mv_subtitles_media');
             }
