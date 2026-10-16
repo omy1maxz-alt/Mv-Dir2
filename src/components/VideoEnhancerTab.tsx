@@ -61,8 +61,6 @@ export const VideoEnhancerTab: React.FC = () => {
     }
   };
 
-
-
   useEffect(() => {
     if (!file) {
       setPreviewUrl('');
@@ -179,7 +177,29 @@ export const VideoEnhancerTab: React.FC = () => {
                   <option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
                 </select>
               </label>
-              <button
+
+              <div className="mt-4 space-y-3">
+                <label className="flex items-center gap-3 text-sm text-white/80 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={faceRestore}
+                    onChange={e => setFaceRestore(e.target.checked)}
+                    className="h-4 w-4 rounded border-white/20 bg-black/40 text-violet-500 focus:ring-violet-400"
+                  />
+                  <span>Face restoration (GFPGAN / CodeFormer)</span>
+                </label>
+                <label className="flex items-center gap-3 text-sm text-white/80 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={interpolate}
+                    onChange={e => setInterpolate(e.target.checked)}
+                    className="h-4 w-4 rounded border-white/20 bg-black/40 text-violet-500 focus:ring-violet-400"
+                  />
+                  <span>Frame interpolation (60 fps RIFE)</span>
+                </label>
+              </div>
+
+               <button
                 type="button"
                 disabled={!file || isSubmitting || !apiConfigured}
                 onClick={submitJob}
@@ -188,7 +208,7 @@ export const VideoEnhancerTab: React.FC = () => {
                 {isSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <WandSparkles className="h-4 w-4" />}
                 {isSubmitting ? 'Submitting…' : 'Submit enhancement job'}
               </button>
-              <p className="mt-3 text-center text-xs leading-5 text-white/40">Submits to the configured worker. Processing only succeeds once a real model adapter is deployed.</p>
+              {!apiConfigured && <p className="mt-3 text-xs leading-5 text-amber-200/80">Worker API URL is not configured. Connect the app server to the private worker before uploading.</p>}
               {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
               {jobState && (
                 <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3">

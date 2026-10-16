@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
     Subtitles, Youtube, ChevronDown, Sparkles, AlertCircle, FileText, Download, Play, Pause, 
     Video, FileAudio, Upload, Layers, Globe, Languages, Link, Check, Copy, RefreshCw, Info, ListFilter, 
-    ExternalLink
+    ExternalLink, Search
 } from 'lucide-react';
 import ReactPlayer from 'react-player';
 const Player = ReactPlayer as any;
@@ -16,6 +16,7 @@ import { SubtitleType } from '../types';
 import { parseSubtitles, generateSrt as generateSrtString, splitOversizedBlocks } from '../utils/subtitleParser';
 import { segmentsToSrt } from '../services/youtubeCaptionService';
 import { get, set, del } from 'idb-keyval';
+import { isMediaFile, isVideoFile, isAudioFile } from '../utils/mediaUtils';
 import { 
     normalizeYoutubeUrl, 
     downloadYouTubeMediaStream, 
@@ -124,36 +125,43 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         safeSetItem('mv_subtitles_view', activeView);
     }, [activeView]);
 
-    // Load persisted audio file
-    useEffect(() => {
-        const loadMedia = async () => {
-            try {
-                const storedFile = await get('mv_subtitles_media');
-                if (storedFile instanceof File) {
-                    setAudioFile(storedFile);
-                }
-            } catch (err) {
-                console.error('Failed to load persisted media', err);
-            }
-        };
-        loadMedia();
-    }, []);
-
-    // Visual media reference state (companion video/image for Timeline Editor)
+    // Visual media reference state (companion video/image for Timeline Editor when audio track is used)
     const [visualMediaFile, setVisualMediaFile] = useState<File | null>(null);
 
+    // Load persisted audio/video file and visual companion deterministically
     useEffect(() => {
-        const loadVisualMedia = async () => {
+        const loadAllMedia = async () => {
             try {
+                const storedFile = await get('mv_subtitles_media');
+                let effectiveStoredFile: File | null = null;
+                if (storedFile instanceof File) {
+                    effectiveStoredFile = storedFile;
+                } else if (storedFile instanceof Blob) {
+                    effectiveStoredFile = new File([storedFile], (storedFile as any).name || 'uploaded_media.mp4', { type: storedFile.type });
+                }
+
+                if (effectiveStoredFile) {
+                    setAudioFile(effectiveStoredFile);
+                    if (isVideoFile(effectiveStoredFile)) {
+                        // Video file provides BOTH visual video and audio; companion visual media is completely bypassed
+                        setVisualMediaFile(null);
+                        try { await del('mv_subtitles_visual_media'); } catch (_) {}
+                        return;
+                    }
+                }
+
+                // If media is an audio track (or empty), check if user had a companion video/image to match the view
                 const storedVisual = await get('mv_subtitles_visual_media');
                 if (storedVisual instanceof File) {
                     setVisualMediaFile(storedVisual);
+                } else if (storedVisual instanceof Blob) {
+                    setVisualMediaFile(new File([storedVisual], (storedVisual as any).name || 'visual_view.mp4', { type: storedVisual.type }));
                 }
             } catch (err) {
-                console.warn('Failed to load persisted visual media', err);
+                console.warn('Failed to load persisted media', err);
             }
         };
-        loadVisualMedia();
+        loadAllMedia();
     }, []);
 
     const updateVisualMediaFile = async (newFile: File | null) => {
@@ -169,19 +177,32 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         }
     };
 
-    // Persist audio file when it changes
+    // Persist audio/video file when it changes and keep visual companion in sync
     const updateAudioFile = async (newFile: File | null) => {
         setAudioFile(newFile);
         if (newFile) {
-            if (newFile.type.includes('audio')) {
-                setProcessingMode('audio');
-            } else if (newFile.type.includes('video')) {
+            setMediaSourceType('upload');
+            if (isVideoFile(newFile)) {
                 setProcessingMode('video_audio');
+                setVisualMediaFile(null); // Video file provides both video and audio directly
+                try {
+                    await del('mv_subtitles_visual_media');
+                } catch (e) {}
+            } else if (isAudioFile(newFile)) {
+                setProcessingMode('audio');
             }
+            if (onMediaSwap) onMediaSwap(newFile);
+        } else {
+            setVisualMediaFile(null);
+            try {
+                await del('mv_subtitles_visual_media');
+            } catch (e) {}
         }
         try {
             if (newFile) {
                 await set('mv_subtitles_media', newFile);
+            } else {
+                await del('mv_subtitles_media');
             }
         } catch (err) {
             console.error('Failed to persist media', err);
@@ -433,7 +454,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
     // Keep track of the audio file when the global file changes
     useEffect(() => {
-        if (file && (file.type.includes('audio') || file.type.includes('video'))) {
+        if (file && isMediaFile(file)) {
             updateAudioFile(file);
         }
     }, [file]);
@@ -441,10 +462,11 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const file = e.target.files[0];
-            if (file.type.includes('audio') || file.type.includes('video')) {
+            if (isMediaFile(file)) {
+                setError(null);
                 updateAudioFile(file);
             } else {
-                setError('Invalid file type. Please upload an audio or video file.');
+                setError('Invalid file type. Please upload an audio or video file (MP4, WebM, MKV, MOV, MP3, WAV, etc.).');
             }
         }
     };
@@ -682,7 +704,23 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 {mediaSourceType === 'upload' ? (
                                     !audioFile ? (
                                         <div className="space-y-4">
-                                            <label className="w-full h-44 border-2 border-dashed border-white/20 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/5 hover:border-indigo-500/50 transition-all group relative">
+                                            <label 
+                                                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                                onDrop={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                                                        const file = e.dataTransfer.files[0];
+                                                        if (isMediaFile(file)) {
+                                                            setError(null);
+                                                            updateAudioFile(file);
+                                                        } else {
+                                                            setError('Invalid file type. Please upload an audio or video file (MP4, WebM, MKV, MOV, MP3, WAV, etc.).');
+                                                        }
+                                                    }
+                                                }}
+                                                className="w-full h-44 border-2 border-dashed border-white/20 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/5 hover:border-indigo-500/50 transition-all group relative"
+                                            >
                                                 <input type="file" ref={fileInputRef} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" onChange={handleFileChange} />
                                                 <div className="w-14 h-14 bg-white/5 rounded-full flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
                                                     <Upload className="w-7 h-7 text-white/50 group-hover:text-indigo-400" />
@@ -692,19 +730,46 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                             </label>
                                         </div>
                                     ) : (
-                                        <div className="bg-[#111] border border-white/10 p-4 rounded-xl flex items-center justify-between">
+                                        <div className="bg-[#111] border border-white/10 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                             <div className="flex items-center gap-4">
-                                                <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-indigo-500/20 text-indigo-400">
-                                                    {audioFile.type.includes('video') ? <Video className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
+                                                <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-indigo-500/20 text-indigo-400 shrink-0">
+                                                    {isVideoFile(audioFile) ? <Video className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
                                                 </div>
-                                                <div>
+                                                <div className="min-w-0">
                                                     <h3 className="text-white font-medium max-w-[200px] sm:max-w-xs truncate">{audioFile.name}</h3>
-                                                    <p className="text-white/40 text-xs">Ready for processing</p>
+                                                    <div className="flex flex-col gap-0.5 mt-0.5">
+                                                        <div className="text-white/40 text-xs flex items-center gap-1.5 flex-wrap">
+                                                            <span className={isVideoFile(audioFile) ? "text-purple-300 font-semibold" : "text-indigo-300 font-semibold"}>
+                                                                {isVideoFile(audioFile) ? "Video File Linked (Video + Audio)" : "Audio Track Linked (Audio Only)"}
+                                                            </span>
+                                                            <span>•</span>
+                                                            <span>{(audioFile.size / (1024 * 1024)).toFixed(1)} MB</span>
+                                                        </div>
+                                                        <span className="text-[11px] text-white/50">
+                                                            {isVideoFile(audioFile) 
+                                                                ? "Contains both video picture and dialogue audio for transcription and timeline playback."
+                                                                : "Soundtrack audio for AI subtitles. In Timeline Editor, you can use 'Match View' to pair any video or image preview."}
+                                                        </span>
+                                                    </div>
                                                 </div>
                                             </div>
-                                            <button onClick={() => updateAudioFile(null)} className="text-red-400 text-xs font-medium hover:underline px-2 py-1">
-                                                Remove
-                                            </button>
+                                            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setAutoPlayYoutubeTrigger(Date.now());
+                                                        setActiveView('editor');
+                                                    }}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition-colors cursor-pointer shadow-md"
+                                                    title="Open this video in the timeline editor and start playing"
+                                                >
+                                                    <Play className="w-3.5 h-3.5 fill-white" />
+                                                    <span>Open & Play in Timeline</span>
+                                                </button>
+                                                <button onClick={() => updateAudioFile(null)} className="text-red-400 text-xs font-medium hover:underline px-2 py-1 cursor-pointer">
+                                                    Remove
+                                                </button>
+                                            </div>
                                         </div>
                                     )
                                 ) : (
@@ -1181,7 +1246,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 <span className="font-bold text-white text-sm">Listen Only (Audio)</span>
                                 <span className="text-xs text-white/50 text-center">Process audio only. Faster, ignores video frames.</span>
                             </button>
-                            <button onClick={() => setProcessingMode('video_audio')} disabled={audioFile && !audioFile.type.includes('video')} className={`flex-1 p-4 rounded-xl border flex flex-col items-center justify-center gap-2 transition-all ${processingMode === 'video_audio' ? 'bg-indigo-600/20 border-indigo-500' : 'bg-white/5 border-white/10 hover:bg-white/10'} ${audioFile && !audioFile.type.includes('video') ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                            <button onClick={() => setProcessingMode('video_audio')} disabled={Boolean(audioFile && !isVideoFile(audioFile))} className={`flex-1 p-4 rounded-xl border flex flex-col items-center justify-center gap-2 transition-all ${processingMode === 'video_audio' ? 'bg-indigo-600/20 border-indigo-500' : 'bg-white/5 border-white/10 hover:bg-white/10'} ${audioFile && !isVideoFile(audioFile) ? 'opacity-50 cursor-not-allowed' : ''}`}>
                                 <Video className={`w-6 h-6 ${processingMode === 'video_audio' ? 'text-indigo-400' : 'text-white/50'}`} />
                                 <span className="font-bold text-white text-sm">Watch & Listen (Video)</span>
                                 <span className="text-xs text-white/50 text-center">Read lips, action, and text for deeper context.</span>
@@ -1304,7 +1369,10 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
                                     <button
                                         type="button"
-                                        onClick={() => setActiveView('editor')}
+                                        onClick={() => {
+                                            setAutoPlayYoutubeTrigger(Date.now());
+                                            setActiveView('editor');
+                                        }}
                                         className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition-colors cursor-pointer shadow-md"
                                     >
                                         <Play className="w-3.5 h-3.5 fill-white" />
@@ -1348,7 +1416,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                         ) : (
                             <SubtitleTimelineEditor 
                                 initialContent={srtContent} 
-                                audioFile={mediaSourceType === 'upload' ? audioFile : null}
+                                audioFile={audioFile}
                                 visualMediaFile={visualMediaFile}
                                 onVisualMediaChange={updateVisualMediaFile}
                                 youtubeUrl={null}

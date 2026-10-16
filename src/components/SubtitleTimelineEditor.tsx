@@ -9,6 +9,7 @@ import { alignSingleBlockWithGemini, alignAllSubtitlesWithGemini, generateYouTub
 import { syncSubtitleTranslations, translateSingleLine, fixSubtitleWithAgenticVideo, fixSubtitleWithAudio, uploadVideoToGemini, fixSubtitleWithFrame, getEffectiveGeminiApiKey } from '../services/gemini';
 import { normalizeYoutubeUrl, downloadYouTubeMediaStream } from '../services/youtube';
 import { smartSplitCueText, splitSingleBlockBySentences, splitSentences } from '../utils/subtitleParser';
+import { isVideoFile, isAudioFile, isMediaFile } from '../utils/mediaUtils';
 
 export interface SubtitleBlock {
     id: string;
@@ -223,18 +224,54 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     useEffect(() => {
         if (autoPlayTrigger && autoPlayTrigger !== lastAutoPlayTriggerRef.current) {
             lastAutoPlayTriggerRef.current = autoPlayTrigger;
-            setIsPlaying(true);
             setYoutubeError(false);
-            if (mediaRef.current) {
-                try {
-                    const internal = (mediaRef.current as any).getInternalPlayer?.();
-                    if (internal && typeof internal.playVideo === 'function') {
-                        internal.playVideo();
+            
+            // Allow DOM transition from hidden/display:none to layout flush
+            const timer = setTimeout(() => {
+                const startPlayback = () => {
+                    if (mediaRef.current) {
+                        const el = mediaRef.current as HTMLMediaElement;
+                        if (el.ended || (el.duration && el.duration > 0 && el.currentTime >= el.duration - 0.2)) {
+                            el.currentTime = 0;
+                            setCurrentTime(0);
+                        }
+                        const p = el.play();
+                        if (p !== undefined) {
+                            p.then(() => {
+                                setIsPlaying(true);
+                            }).catch(e => {
+                                console.warn('[Timeline Player] Auto-play unmuted rejected, retrying muted fallback:', e);
+                                if (el instanceof HTMLVideoElement) {
+                                    el.muted = true;
+                                    setPrimaryMediaMuted(true);
+                                    el.play().then(() => setIsPlaying(true)).catch(() => {});
+                                }
+                            });
+                        } else {
+                            setIsPlaying(true);
+                        }
+                    } else {
+                        setIsPlaying(true);
                     }
-                } catch (e) {
-                    console.warn('[Timeline Player] Auto-play call notice:', e);
+                    if (visualVideoRef.current && visualVideoRef.current !== mediaRef.current) {
+                        visualVideoRef.current.play().catch(() => {});
+                    }
+                };
+
+                if (mediaRef.current) {
+                    const el = mediaRef.current as HTMLMediaElement;
+                    if (el.readyState >= 2) {
+                        startPlayback();
+                    } else {
+                        el.addEventListener('canplay', () => startPlayback(), { once: true });
+                        setTimeout(startPlayback, 250);
+                    }
+                } else {
+                    startPlayback();
                 }
-            }
+            }, 120);
+
+            return () => clearTimeout(timer);
         }
     }, [autoPlayTrigger]);
 
@@ -352,7 +389,36 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     const [isPlaying, setIsPlaying] = useState(false);
     const [duration, setDuration] = useState(0);
     const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-    // Visual Reference Media (Video/Image preview without overriding AI Generator audio track)
+    // Primary Audio/Video Media State (From AI Generator tab or manual file upload)
+    const [localAudioFile, setLocalAudioFile] = useState<File | null>(audioFile || null);
+
+    useEffect(() => {
+        if (audioFile) {
+            setLocalAudioFile(audioFile);
+            setLocalYoutubeUrl(null);
+            if (isVideoFile(audioFile)) {
+                // If primary media from AI Generator is a video, clear companion visual view
+                setLocalVisualMediaFile(null);
+                if (onVisualMediaChange) onVisualMediaChange(null);
+            }
+        }
+    }, [audioFile, onVisualMediaChange]);
+
+    const effectiveAudioFile = audioFile || localAudioFile;
+    const isPrimaryVideo = Boolean(effectiveAudioFile && isVideoFile(effectiveAudioFile));
+
+    // Primary media audio/volume state (for when effectiveAudioFile is a Video containing both video + audio)
+    const [primaryMediaMuted, setPrimaryMediaMuted] = useState<boolean>(false);
+    const [primaryMediaVolume, setPrimaryMediaVolume] = useState<number>(1);
+
+    useEffect(() => {
+        if (mediaRef.current instanceof HTMLMediaElement && isPrimaryVideo) {
+            mediaRef.current.muted = primaryMediaMuted;
+            mediaRef.current.volume = primaryMediaMuted ? 0 : primaryMediaVolume;
+        }
+    }, [primaryMediaMuted, primaryMediaVolume, isPrimaryVideo]);
+
+    // Visual Reference Media (Companion Video/Image used ONLY when primary media is Audio-only so user can match the view)
     const [localVisualMediaFile, setLocalVisualMediaFile] = useState<File | null>(visualMediaFileProp || null);
 
     useEffect(() => {
@@ -361,14 +427,15 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         }
     }, [visualMediaFileProp]);
 
-    const activeVisualMediaFile = visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile;
+    // When primary media is already a video, companion visual media is completely bypassed
+    const activeVisualMediaFile = isPrimaryVideo ? null : (visualMediaFileProp !== undefined ? visualMediaFileProp : localVisualMediaFile);
     const visualMediaFile = activeVisualMediaFile;
     const [visualMediaUrl, setVisualMediaUrl] = useState<string | null>(null);
     const visualVideoRef = useRef<HTMLVideoElement>(null);
     const visualMediaInputRef = useRef<HTMLInputElement>(null);
     const [playbackRate, setPlaybackRate] = useState<number>(1);
 
-    // Audio/volume adjustment state for companion visual video view
+    // Audio/volume adjustment state for companion visual video view (when pairing a companion video with an audio track)
     const [visualVideoMuted, setVisualVideoMuted] = useState<boolean>(true);
     const [visualVideoVolume, setVisualVideoVolume] = useState<number>(0.5);
     
@@ -407,10 +474,6 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     const [showExtractSettings, setShowExtractSettings] = useState(false);
     const [extractStart, setExtractStart] = useState<number>(0);
     const [extractEnd, setExtractEnd] = useState<number>(0);
-
-    // Audio Waveform & Snap to Audio State
-    const [localAudioFile, setLocalAudioFile] = useState<File | null>(null);
-    const effectiveAudioFile = localAudioFile || audioFile;
 
     const [audioProfile, setAudioProfile] = useState<AudioEnergyProfile | null>(null);
     const [isAnalyzingAudio, setIsAnalyzingAudio] = useState(false);
@@ -1052,37 +1115,35 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         }
 
         if (mediaRef.current) {
-            const newTimeMs = (mediaRef.current as HTMLMediaElement).currentTime * 1000;
+            const el = mediaRef.current as HTMLMediaElement;
+            const newTimeMs = el.currentTime * 1000;
             setCurrentTime(newTimeMs);
-            if ((mediaRef.current as HTMLMediaElement).paused) {
-                setIsPlaying(false);
-                if (visualVideoRef.current && !visualVideoRef.current.paused) {
-                    try { visualVideoRef.current.pause(); } catch (_) {}
-                }
-            } else {
-                if (visualVideoRef.current) {
-                    const vid = visualVideoRef.current;
-                    const vidDur = vid.duration;
-                    const audioSec = newTimeMs / 1000;
 
-                    // Loop or wrap target time so video keeps moving smoothly when audio is longer than video
-                    const targetSec = (vidDur && vidDur > 0 && !isNaN(vidDur))
-                        ? (audioSec >= vidDur ? (audioSec % vidDur) : audioSec)
-                        : audioSec;
+            if (visualVideoRef.current && visualVideoRef.current !== mediaRef.current) {
+                const vid = visualVideoRef.current;
+                const vidDur = vid.duration;
+                const audioSec = newTimeMs / 1000;
 
-                    const diff = Math.abs(vid.currentTime - targetSec);
-                    const now = performance.now();
-                    // Avoid seek thrashing when video is actively seeking (prevents browser video decoder stall/freeze)
-                    if (diff > 0.35 && !vid.seeking && (now - lastVideoSyncSeekRef.current > 300)) {
-                        try {
-                            vid.currentTime = targetSec;
-                            lastVideoSyncSeekRef.current = now;
-                        } catch (_) {}
-                    }
-                    if (vid.paused) {
-                        vid.play().catch(() => {});
-                    }
+                // Loop or wrap target time so video keeps moving smoothly when audio is longer than video
+                const targetSec = (vidDur && vidDur > 0 && !isNaN(vidDur))
+                    ? (audioSec >= vidDur ? (audioSec % vidDur) : audioSec)
+                    : audioSec;
+
+                const diff = Math.abs(vid.currentTime - targetSec);
+                const now = performance.now();
+                // Avoid seek thrashing when video is actively seeking (prevents browser video decoder stall/freeze)
+                if (diff > 0.35 && !vid.seeking && (now - lastVideoSyncSeekRef.current > 300)) {
+                    try {
+                        vid.currentTime = targetSec;
+                        lastVideoSyncSeekRef.current = now;
+                    } catch (_) {}
                 }
+                if (vid.paused && !el.paused) {
+                    vid.play().catch(() => {});
+                }
+            }
+
+            if (isPlaying && !el.ended) {
                 requestRef.current = requestAnimationFrame(updateTime);
             }
             
@@ -1096,9 +1157,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         } else if (visualVideoRef.current) {
             const newTimeMs = visualVideoRef.current.currentTime * 1000;
             setCurrentTime(newTimeMs);
-            if (visualVideoRef.current.paused) {
-                setIsPlaying(false);
-            } else {
+            if (isPlaying && !visualVideoRef.current.ended) {
                 requestRef.current = requestAnimationFrame(updateTime);
             }
         }
@@ -1210,31 +1269,50 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             return;
         }
 
-        if (visualVideoRef.current) {
-            if (isPlaying) {
-                try { visualVideoRef.current.pause(); } catch (_) {}
-            } else {
-                visualVideoRef.current.play().catch(() => {});
-            }
+        // If at the end of media, restart from beginning
+        if ((duration > 0 && currentTime >= duration - 100) || (mediaRef.current && (mediaRef.current.ended || (mediaRef.current.duration && mediaRef.current.duration > 0 && mediaRef.current.currentTime >= mediaRef.current.duration - 0.2)))) {
+            seekTo(0);
         }
 
-        if (mediaRef.current) {
-            if ((mediaRef.current as HTMLMediaElement).paused) {
-                const playPromise = (mediaRef.current as HTMLMediaElement).play();
+        if (isPlaying) {
+            if (mediaRef.current) {
+                try { (mediaRef.current as HTMLMediaElement).pause(); } catch (_) {}
+            }
+            if (visualVideoRef.current && visualVideoRef.current !== mediaRef.current) {
+                try { visualVideoRef.current.pause(); } catch (_) {}
+            }
+            setIsPlaying(false);
+        } else {
+            if (mediaRef.current) {
+                const el = mediaRef.current as HTMLMediaElement;
+                if (el.ended || (el.duration && el.duration > 0 && el.currentTime >= el.duration - 0.2)) {
+                    el.currentTime = 0;
+                    setCurrentTime(0);
+                }
+                const playPromise = el.play();
                 if (playPromise !== undefined) {
-                    playPromise.catch(error => {
-                        if (error?.name !== 'AbortError' && error?.name !== 'NotAllowedError') {
-                            console.warn('[Timeline] Playback notice:', error);
+                    playPromise.then(() => {
+                        setIsPlaying(true);
+                    }).catch(error => {
+                        console.warn('[Timeline] Playback notice, retrying muted fallback:', error);
+                        // If browser blocks unmuted video playback in iframe/webview, mute and retry
+                        if (el instanceof HTMLVideoElement) {
+                            el.muted = true;
+                            setPrimaryMediaMuted(true);
+                            el.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+                        } else {
+                            setIsPlaying(false);
                         }
                     });
+                } else {
+                    setIsPlaying(true);
                 }
-                setIsPlaying(true);
             } else {
-                (mediaRef.current as HTMLMediaElement).pause();
-                setIsPlaying(false);
+                setIsPlaying(true);
             }
-        } else if (visualVideoRef.current) {
-            setIsPlaying(!visualVideoRef.current.paused);
+            if (visualVideoRef.current && visualVideoRef.current !== mediaRef.current) {
+                visualVideoRef.current.play().catch(() => {});
+            }
         }
     };
 
@@ -2127,6 +2205,12 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                 return;
             }
 
+            if (e.code === 'Space' || e.key === ' ') {
+                e.preventDefault();
+                togglePlay();
+                return;
+            }
+
             if (e.key === '[' && selectedId) {
                 e.preventDefault();
                 handleSetMarkIn(selectedId);
@@ -2150,7 +2234,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedId, currentTime, handleSelectPrevSubtitle, handleSelectNextSubtitle, handleNudge]);
+    }, [selectedId, currentTime, handleSelectPrevSubtitle, handleSelectNextSubtitle, handleNudge, togglePlay]);
 
     const handleMediaFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -2283,7 +2367,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             } else {
                 let fileUriToUse = '';
                 
-                if (effectiveAudioFile && effectiveAudioFile.type?.includes('video')) {
+                if (effectiveAudioFile && isVideoFile(effectiveAudioFile)) {
                     if (uploadedFileUri) {
                         fileUriToUse = uploadedFileUri;
                     } else {
@@ -2657,7 +2741,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                             allowFullScreen
                         />
                     </div>
-                ) : visualMediaFile && visualMediaUrl ? (
+                ) : !isPrimaryVideo && visualMediaFile && visualMediaUrl ? (
                     <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
                         {visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name) ? (
                             <img 
@@ -2696,7 +2780,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                         )}
                         
                         {/* Audio track element from AI generator tab runs to play soundtrack */}
-                        {effectiveAudioFile && (
+                        {effectiveAudioFile && effectiveAudioFile.name !== visualMediaFile.name && (
                             <audio 
                                 ref={mediaRef as React.RefObject<HTMLAudioElement>} 
                                 src={mediaUrl || undefined} 
@@ -2734,7 +2818,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30' 
                                                 : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30'
                                         }`}
-                                        title={visualVideoMuted ? "Video Sound is Muted (Click to enable video sound)" : "Video Sound is On (Click to mute)"}
+                                        title={visualVideoMuted ? "Companion Video Sound is Muted (Click to enable video sound)" : "Companion Video Sound is On (Click to mute)"}
                                     >
                                         {visualVideoMuted ? <VolumeX className="w-3 h-3 text-amber-300" /> : <Volume2 className="w-3 h-3 text-emerald-300" />}
                                         <span>{visualVideoMuted ? 'Muted' : `${Math.round(visualVideoVolume * 100)}%`}</span>
@@ -2775,19 +2859,75 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                         </div>
                     </div>
                 ) : effectiveAudioFile ? (
-                    effectiveAudioFile.type?.includes('video') ? (
-                        <>
-                        <video 
-                            ref={mediaRef as React.RefObject<HTMLVideoElement>} 
-                            src={mediaUrl || undefined} 
-                            className="w-full h-full object-contain"
-                            onLoadedMetadata={handleMediaLoadedMetadata}
-                            onClick={togglePlay}
-                            onPause={() => setIsPlaying(false)}
-                            onPlay={() => setIsPlaying(true)}
-                            onEnded={() => setIsPlaying(false)}
-                        />
-                        </>
+                    isPrimaryVideo ? (
+                        <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
+                            <video 
+                                ref={mediaRef as React.RefObject<HTMLVideoElement>} 
+                                src={mediaUrl || undefined} 
+                                className="w-full h-full object-contain cursor-pointer"
+                                playsInline
+                                preload="auto"
+                                muted={primaryMediaMuted}
+                                onLoadedMetadata={handleMediaLoadedMetadata}
+                                onCanPlay={() => {
+                                    if (mediaRef.current) {
+                                        const durMs = mediaRef.current.duration * 1000;
+                                        if (!isNaN(durMs) && durMs > 0 && duration === 0) {
+                                            setDuration(durMs);
+                                        }
+                                    }
+                                }}
+                                onClick={togglePlay}
+                                onPause={() => setIsPlaying(false)}
+                                onPlay={() => setIsPlaying(true)}
+                                onEnded={() => setIsPlaying(false)}
+                            />
+                            {/* Video overlay indicator pill with sound adjustment */}
+                            <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl pointer-events-auto flex-wrap max-w-[95%]">
+                                <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                <span className="font-semibold max-w-[140px] sm:max-w-[200px] truncate">{effectiveAudioFile.name}</span>
+                                <span className="text-[10px] bg-purple-500/25 text-purple-300 px-1.5 py-0.5 rounded font-bold">Video + Audio</span>
+                                <div className="flex items-center gap-1.5 pl-1.5 border-l border-white/20">
+                                    <button
+                                        type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            const nextMuted = !primaryMediaMuted;
+                                            if (mediaRef.current instanceof HTMLMediaElement) {
+                                                mediaRef.current.muted = nextMuted;
+                                            }
+                                            setPrimaryMediaMuted(nextMuted);
+                                        }}
+                                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                            primaryMediaMuted 
+                                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30' 
+                                                : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30'
+                                        }`}
+                                        title={primaryMediaMuted ? "Video Sound is Muted (Click to enable sound)" : "Video Sound is On (Click to mute)"}
+                                    >
+                                        {primaryMediaMuted ? <VolumeX className="w-3 h-3 text-amber-300" /> : <Volume2 className="w-3 h-3 text-emerald-300" />}
+                                        <span>{primaryMediaMuted ? 'Muted' : 'Sound On'}</span>
+                                    </button>
+                                    {!primaryMediaMuted && (
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max="1"
+                                            step="0.05"
+                                            value={primaryMediaVolume}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onChange={(e) => {
+                                                const val = parseFloat(e.target.value);
+                                                setPrimaryMediaVolume(val);
+                                                if (val === 0) setPrimaryMediaMuted(true);
+                                            }}
+                                            className="w-14 sm:w-20 h-1.5 accent-emerald-400 bg-white/20 rounded-lg cursor-pointer"
+                                            title={`Adjust Video Audio Volume: ${Math.round(primaryMediaVolume * 100)}%`}
+                                        />
+                                    )}
+                                </div>
+                            </div>
+                        </div>
                     ) : (
                         <>
                             <audio 
@@ -2798,11 +2938,23 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                 onPlay={() => setIsPlaying(true)}
                                 onEnded={() => setIsPlaying(false)}
                             />
-                            <div className="text-white/20 flex flex-col items-center">
-                                <div className="w-32 h-32 bg-white/5 rounded-full flex items-center justify-center mb-4 border border-white/10">
-                                    <div className="w-16 h-16 bg-white/10 rounded-full animate-pulse"></div>
+                            <div className="text-white/40 flex flex-col items-center gap-3 py-6 px-4">
+                                <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center border border-white/10 shadow-lg">
+                                    <FileAudio className="w-9 h-9 text-indigo-400 animate-pulse" />
                                 </div>
-                                <p className="font-medium text-sm tracking-widest uppercase">Audio Track</p>
+                                <div className="text-center">
+                                    <p className="font-semibold text-sm text-white/90 max-w-[220px] sm:max-w-xs truncate">{effectiveAudioFile.name}</p>
+                                    <p className="text-xs text-white/50 mt-0.5">Audio Track Active (AI Generator)</p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => visualMediaInputRef.current?.click()}
+                                    className="mt-1 flex items-center gap-2 px-3.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 rounded-lg text-xs font-semibold cursor-pointer transition-all shadow-md active:scale-95"
+                                    title="Upload a video or image to match this audio track"
+                                >
+                                    <Film className="w-3.5 h-3.5 text-indigo-300" />
+                                    <span>Match View: Add Video/Image Preview</span>
+                                </button>
                             </div>
                         </>
                     )
@@ -2897,73 +3049,86 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                 </div>
                 
                 <div className="flex justify-start sm:justify-end items-center gap-1 sm:gap-1.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] flex-nowrap shrink-0">
-                    <button 
-                        type="button"
-                        onClick={() => visualMediaInputRef.current?.click()} 
-                        className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer ${
-                            visualMediaFile 
-                                ? visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)
-                                    ? 'bg-blue-600/30 hover:bg-blue-600/40 text-blue-200 border-blue-400/40'
-                                    : 'bg-purple-600/30 hover:bg-purple-600/40 text-purple-200 border-purple-400/40'
-                                : 'bg-purple-600/20 hover:bg-purple-600/35 text-purple-200 border-purple-500/30'
-                        }`} 
-                        title={visualMediaFile ? `Visual View: ${visualMediaFile.name} (Click to change visual file)` : "Select Video or Image to display in Timeline Editor (keeps audio track from AI Generator)"}
-                    >
-                        {visualMediaFile?.type?.startsWith('image/') || (visualMediaFile && /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)) ? (
-                            <ImageIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                        ) : (
-                            <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                        )}
-                        <span className="text-xs font-semibold">
-                            {visualMediaFile ? (
-                                visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)
-                                    ? 'Image View'
-                                    : 'Video View'
-                            ) : (
-                                <>
-                                    <span className="hidden md:inline">Select Video/Image</span>
-                                    <span className="md:hidden">View Media</span>
-                                </>
-                            )}
-                        </span>
-                        {visualMediaFile && (
-                            <span
-                                role="button"
-                                tabIndex={0}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleClearVisualMedia();
-                                }}
-                                className="p-0.5 hover:bg-white/20 rounded text-white/60 hover:text-white transition-colors cursor-pointer"
-                                title="Clear visual view"
-                            >
-                                <X className="w-3 h-3" />
-                            </span>
-                        )}
-                    </button>
-
-                    {/* Quick Sound Toggle for Visual Video View */}
-                    {visualMediaFile && !(visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)) && (
-                        <button
-                            type="button"
-                            onClick={() => {
-                                const nextMuted = !visualVideoMuted;
-                                setVisualVideoMuted(nextMuted);
-                                if (!nextMuted && visualVideoVolume === 0) {
-                                    setVisualVideoVolume(0.5);
-                                }
-                                setSnapNotification(nextMuted ? "Video sound muted (AI audio track active)" : `Video sound active (${Math.round((visualVideoVolume || 0.5) * 100)}%)`);
-                            }}
-                            className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer ${
-                                visualVideoMuted
-                                    ? 'bg-amber-600/20 hover:bg-amber-600/35 text-amber-300 border-amber-500/30'
-                                    : 'bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border-emerald-500/30'
-                            }`}
-                            title={visualVideoMuted ? "Video view audio is muted. Click to enable video audio." : `Video view audio active (${Math.round(visualVideoVolume * 100)}%). Click to mute.`}
+                    {isPrimaryVideo ? (
+                        <div 
+                            className="shrink-0 px-2.5 h-7 sm:h-8 flex items-center gap-1.5 rounded-md bg-purple-600/25 border border-purple-500/40 text-purple-200 text-xs font-semibold shadow-sm"
+                            title={`Primary Video Active: ${effectiveAudioFile?.name || 'Video'} provides both video view and audio track from AI Generator.`}
                         >
-                            {visualVideoMuted ? <VolumeX className="w-3.5 h-3.5 text-amber-400 shrink-0" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                            <span className="text-xs font-semibold">{visualVideoMuted ? 'Muted' : `${Math.round(visualVideoVolume * 100)}%`}</span>
-                        </button>
+                            <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                            <span className="truncate max-w-[120px] sm:max-w-[180px]">{effectiveAudioFile?.name || 'Video Active'}</span>
+                            <span className="text-[10px] bg-purple-500/30 text-purple-200 px-1.5 py-0.5 rounded font-bold">Video+Audio</span>
+                        </div>
+                    ) : (
+                        <>
+                            <button 
+                                type="button"
+                                onClick={() => visualMediaInputRef.current?.click()} 
+                                className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer ${
+                                    visualMediaFile 
+                                        ? visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)
+                                            ? 'bg-blue-600/30 hover:bg-blue-600/40 text-blue-200 border-blue-400/40'
+                                            : 'bg-emerald-600/30 hover:bg-emerald-600/40 text-emerald-200 border-emerald-400/40'
+                                        : 'bg-indigo-600/20 hover:bg-indigo-600/35 text-indigo-200 border-indigo-500/30'
+                                }`} 
+                                title={visualMediaFile ? `Matched View: ${visualMediaFile.name} (Click to change visual preview)` : "Match View: Select Video or Image to display with your audio track from AI Generator"}
+                            >
+                                {visualMediaFile?.type?.startsWith('image/') || (visualMediaFile && /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)) ? (
+                                    <ImageIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                                ) : (
+                                    <Film className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                )}
+                                <span className="text-xs font-semibold">
+                                    {visualMediaFile ? (
+                                        visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)
+                                            ? 'Matched Image'
+                                            : 'Matched Video'
+                                    ) : (
+                                        <>
+                                            <span className="hidden md:inline">Match View (Video/Image)</span>
+                                            <span className="md:hidden">Match View</span>
+                                        </>
+                                    )}
+                                </span>
+                                {visualMediaFile && (
+                                    <span
+                                        role="button"
+                                        tabIndex={0}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleClearVisualMedia();
+                                        }}
+                                        className="p-0.5 hover:bg-white/20 rounded text-white/60 hover:text-white transition-colors cursor-pointer"
+                                        title="Clear visual view"
+                                    >
+                                        <X className="w-3 h-3" />
+                                    </span>
+                                )}
+                            </button>
+
+                            {/* Quick Sound Toggle for Visual Video View */}
+                            {visualMediaFile && !(visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name)) && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const nextMuted = !visualVideoMuted;
+                                        setVisualVideoMuted(nextMuted);
+                                        if (!nextMuted && visualVideoVolume === 0) {
+                                            setVisualVideoVolume(0.5);
+                                        }
+                                        setSnapNotification(nextMuted ? "Companion video sound muted (AI audio track active)" : `Companion video sound active (${Math.round((visualVideoVolume || 0.5) * 100)}%)`);
+                                    }}
+                                    className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer ${
+                                        visualVideoMuted
+                                            ? 'bg-amber-600/20 hover:bg-amber-600/35 text-amber-300 border-amber-500/30'
+                                            : 'bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border-emerald-500/30'
+                                    }`}
+                                    title={visualVideoMuted ? "Companion video audio is muted. Click to enable video audio." : `Companion video audio active (${Math.round(visualVideoVolume * 100)}%). Click to mute.`}
+                                >
+                                    {visualVideoMuted ? <VolumeX className="w-3.5 h-3.5 text-amber-400 shrink-0" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                                    <span className="text-xs font-semibold">{visualVideoMuted ? 'Muted' : `${Math.round(visualVideoVolume * 100)}%`}</span>
+                                </button>
+                            )}
+                        </>
                     )}
 
                     <button 

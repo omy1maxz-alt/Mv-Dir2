@@ -380,6 +380,12 @@ export const App: React.FC = () => {
   }, [projectData.soundtrackUrl]);
 
   useEffect(() => {
+    if (activeTab === 'subtitles') {
+        if (audioRef.current && !audioRef.current.paused) {
+            audioRef.current.pause();
+        }
+        return;
+    }
     if (audioRef.current && (projectData.soundtrackUrl?.startsWith('blob:') || projectData.localPlaylist)) {
         if (isPlaying) {
             const playPromise = audioRef.current.play();
@@ -395,7 +401,7 @@ export const App: React.FC = () => {
             audioRef.current.pause();
         }
     }
-  }, [projectData.soundtrackUrl, projectData.currentTrackIndex, isPlaying]);
+  }, [projectData.soundtrackUrl, projectData.currentTrackIndex, isPlaying, activeTab]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -2002,7 +2008,7 @@ export const App: React.FC = () => {
               onMediaSwap={(file) => {
                   const url = URL.createObjectURL(file);
                   setProjectData(p => ({ ...p, soundtrackUrl: url, localPlaylist: undefined, currentTrackIndex: undefined, localFiles: [file] }));
-                  setIsPlaying(true);
+                  setIsPlaying(false);
                   if (file.type.includes('video')) {
                       setShowVideo(true);
                   }

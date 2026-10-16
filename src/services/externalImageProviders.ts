@@ -567,6 +567,7 @@ export async function generateTextAIHorde(options: {
   temperature?: number;
   addLog?: (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
 }): Promise<string> {
+  const { addLog } = options;
   const storedKeys = readStoredProviderKeys();
   const apiKey = options.apiKey || storedKeys.aiHordeApiKey || localStorage.getItem('aihorde_api_key') || '0000000000';
   const isAnonymous = apiKey === '0000000000';

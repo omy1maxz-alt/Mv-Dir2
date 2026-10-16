@@ -1,3 +1,72 @@
+### 216. Clarify Video vs Audio Roles & Fix Video Playback in Subtitles and Timeline Editor (16 Oct 2026 | 15:30)
+- **Trigger:** User reported: "here's the problem,i think the app confuse if i upload video or audio,media from ai generator tab is video and audio,while the media tht uplkaded from timeline editor is used when i upload audio on ai generator tab si can match the view" and "still wont play".
+- **Conceptual & Architectural Resolution:**
+  1. **Strict Media Role Separation:**
+     - **When user uploads a Video in AI Generator:** This file supplies BOTH the visual video frames and the primary audio soundtrack. In `SubtitleTimelineEditor.tsx`, `isPrimaryVideo` is computed directly from `effectiveAudioFile`. When `isPrimaryVideo` is true, companion visual media (`visualMediaFile`) is completely bypassed (`activeVisualMediaFile = null`), and the toolbar displays a clear `Video + Audio Active: [filename]` badge.
+     - **When user uploads Audio in AI Generator:** The file is an audio soundtrack only. The timeline editor displays an "Audio Track Active" status, and enables the "Match View (Video/Image)" toolbar button and placeholder CTA so the user can pair a companion video or image preview with their soundtrack.
+  2. **Primary Video Sound Control Fix:**
+     - The primary `<video>` element on line 2864 was mistakenly bound to `muted={visualVideoMuted}` (which defaults to `true` for companion videos), causing primary videos to play silently by default.
+     - Changed to `muted={primaryMediaMuted}` (defaulting to `false`, unmuted) and added a dedicated volume slider and mute toggle controlling `primaryMediaVolume` and `primaryMediaMuted`.
+  3. **Object URL Lifecycle & Removal of Premature `.load()` Call:**
+     - In `SubtitleTimelineEditor.tsx`'s `mediaUrl` effect, calling `mediaRef.current.load()` synchronously before React rendered the new `src` caused the browser video decoder to abort loading and report error states. Removed premature `.load()` call, allowing React to bind `src` cleanly.
+  4. **Persistence Race Condition Fixed:**
+     - In `SubtitlesTab.tsx`, `loadMedia` and `loadVisualMedia` previously executed concurrently on mount. If a visual companion from a prior audio project existed in IndexedDB, it could overwrite state even when the primary media was a video. Consolidated into `loadAllMedia`: if the primary media is a video, any visual companion in IndexedDB is deleted and set to `null`.
+  5. **Background Soundtrack Player Isolation:**
+     - In `App.tsx`, `onMediaSwap` was auto-starting playback in the global floating soundtrack player, which competed for Android hardware video decoders with `SubtitleTimelineEditor`. Set `setIsPlaying(false)` on swap and pause `audioRef.current` whenever `activeTab === 'subtitles'`.
+  6. **Resilient End-of-Media & Autoplay Guards:**
+     - In `togglePlay` and `autoPlayTrigger`, guarded `currentTime >= duration - 0.2` checks with `duration > 0`, preventing false restarts at 0 before metadata loads. `autoPlayTrigger` now waits for `readyState >= 2` or listens for `canplay`.
+- **Verification:** `compile_applet` passed cleanly with 0 errors.
+
+### 215. Fix Timeline Editor Video Playback on Mobile Android WebView & Iframe Previews (16 Oct 2026 | 14:50)
+- **Trigger:** User reported: "video i select on caption - ai generator wont play on timeline editor" / "still wont play".
+- **Diagnostic context:** Android WebView (`Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 ... Chrome/157.0.0.0 Safari/537.36`, Capacitor native mode: true) inside AI Studio Sandbox preview iframe.
+- **Root causes identified & fixed:**
+  1. **Autoplay & User-Gesture Rejection on Unmuted Videos:**
+     In mobile WebViews and embedded iframes without prior user gesture directly on the media element, calling `.play()` on an unmuted video rejects with `NotAllowedError`. Previously, this rejection triggered the `<video onPause>` listener, which instantly forced `isPlaying = false`, aborting playback and freezing the timeline playhead. In both `togglePlay` and `autoPlayTrigger`, playback promises are now handled asynchronously: if unmuted play is blocked by the browser policy, it automatically switches to muted video playback with `setVisualVideoMuted(true)`, calls `.play()`, and maintains `setIsPlaying(true)` so the video plays without error.
+  2. **`display: none` Transition Race in `autoPlayTrigger`:**
+     When switching views from `'generator'` to `'editor'`, the editor container previously transitioned from `display: none` (`hidden`) to `flex`. Invoking `.play()` in the same synchronous render tick as the visibility switch caused WebKit/Blink to reject playback because layout was not yet flushed. Added a 120ms layout stabilization timer to `autoPlayTrigger`.
+  3. **Visual Media Hijacking Primary Video:**
+     If an old visual file lingered in IndexedDB (`mv_subtitles_visual_media`), the ternary condition `visualMediaFile && visualMediaUrl && (!effectiveAudioFile || visualMediaFile.name !== effectiveAudioFile.name)` matched, rendering the old visual companion while demoting the newly selected video to background audio. Added a check `(!effectiveAudioFile || !isVideoFile(effectiveAudioFile))` so that whenever `effectiveAudioFile` is a video, it is always rendered as the primary video element.
+  4. **Direct Media Binding & Persistence Synchronization:**
+     In `SubtitlesTab.tsx`, `audioFile` is now passed directly to `SubtitleTimelineEditor` without conditional dependence on transient `mediaSourceType` state, and `loadMedia` automatically syncs `visualMediaFile` on mount when loading persisted videos.
+- **Verification:** `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) passed with 0 errors.
+
+### 214. Fix Video Playback & Display in Subtitle Timeline Editor
+- **Trigger:** User reported: "video i select on caption - ai generator wont play on timeline editor".
+- **Root causes identified & fixed:**
+  1. **Premature Pause Race Condition in `updateTime` loop (`SubtitleTimelineEditor.tsx`):**
+     Inside `updateTime`, `(mediaRef.current as HTMLMediaElement).paused` was checked synchronously on every animation frame and immediately executed `setIsPlaying(false)`. Because `HTMLMediaElement.play()` is asynchronous, `paused` remains `true` for the first several milliseconds while the browser video decoder buffers the pipeline. As soon as the user pressed Play, the very next animation frame read `paused === true` and aborted playback immediately. Fixed by relying on DOM `onPlay`/`onPause`/`onEnded` events rather than prematurely canceling the animation loop.
+  2. **Obsolete auto-play trigger method:**
+     `autoPlayTrigger` in `SubtitleTimelineEditor.tsx` called legacy `(mediaRef.current as any).getInternalPlayer?.().playVideo()`, which was undefined on native HTMLVideoElement and HTMLAudioElement. Replaced with direct `.play()` calls with autoplay-policy fallback (muting and retrying if browser restricts unmuted autoplay in preview iframe).
+  3. **Stale YouTube URL blocking local video playback:**
+     If the user had previously tested or loaded a YouTube URL, `localYoutubeUrl` remained truthy, causing the timeline editor to send YouTube postMessages rather than controlling the local video. Added synchronization on `audioFile` changes to clear `localYoutubeUrl` and update `localAudioFile`.
+  4. **MIME type and extension detection:**
+     Video detection previously only checked `file.type.includes('video')`. On many systems and browsers, files like `.mkv`, `.avi`, `.webm`, `.mp4` or downloaded streams have empty or generic binary MIME types (`""` or `application/octet-stream`), causing the video to fall back to an audio-only placeholder without video frames. Created `src/utils/mediaUtils.ts` with comprehensive `isVideoFile`, `isAudioFile`, and `isMediaFile` validators.
+  5. **Visual media synchronization:**
+     In `SubtitlesTab.tsx`, selecting or dropping a video file previously only set `audioFile` without updating `visualMediaFile` or setting `mediaSourceType = 'upload'`. If an old companion file existed in `mv_subtitles_visual_media`, it obscured the newly selected video. `updateAudioFile` now automatically synchronizes `visualMediaFile` when a video is loaded and switches the mode to `upload`.
+  6. **UI & Keyboard controls:**
+     Added "Open & Play in Timeline" direct action button to the loaded media card in `SubtitlesTab`, full drag & drop support on the primary drop area, Spacebar keyboard shortcut for timeline play/pause, and native sound mute/unmute control pill for video playback.
+- **Verification:** `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) passed with 0 errors. Dev server confirmed responding with HTTP 200 OK.
+
+### 213. Fix Missing Search Icon Import in SubtitlesTab
+- **Trigger:** Runtime ReferenceError: `Search is not defined` when rendering `SubtitlesTab.tsx` line 1226 (`<Search className="w-4 h-4" />` within the TinyFish Caption Research button).
+- **Root cause:** The TinyFish caption research button used `<Search ... />` from `lucide-react`, but `Search` was omitted from the `lucide-react` import statement at the top of `SubtitlesTab.tsx`.
+- **Fix:** Added `Search` to the named imports from `lucide-react` in `src/components/SubtitlesTab.tsx`.
+- **Verification:** `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) completed with 0 errors. Dev server confirmed responding with HTTP 200 OK.
+
+### 212. Fix Syntax Errors in server.ts and VideoEnhancerTab.tsx
+- **Trigger:** Build failure on deployment logs:
+  - `server.ts:1235:74: ERROR: Syntax error "$"` caused by over-escaped regex literal `/\\/$/` instead of `/\/$/`.
+  - `src/components/VideoEnhancerTab.tsx:65:9: ERROR: The symbol "jobState" has already been declared` and `isSubmitting` already declared.
+  - `src/components/VideoEnhancerTab.tsx:207:27: ERROR: Expected "}" but found ":"` caused by orphaned duplicate upload logic block left after server proxy migration.
+  - `src/components/VideoEnhancerTab.tsx:175:16: error TS17008: JSX element 'label' has no corresponding closing tag` on the Deblur / sharpening dropdown label.
+- **Root Cause & Fixes:**
+  1. `server.ts`: Corrected trailing-slash regex on `baseUrl` from `.replace(/\\/$/, '')` to `.replace(/\/$/, '')`.
+  2. `VideoEnhancerTab.tsx`: Removed duplicate `jobState` and `isSubmitting` state hooks.
+  3. `VideoEnhancerTab.tsx`: Removed the orphaned submission block and correctly closed the upload section.
+  4. `VideoEnhancerTab.tsx`: Closed the Deblur / sharpening `<label>` and wired up the existing `faceRestore` and `interpolate` state switches as clean UI checkboxes.
+- **Verification:** Both `tsc --noEmit` (`lint_applet`) and `npm run build` (`compile_applet`) pass cleanly with 0 errors. Dev server restarted and responds with HTTP 200 OK.
+
 ### 211. Fix DreamShaper 8 LCM Reference Routing and Blank Image Responses
 - **Official model contract checked with TinyFish:** Cloudflare's `dreamshaper-8-lcm` page exposes text-to-image and img2img inputs, including `image_b64`; `num_steps` allows up to 20 and `guidance` is configurable. Source: https://developers.cloudflare.com/workers-ai/models/dreamshaper-8-lcm/.
 - **Reference routing bug:** The app's Cloudflare single-reference allowlist included SDXL Base and Runway Inpainting, but not DreamShaper, so scene generation and standalone Generate Image rejected references before reaching the provider. Added DreamShaper to both routes, labeled it correctly, and pass one selected reference through `image_b64`.

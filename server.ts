@@ -1362,7 +1362,7 @@ function validateEnhancerSettings(value: unknown): Record<string, unknown> {
 }
 
 function enhancerWorkerConfig() {
-  const baseUrl = (process.env.VIDEO_WORKER_URL || '').trim().replace(/\\/$/, '');
+  const baseUrl = (process.env.VIDEO_WORKER_URL || '').trim().replace(/\/$/, '');
   const apiKey = (process.env.VIDEO_WORKER_API_KEY || '').trim();
   if (!baseUrl || !apiKey) throw new Error('Video worker is not configured on the server. Set VIDEO_WORKER_URL and VIDEO_WORKER_API_KEY.');
   let parsed: URL;

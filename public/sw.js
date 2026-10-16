@@ -1,5 +1,5 @@
 // MV Director AI Service Worker
-const CACHE_NAME = 'mv-director-cache-v1';
+const CACHE_NAME = 'mv-director-cache-v2';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -34,8 +34,18 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Bypass API and dynamic backend endpoints
-  if (url.pathname.startsWith('/api/') || request.method !== 'GET') {
+  // Strictly bypass API, Vite development assets, node_modules, and cache-busted modules
+  if (
+    request.method !== 'GET' ||
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/node_modules/') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.endsWith('.ts') ||
+    url.pathname.endsWith('.tsx') ||
+    url.searchParams.has('v') ||
+    url.searchParams.has('t')
+  ) {
     return;
   }
 
@@ -61,7 +71,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network-first with cache fallback for navigation / scripts
+  // Network-first with cache fallback for navigation / static production bundle
   event.respondWith(
     fetch(request)
       .then((response) => {
@@ -73,7 +83,11 @@ self.addEventListener('fetch', (event) => {
       })
       .catch(() => {
         return caches.match(request).then((cached) => {
-          return cached || caches.match('/index.html');
+          if (cached) return cached;
+          if (request.mode === 'navigate') {
+            return caches.match('/index.html');
+          }
+          return new Response(null, { status: 404 });
         });
       })
   );

@@ -56,6 +56,19 @@
                     if (evt.stopImmediatePropagation) evt.stopImmediatePropagation();
                 }
             }, true);
+
+            // Clean up legacy service worker caches to prevent mismatched Vite chunk collisions
+            if (typeof window !== 'undefined' && 'caches' in window) {
+                try {
+                    caches.keys().then(function(names) {
+                        for (var i = 0; i < names.length; i++) {
+                            if (names[i] === 'mv-director-cache-v1') {
+                                caches.delete(names[i]);
+                            }
+                        }
+                    }).catch(function() {});
+                } catch (eCache) {}
+            }
         })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
