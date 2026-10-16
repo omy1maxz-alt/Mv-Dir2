@@ -3892,7 +3892,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                         className="w-full sm:w-auto px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                                     >
                                         <Upload className="w-3.5 h-3.5" />
-                                        <span>{effectiveAudioFile ? 'Change File' : 'Upload Track'}</span>
+                                        <span>Select Media Source</span>
                                     </button>
                                 </div>
                             </div>
