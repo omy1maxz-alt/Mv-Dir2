@@ -766,7 +766,12 @@ async function generateSinglePassSRT(
         onProgress,
         resumeTime
     } = opts;
-    
+    const processingMode = opts.processingMode || 'video_audio';
+    const isVideoSource = Boolean(audioFile && (
+        safeMimeType.startsWith('video/') ||
+        /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(audioFile.name || '')
+    ));
+
     let systemInstruction = `You are the AI VIDEO SUBTITLE ANALYSIS & PRECISION SYNC ENGINE.
 Your task is to transcribe and time-align the provided ${isVideo ? 'video' : 'audio soundtrack'} and generate an accurate, valid SRT file.
 
@@ -837,6 +842,12 @@ CRITICAL RULE 6: CLEAN FORMATTING
 
 CRITICAL RULE 7: TOTAL COMPLETENESS
 - Transcribe the entire file continuously from start to finish. Never omit lines.`;
+
+    if (isVideoSource && processingMode === 'audio') {
+        systemInstruction += '\n\nSTRICT LISTEN-ONLY OVERRIDE: The input happens to be a video container, but use ONLY its embedded audio/soundtrack. Ignore all video frames, facial expressions, lip movements, on-screen text, scene changes, and any other visual evidence. Do not produce captions from visual-only content. Determine every word and timestamp exclusively from audible speech, singing, and vocalizations.';
+    } else if (isVideoSource && processingMode === 'video_audio') {
+        systemInstruction += '\n\nWATCH & LISTEN MODE: Use the embedded audio for exact words and timing. Video frames may provide supporting context, but never infer dialogue that cannot be heard.';
+    }
 
     if (sourceLang && sourceLang !== 'Auto-detect') {
         systemInstruction += `\nAUDIO LANGUAGE HINT: The primary spoken language in this media is "${sourceLang}". Use this acoustic context to ensure 100% phonetic recognition and eliminate transcription mistakes.`;
@@ -1224,7 +1235,6 @@ export async function generateSRT(
         avi: 'video/x-msvideo',
         mpeg: 'video/mpeg',
         mpg: 'video/mpeg',
-        m4v: 'video/mp4',
         '3gp': 'video/3gpp',
         ts: 'video/mp2t',
         mp3: 'audio/mpeg',
