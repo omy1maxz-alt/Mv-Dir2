@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 ### Fixed
-- **Max Generator source and View Media separation**: Renamed the generator tab to “Max Generator”. Loading a saved primary video no longer deletes the separately uploaded View Media reference from IndexedDB. The timeline editor can display a separately chosen View Media video/image independently of the subtitle-generation source, with its audio muting controls remaining separate from the source media.
+- **Max Generator source and View Media separation**: Renamed the generator tab to “Max Generator”. Loading a saved primary video no longer deletes the separately uploaded View Media reference from IndexedDB. When View Media is selected, the timeline preview now renders that exact video/image ahead of the primary source preview, while the source media remains responsible for subtitle generation and its own audio element. Companion-video mute controls remain independent from the source audio.
 
 
 ### Fixed
