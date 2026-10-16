@@ -1259,7 +1259,7 @@ export async function generateSRT(
     // Keep the input as a video container for Gemini, but change the instructions by mode:
     // Listen Only must attend to its embedded soundtrack and ignore frames; Watch & Listen may
     // use both soundtrack and visual frames. This avoids falsely labeling a video as audio/*.
-    const isVideoSource = safeMimeType.startsWith('video/') || /\\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
+    const isVideoSource = safeMimeType.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
     const isVideo = isVideoSource && processingMode === 'video_audio';
 
     let rawSRT = "";
