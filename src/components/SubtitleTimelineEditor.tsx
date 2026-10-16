@@ -981,13 +981,50 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     useEffect(() => {
         if (effectiveYoutubeUrl) {
             setMediaUrl(effectiveYoutubeUrl);
-        } else if (effectiveAudioFile) {
-            const url = URL.createObjectURL(effectiveAudioFile);
-            setMediaUrl(url);
-            return () => URL.revokeObjectURL(url);
-        } else {
-            setMediaUrl(null);
+            return;
         }
+
+        if (!effectiveAudioFile) {
+            setMediaUrl(null);
+            return;
+        }
+
+        // Some stream/download sources wrap valid MP4 bytes in a File whose MIME type is
+        // empty or application/octet-stream. Android Gallery can still sniff those bytes,
+        // while a browser/WebView may reject the Blob URL with MEDIA_ERR_SRC_NOT_SUPPORTED.
+        // Give the browser the correct container MIME type without changing the media bytes.
+        const extension = effectiveAudioFile.name.toLowerCase().split('.').pop() || '';
+        const extensionMimeTypes: Record<string, string> = {
+            mp4: 'video/mp4',
+            m4v: 'video/mp4',
+            mov: 'video/quicktime',
+            webm: 'video/webm',
+            ogv: 'video/ogg',
+            ts: 'video/mp2t',
+            mp3: 'audio/mpeg',
+            m4a: 'audio/mp4',
+            aac: 'audio/aac',
+            wav: 'audio/wav',
+            ogg: 'audio/ogg',
+            opus: 'audio/ogg',
+            flac: 'audio/flac',
+            aiff: 'audio/aiff',
+        };
+        const inferredMimeType = extensionMimeTypes[extension];
+        const originalMimeType = (effectiveAudioFile.type || '').toLowerCase();
+        const needsMimeCorrection =
+            Boolean(inferredMimeType) &&
+            (!originalMimeType || originalMimeType === 'application/octet-stream' ||
+                originalMimeType === 'binary/octet-stream' ||
+                (isVideoFile(effectiveAudioFile) && !originalMimeType.startsWith('video/')) ||
+                (isAudioFile(effectiveAudioFile) && !originalMimeType.startsWith('audio/')));
+        const playableBlob = needsMimeCorrection
+            ? new Blob([effectiveAudioFile], { type: inferredMimeType })
+            : effectiveAudioFile;
+        const url = URL.createObjectURL(playableBlob);
+        setMediaUrl(url);
+        setMediaPlaybackError(null);
+        return () => URL.revokeObjectURL(url);
     }, [effectiveAudioFile, effectiveYoutubeUrl]);
 
     // Maintain visual media object URL lifecycle: automatically creates URL when file is set or restored, and cleans up
