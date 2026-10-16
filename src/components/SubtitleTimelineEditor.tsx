@@ -2741,7 +2741,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                             allowFullScreen
                         />
                     </div>
-                ) : !isPrimaryVideo && visualMediaFile && visualMediaUrl ? (
+                ) : visualMediaFile && visualMediaUrl ? (
                     <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
                         {visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name) ? (
                             <img 
