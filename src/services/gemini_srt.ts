@@ -61,8 +61,10 @@ export async function callAudioTranscriptionModel(
                 continue;
             }
 
-            if (is403 || is404) {
-                console.warn(`[SRT Generator] Model "${model}" hit ${is403 ? '403 Permission Denied' : '404 Not Found'}. Trying fallback model...`);
+            const isInvalidArgument = err?.status === 400 || msg.includes('"code":400') || msg.includes('INVALID_ARGUMENT') || msg.includes('Request contains an invalid argument');
+            if (is403 || is404 || isInvalidArgument) {
+                const reason = is403 ? '403 Permission Denied' : is404 ? '404 Model Not Found' : '400 INVALID_ARGUMENT (model/media request compatibility)';
+                console.warn(`[SRT Generator] Model "${model}" failed with ${reason}. Trying fallback model...`, err);
                 continue;
             }
             throw err;
@@ -720,8 +722,12 @@ async function generateChunkedSRT(
         const inferredMimeTypes: Record<string, string> = {
             mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
             webm: 'video/webm', ogv: 'video/ogg', mkv: 'video/x-matroska',
-            avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg',
-            '3gp': 'video/3gpp', ts: 'video/mp2t',
+            avi: 'video/x-msvideo', flv: 'video/x-flv', wmv: 'video/x-ms-wmv',
+            mpeg: 'video/mpeg', mpg: 'video/mpeg', mpe: 'video/mpeg',
+            '3gp': 'video/3gpp', '3g2': 'video/3gpp2', ts: 'video/mp2t',
+            m2ts: 'video/mp2t', mts: 'video/mp2t', mxf: 'application/mxf',
+            vob: 'video/mpeg', rm: 'application/vnd.rn-realmedia',
+            rmvb: 'application/vnd.rn-realmedia-vbr', divx: 'video/divx', f4v: 'video/mp4', asf: 'video/x-ms-asf',
             mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
             wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg',
             flac: 'audio/flac', aiff: 'audio/aiff',
@@ -733,7 +739,7 @@ async function generateChunkedSRT(
         } else if (genericMimeType) {
             safeMimeType = 'audio/mpeg';
         }
-        const isVideoSource = safeMimeType.startsWith('video/') || /\\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
+        const isVideoSource = safeMimeType.startsWith('video/') || /\\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts|mxf|vob|rm|rmvb|divx|f4v|asf)$/i.test(lowerName);
         const isVideo = isVideoSource && opts.processingMode === 'video_audio';
         return await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, apiKey);
     }
