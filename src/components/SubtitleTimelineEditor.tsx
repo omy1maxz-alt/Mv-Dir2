@@ -984,15 +984,71 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     useEffect(() => {
         if (effectiveYoutubeUrl) {
             setMediaUrl(effectiveYoutubeUrl);
-        } else if (effectiveAudioFile) {
-            // Use the selected File directly. Preserve the original, previously working
-            // media URL path rather than wrapping the file in a replacement Blob.
-            const url = URL.createObjectURL(effectiveAudioFile);
-            setMediaUrl(url);
-            return () => URL.revokeObjectURL(url);
-        } else {
-            setMediaUrl(null);
+            setMediaPlaybackError(null);
+            return;
         }
+
+        if (!effectiveAudioFile) {
+            setMediaUrl(null);
+            setMediaPlaybackError(null);
+            return;
+        }
+
+        // Android file pickers and IndexedDB restores can label video files as
+        // application/octet-stream (or leave the MIME type empty). Some WebViews then
+        // refuse to play the object URL. Correct the container MIME metadata only;
+        // the original media bytes and the single video+audio source remain unchanged.
+        const extension = effectiveAudioFile.name.toLowerCase().split('.').pop() || '';
+        const extensionMimeTypes: Record<string, string> = {
+            mp4: 'video/mp4',
+            m4v: 'video/mp4',
+            mov: 'video/quicktime',
+            webm: 'video/webm',
+            ogv: 'video/ogg',
+            ogm: 'video/ogg',
+            mkv: 'video/x-matroska',
+            avi: 'video/x-msvideo',
+            flv: 'video/x-flv',
+            wmv: 'video/x-ms-wmv',
+            mpeg: 'video/mpeg',
+            mpg: 'video/mpeg',
+            mpe: 'video/mpeg',
+            m2v: 'video/mpeg',
+            '3gp': 'video/3gpp',
+            '3g2': 'video/3gpp2',
+            ts: 'video/mp2t',
+            mts: 'video/mp2t',
+            m2ts: 'video/mp2t',
+            mxf: 'application/mxf',
+            vob: 'video/dvd',
+            f4v: 'video/mp4',
+            asf: 'video/x-ms-asf',
+            divx: 'video/divx',
+            mp3: 'audio/mpeg',
+            m4a: 'audio/mp4',
+            aac: 'audio/aac',
+            wav: 'audio/wav',
+            ogg: 'audio/ogg',
+            opus: 'audio/ogg',
+            flac: 'audio/flac',
+            aiff: 'audio/aiff',
+        };
+        const inferredMimeType = extensionMimeTypes[extension];
+        const originalMimeType = (effectiveAudioFile.type || '').toLowerCase();
+        const needsMimeCorrection =
+            Boolean(inferredMimeType) &&
+            (!originalMimeType ||
+                originalMimeType === 'application/octet-stream' ||
+                originalMimeType === 'binary/octet-stream' ||
+                (isVideoFile(effectiveAudioFile) && !originalMimeType.startsWith('video/')) ||
+                (isAudioFile(effectiveAudioFile) && !originalMimeType.startsWith('audio/')));
+        const playableBlob = needsMimeCorrection
+            ? new Blob([effectiveAudioFile], { type: inferredMimeType })
+            : effectiveAudioFile;
+        const url = URL.createObjectURL(playableBlob);
+        setMediaUrl(url);
+        setMediaPlaybackError(null);
+        return () => URL.revokeObjectURL(url);
     }, [effectiveAudioFile, effectiveYoutubeUrl]);
 
     // Maintain visual media object URL lifecycle: automatically creates URL when file is set or restored, and cleans up
