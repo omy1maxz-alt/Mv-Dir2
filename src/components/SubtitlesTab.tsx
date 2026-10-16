@@ -142,9 +142,8 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
                 if (effectiveStoredFile) {
                     setAudioFile(effectiveStoredFile);
-                    // The saved primary media and View Media companion have independent roles.
-                    // Keep loading the companion record even when the primary source is a video.
-                    // The editor decides which preview to display based on the active source.
+                    // Keep the restored primary source intact. The timeline editor only uses
+                    // View Media as a companion when this source is audio-only.
                 }
 
                 // If media is an audio track (or empty), check if user had a companion video/image to match the view
@@ -181,8 +180,8 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
             setMediaSourceType('upload');
             if (isVideoFile(newFile)) {
                 setProcessingMode('video_audio');
-                // Do not delete the saved View Media companion. It is a separate reference
-                // and can be useful again when the user switches back to an audio source.
+                // View Media is retained in storage, but it must not replace or overlay
+                // the newly uploaded primary video in the timeline.
             } else if (isAudioFile(newFile)) {
                 setProcessingMode('audio');
             }
