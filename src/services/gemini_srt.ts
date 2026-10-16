@@ -691,8 +691,27 @@ async function generateChunkedSRT(
         duration = Math.min(totalDurationSec, audioBuffer.duration);
     } catch (decodeErr) {
         console.warn('[SRT Generator] decodeAudioData failed on media file (likely video container or unsupported codec). Falling back to direct single-pass transcription:', decodeErr);
-        let safeMimeType = audioFile.type || 'audio/mpeg';
-        const isVideo = safeMimeType.startsWith('video/') && opts.processingMode === 'video_audio';
+        let safeMimeType = audioFile.type || '';
+        const lowerName = (audioFile.name || '').toLowerCase();
+        const extension = lowerName.split('.').pop() || '';
+        const inferredMimeTypes: Record<string, string> = {
+            mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
+            webm: 'video/webm', ogv: 'video/ogg', mkv: 'video/x-matroska',
+            avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg',
+            '3gp': 'video/3gpp', ts: 'video/mp2t',
+            mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
+            wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg',
+            flac: 'audio/flac', aiff: 'audio/aiff',
+        };
+        const inferredMimeType = inferredMimeTypes[extension];
+        const genericMimeType = !safeMimeType || safeMimeType === 'application/octet-stream' || safeMimeType === 'binary/octet-stream';
+        if (inferredMimeType && (genericMimeType || (inferredMimeType.startsWith('video/') && !safeMimeType.startsWith('video/')))) {
+            safeMimeType = inferredMimeType;
+        } else if (genericMimeType) {
+            safeMimeType = 'audio/mpeg';
+        }
+        const isVideoSource = safeMimeType.startsWith('video/') || /\\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(lowerName);
+        const isVideo = isVideoSource && opts.processingMode === 'video_audio';
         return await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, apiKey);
     }
 
@@ -924,16 +943,24 @@ Output ONLY the raw SRT format.`;
         });
         if (onProgress) onProgress(50);
     } else if (audioFile) {
-        let safeMimeType = audioFile.type;
-        if (!safeMimeType || safeMimeType === 'application/octet-stream') {
-            const lowerName = (audioFile.name || '').toLowerCase();
-            if (lowerName.endsWith('.mp4')) safeMimeType = 'video/mp4';
-            else if (lowerName.endsWith('.webm')) safeMimeType = 'video/webm';
-            else if (lowerName.endsWith('.mov')) safeMimeType = 'video/quicktime';
-            else if (lowerName.endsWith('.wav')) safeMimeType = 'audio/wav';
-            else if (lowerName.endsWith('.ogg')) safeMimeType = 'audio/ogg';
-            else if (lowerName.endsWith('.flac')) safeMimeType = 'audio/flac';
-            else safeMimeType = 'audio/mpeg';
+        let safeMimeType = audioFile.type || '';
+        const lowerName = (audioFile.name || '').toLowerCase();
+        const extension = lowerName.split('.').pop() || '';
+        const inferredMimeTypes: Record<string, string> = {
+            mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
+            webm: 'video/webm', ogv: 'video/ogg', mkv: 'video/x-matroska',
+            avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg',
+            '3gp': 'video/3gpp', ts: 'video/mp2t',
+            mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
+            wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg',
+            flac: 'audio/flac', aiff: 'audio/aiff',
+        };
+        const inferredMimeType = inferredMimeTypes[extension];
+        const genericMimeType = !safeMimeType || safeMimeType === 'application/octet-stream' || safeMimeType === 'binary/octet-stream';
+        if (inferredMimeType && (genericMimeType || (inferredMimeType.startsWith('video/') && !safeMimeType.startsWith('video/')))) {
+            safeMimeType = inferredMimeType;
+        } else if (genericMimeType) {
+            safeMimeType = 'audio/mpeg';
         }
 
         const MAX_INLINE_SIZE = 15 * 1024 * 1024;
