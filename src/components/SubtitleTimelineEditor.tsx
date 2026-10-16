@@ -1947,6 +1947,10 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             return;
         }
 
+        if (isVideoFile(effectiveAudioFile)) {
+            setSnapNotification("Snap to Audio analysis is available for audio-only sources. The video's embedded audio remains available for listening and subtitle generation.");
+            return;
+        }
         let profile = audioProfile;
         if (!profile) {
             setIsAnalyzingAudio(true);
@@ -2000,6 +2004,10 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             return;
         }
 
+        if (isVideoFile(effectiveAudioFile)) {
+            setSnapNotification("Snap to Audio analysis is available for audio-only sources. The video's embedded audio remains available for listening and subtitle generation.");
+            return;
+        }
         let profile = audioProfile;
         if (!profile) {
             setIsAnalyzingAudio(true);
