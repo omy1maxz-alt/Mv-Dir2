@@ -1101,7 +1101,6 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                                     playsInline
                                                     preload="metadata"
                                                     className="w-full max-h-[42vh] rounded-lg bg-black object-contain"
-                                                    onError={() => setTinyFishCaptionStatus(null)}
                                                 />
                                             </div>
                                         )}
