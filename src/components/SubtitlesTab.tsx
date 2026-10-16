@@ -109,7 +109,20 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     });
     
     const [audioFile, setAudioFile] = useState<File | null>(null);
+    const [generatorPreviewUrl, setGeneratorPreviewUrl] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // The Max Generator view needs its own preview: the Timeline Editor player is not
+    // mounted while the Generator view is active. Keep this object URL scoped to the file.
+    useEffect(() => {
+        if (!audioFile || mediaSourceType !== 'upload' || !isVideoFile(audioFile)) {
+            setGeneratorPreviewUrl(null);
+            return;
+        }
+        const objectUrl = URL.createObjectURL(audioFile);
+        setGeneratorPreviewUrl(objectUrl);
+        return () => URL.revokeObjectURL(objectUrl);
+    }, [audioFile, mediaSourceType]);
 
     // Persist SRT content
     useEffect(() => {
@@ -1062,6 +1075,35 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                                 </div>
                                             )}
                                         </div>
+
+                                        {mediaSourceType === 'upload' && audioFile && isVideoFile(audioFile) && generatorPreviewUrl && (
+                                            <div className="mt-3 p-3 bg-black/40 border border-indigo-500/20 rounded-xl space-y-2">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="min-w-0">
+                                                        <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                                                            <Video className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                                            Primary Video Preview
+                                                        </div>
+                                                        <div className="text-[10px] text-white/50 truncate">{audioFile.name}</div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setActiveView('editor')}
+                                                        className="shrink-0 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[11px] font-bold text-white"
+                                                    >
+                                                        Open Timeline
+                                                    </button>
+                                                </div>
+                                                <video
+                                                    key={generatorPreviewUrl}
+                                                    src={generatorPreviewUrl}
+                                                    controls
+                                                    playsInline
+                                                    preload="metadata"
+                                                    className="w-full max-h-[42vh] rounded-lg bg-black object-contain"
+                                                />
+                                            </div>
+                                        )}
 
                                         {youtubeUrl ? (
                                             <div className="space-y-3 pt-2">
