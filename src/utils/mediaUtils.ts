@@ -10,7 +10,7 @@ export const isVideoFile = (file: File | null | undefined): boolean => {
   return (
     type.startsWith('video/') ||
     type.includes('video') ||
-    /\.(mp4|webm|mkv|mov|avi|flv|wmv|m4v|3gp|ogv|ts)$/i.test(name)
+    /\.(mp4|webm|mkv|mov|avi|flv|wmv|m4v|3gp|3g2|ogv|ogm|ts|mts|m2ts|mpeg|mpg|mpe|m2v|mxf|vob|f4v|asf|divx)$/i.test(name)
   );
 };
 
