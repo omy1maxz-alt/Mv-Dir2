@@ -786,10 +786,10 @@ async function generateSinglePassSRT(
         resumeTime
     } = opts;
     const processingMode = opts.processingMode || 'video_audio';
-    const isVideoSource = Boolean(audioFile && (
+    const isVideoSource = Boolean(youtubeUrl || (audioFile && (
         safeMimeType.startsWith('video/') ||
         /\.(mp4|m4v|mov|webm|ogv|mkv|avi|mpeg|mpg|3gp|ts)$/i.test(audioFile.name || '')
-    ));
+    )));
 
     let systemInstruction = `You are the AI VIDEO SUBTITLE ANALYSIS & PRECISION SYNC ENGINE.
 Your task is to transcribe and time-align the provided ${isVideo ? 'video' : 'audio soundtrack'} and generate an accurate, valid SRT file.
