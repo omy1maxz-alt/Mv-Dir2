@@ -171,6 +171,9 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     const [audioFile, setAudioFile] = useState<File | null>(null);
     const [generatorPreviewUrl, setGeneratorPreviewUrl] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // A delayed IndexedDB restore must never overwrite a file selected by the user
+    // after this component mounted.
+    const mediaSelectionVersion = useRef(0);
 
     // The Max Generator view needs its own preview: the Timeline Editor player is not
     // mounted while the Generator view is active. Keep this object URL scoped to the file.
@@ -204,11 +207,14 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     // Load persisted audio/video file and visual companion deterministically
     useEffect(() => {
         const loadAllMedia = async () => {
+            const selectionVersionAtStart = mediaSelectionVersion.current;
             try {
                 const storedFile = await get('mv_subtitles_media');
                 const effectiveStoredFile = await restorePersistedMedia(storedFile, 'uploaded_media.mp4');
 
-                if (effectiveStoredFile) {
+                // IndexedDB is asynchronous. If the user selected another file while
+                // restoration was pending, the user's current selection takes priority.
+                if (effectiveStoredFile && mediaSelectionVersion.current === selectionVersionAtStart) {
                     setAudioFile(effectiveStoredFile);
                     // Keep the restored primary source intact. The timeline editor only uses
                     // View Media as a companion when this source is audio-only.
@@ -242,6 +248,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
     // Persist audio/video file when it changes and keep visual companion in sync
     const updateAudioFile = async (newFile: File | null) => {
+        mediaSelectionVersion.current += 1;
         setAudioFile(newFile);
         if (newFile) {
             setMediaSourceType('upload');
@@ -1514,6 +1521,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 autoPlayTrigger={autoPlayYoutubeTrigger}
                                 onContentChange={setSrtContent}
                                 onMediaSwap={(newFile) => {
+                                    mediaSelectionVersion.current += 1;
                                     setMediaSourceType('upload');
                                     setAudioFile(newFile);
                                     if (onMediaSwap) onMediaSwap(newFile);
