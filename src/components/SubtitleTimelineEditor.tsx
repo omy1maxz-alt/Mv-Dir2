@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Upload, Download, Split, Copy, Trash2, Plus, Play, Pause, RotateCcw, RotateCw, ZoomIn, ZoomOut, Type, X, Edit2, Edit3, GripHorizontal, Camera, Settings, Maximize, Clock, ListTree, Scan, Move, Scissors, FilePlus, Undo, Redo, Lock, Unlock, AudioWaveform, Magnet, Wand2, Sparkles, Sliders, Tv, Check, ChevronLeft, ChevronRight, Languages, FileText, RefreshCw, ClipboardPaste, AlertTriangle, FastForward, Rewind, ArrowRight, Youtube, Link, ExternalLink, Film, Image as ImageIcon, Volume2, VolumeX } from 'lucide-react';
+import { Upload, Download, Split, Copy, Trash2, Plus, Play, Pause, RotateCcw, RotateCw, ZoomIn, ZoomOut, Type, X, Edit2, Edit3, GripHorizontal, Camera, Settings, Maximize, Clock, ListTree, Scan, Move, Scissors, FilePlus, Undo, Redo, Lock, Unlock, AudioWaveform, Magnet, Wand2, Sparkles, Sliders, Tv, Check, ChevronLeft, ChevronRight, Languages, FileText, RefreshCw, ClipboardPaste, AlertTriangle, FastForward, Rewind, ArrowRight, Youtube, Link, ExternalLink, Film, Image as ImageIcon, Volume2, VolumeX, FileAudio } from 'lucide-react';
 import { BulkTextToolsModal } from "./BulkTextToolsModal";
 import { ExportModal } from "./ExportModal";
 import { FrameTranslateModal } from "./FrameTranslateModal";
@@ -984,16 +984,22 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     useEffect(() => {
         if (effectiveYoutubeUrl) {
             setMediaUrl(effectiveYoutubeUrl);
-        } else if (effectiveAudioFile) {
             // Keep the original File URL when its MIME type is accurate. Some browsers and
             // Android pickers report video as application/octet-stream or audio/*; give those
-            // cases a corrected MIME hint so the browser chooses the video decoder.
-            const inferredMime = inferMediaMimeType(effectiveAudioFile);
-            const declaredMime = (effectiveAudioFile.type || '').toLowerCase().split(';', 1)[0].trim();
-            const needsMimeCorrection = Boolean(inferredMime && inferredMime.startsWith('video/') && declaredMime !== inferredMime);
-            const mediaForPlayback = needsMimeCorrection
-                ? new Blob([effectiveAudioFile], { type: inferredMime })
-                : effectiveAudioFile;
+            // cases a corrected MIME hint while preserving direct streaming capabilities.
+            let mediaForPlayback: Blob = effectiveAudioFile;
+            try {
+                const inferredMime = inferMediaMimeType(effectiveAudioFile);
+                const declaredMime = (effectiveAudioFile.type || '').toLowerCase().split(';', 1)[0].trim();
+                if (inferredMime && inferredMime.startsWith('video/') && declaredMime !== inferredMime) {
+                    mediaForPlayback = new File([effectiveAudioFile], effectiveAudioFile.name, {
+                        type: inferredMime,
+                        lastModified: effectiveAudioFile.lastModified || Date.now()
+                    });
+                }
+            } catch (_) {
+                mediaForPlayback = effectiveAudioFile;
+            }
             const url = URL.createObjectURL(mediaForPlayback);
             setMediaUrl(url);
             return () => URL.revokeObjectURL(url);
@@ -2887,7 +2893,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                     isPrimaryVideo ? (
                         <div className="w-full h-full relative flex items-center justify-center bg-black overflow-hidden">
                             <video
-                                key={mediaUrl || (effectiveAudioFile ? effectiveAudioFile.name + '-' + effectiveAudioFile.size + '-' + effectiveAudioFile.lastModified : 'primary-video')}
+                                key={effectiveAudioFile ? `${effectiveAudioFile.name}-${effectiveAudioFile.size}` : 'primary-video'}
                                 ref={mediaRef as React.RefObject<HTMLVideoElement>}
                                 src={mediaUrl || undefined}
                                 className="w-full h-full object-contain cursor-pointer"

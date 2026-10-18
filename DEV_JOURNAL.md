@@ -1,3 +1,15 @@
+### 220. Fix Timeline Editor Video Display, Stable Media Key, and TypeScript Resolution Errors (17 Oct 2026)
+- **Observed errors & root cause:**
+  1. Build / linter failed with `Cannot find name 'FileAudio'` in `SubtitleTimelineEditor.tsx`: `FileAudio` was used in the audio track placeholder UI but omitted from the `lucide-react` import list.
+  2. Linter failed with TS2367 in `SubtitlesTab.tsx`: an orphaned duplicate video preview block contained `mediaSourceType === 'upload'` inside a branch where `mediaSourceType` was strictly `'youtube'`.
+  3. Video not showing in Timeline Editor: `mediaUrl` was wrapping `effectiveAudioFile` in `new Blob([effectiveAudioFile], { type: inferredMime })` whenever declared MIME type didn't match inferred MIME type. This caused Chromium and Android WebView media decoders to fail byte-range streaming requests on large video files. Furthermore, the primary `<video>` element used `key={mediaUrl || ...}`, which forced React to destroy and remount the DOM video element whenever the object URL state transitioned from null to active, detaching refs and aborting playback.
+- **Fixes applied:**
+  1. Added `FileAudio` to named imports from `lucide-react` in `SubtitleTimelineEditor.tsx`.
+  2. Moved the Primary Video Preview component to the `mediaSourceType === 'upload'` branch beneath the media card in `SubtitlesTab.tsx`, and removed the orphaned duplicate from the YouTube section.
+  3. Replaced `new Blob` wrapping with direct streaming `File` preservation via `URL.createObjectURL(mediaForPlayback)` in `SubtitleTimelineEditor.tsx`.
+  4. Stabilized the primary `<video>` element `key` to `${effectiveAudioFile.name}-${effectiveAudioFile.size}`, preserving the DOM node and attached media ref across `mediaUrl` state changes.
+- **Verification:** Both `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) completed with 0 errors.
+
 ### 219. Keep Max Generator sources separate from the global Soundtrack player (16 Oct 2026)
 - **Observed cause of the popup:** `src/components/App.tsx` wired `SubtitlesTab.onMediaSwap` to assign every uploaded caption source to `projectData.soundtrackUrl`, and the floating Soundtrack panel was rendered regardless of active tab. Uploading a video in Max Generator therefore created a second global player labelled “Soundtrack” over the subtitle editor.
 - **Fix:** Subtitle-source swaps now stop competing background playback without replacing the project's soundtrack/playlist. The floating Soundtrack panel is not rendered while the active tab is `subtitles`. This leaves Max Generator/Timeline Editor responsible for previewing the selected source file, as appropriate.

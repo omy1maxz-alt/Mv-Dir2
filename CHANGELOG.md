@@ -1,6 +1,14 @@
 ## [Unreleased]
 
 ### Fixed
+- **Timeline Editor Video Display & Build Resolution**:
+  - Resolved `Cannot find name 'FileAudio'` in `SubtitleTimelineEditor.tsx` by adding `FileAudio` to named `lucide-react` imports.
+  - Resolved TS2367 type overlap error in `SubtitlesTab.tsx` by relocating the Primary Video Preview card under the local media card and removing the misplaced block from the YouTube section.
+  - Fixed video not showing in Timeline Editor by eliminating disruptive `new Blob` wrapping in favor of direct streaming via `URL.createObjectURL(mediaForPlayback)`, enabling browsers and mobile WebViews to stream byte ranges without decoder stalls.
+  - Stabilized primary `<video>` element `key` to prevent React from tearing down and remounting the video DOM element and detaching media references on object URL state updates.
+  - Reinforced clear media role separation: an uploaded video in the AI Generator serves as the unified video picture and audio dialogue source; companion "Match View" uploads are reserved for pairing with audio-only tracks in the Timeline Editor.
+
+### Fixed
 - **Max Generator primary-video playback and stale soundtrack preview**: Keep an uploaded video as one primary HTML video source (picture and embedded audio together) in the timeline editor. The View Media companion is only rendered for an audio-only primary source, so an old reference can no longer replace the uploaded video or make it appear as a separate soundtrack player. Uploading source media in Max Generator no longer overwrites the app-wide soundtrack or playlist, and the floating Soundtrack panel is hidden while the subtitle workspace is active. Timeline-selected media takes precedence over stale source props, while preserving the Local/YouTube workflow separation.
 
 ### Fixed

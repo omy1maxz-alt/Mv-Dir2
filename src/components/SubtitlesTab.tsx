@@ -798,46 +798,77 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                             </label>
                                         </div>
                                     ) : (
-                                        <div className="bg-[#111] border border-white/10 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                            <div className="flex items-center gap-4">
-                                                <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-indigo-500/20 text-indigo-400 shrink-0">
-                                                    {isVideoFile(audioFile) ? <Video className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
-                                                </div>
-                                                <div className="min-w-0">
-                                                    <h3 className="text-white font-medium max-w-[200px] sm:max-w-xs truncate">{audioFile.name}</h3>
-                                                    <div className="flex flex-col gap-0.5 mt-0.5">
-                                                        <div className="text-white/40 text-xs flex items-center gap-1.5 flex-wrap">
-                                                            <span className={isVideoFile(audioFile) ? "text-purple-300 font-semibold" : "text-indigo-300 font-semibold"}>
-                                                                {isVideoFile(audioFile) ? "Video File Linked (Video + Audio)" : "Audio Track Linked (Audio Only)"}
+                                        <div className="space-y-3">
+                                            <div className="bg-[#111] border border-white/10 p-4 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-indigo-500/20 text-indigo-400 shrink-0">
+                                                        {isVideoFile(audioFile) ? <Video className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h3 className="text-white font-medium max-w-[200px] sm:max-w-xs truncate">{audioFile.name}</h3>
+                                                        <div className="flex flex-col gap-0.5 mt-0.5">
+                                                            <div className="text-white/40 text-xs flex items-center gap-1.5 flex-wrap">
+                                                                <span className={isVideoFile(audioFile) ? "text-purple-300 font-semibold" : "text-indigo-300 font-semibold"}>
+                                                                    {isVideoFile(audioFile) ? "Video File Linked (Video + Audio)" : "Audio Track Linked (Audio Only)"}
+                                                                </span>
+                                                                <span>•</span>
+                                                                <span>{(audioFile.size / (1024 * 1024)).toFixed(1)} MB</span>
+                                                            </div>
+                                                            <span className="text-[11px] text-white/50">
+                                                                {isVideoFile(audioFile) 
+                                                                    ? "Contains both video picture and dialogue audio for transcription and timeline playback."
+                                                                    : "Soundtrack audio for AI subtitles. In Timeline Editor, you can use 'Match View' to pair any video or image preview."}
                                                             </span>
-                                                            <span>•</span>
-                                                            <span>{(audioFile.size / (1024 * 1024)).toFixed(1)} MB</span>
                                                         </div>
-                                                        <span className="text-[11px] text-white/50">
-                                                            {isVideoFile(audioFile) 
-                                                                ? "Contains both video picture and dialogue audio for transcription and timeline playback."
-                                                                : "Soundtrack audio for AI subtitles. In Timeline Editor, you can use 'Match View' to pair any video or image preview."}
-                                                        </span>
                                                     </div>
                                                 </div>
+                                                <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                                                    <button 
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setAutoPlayYoutubeTrigger(Date.now());
+                                                            setActiveView('editor');
+                                                        }}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition-colors cursor-pointer shadow-md"
+                                                        title="Open this video in the timeline editor and start playing"
+                                                    >
+                                                        <Play className="w-3.5 h-3.5 fill-white" />
+                                                        <span>Open & Play in Timeline</span>
+                                                    </button>
+                                                    <button onClick={() => updateAudioFile(null)} className="text-red-400 text-xs font-medium hover:underline px-2 py-1 cursor-pointer">
+                                                        Remove
+                                                    </button>
+                                                </div>
                                             </div>
-                                            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                                                <button 
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setAutoPlayYoutubeTrigger(Date.now());
-                                                        setActiveView('editor');
-                                                    }}
-                                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-xs font-bold text-white transition-colors cursor-pointer shadow-md"
-                                                    title="Open this video in the timeline editor and start playing"
-                                                >
-                                                    <Play className="w-3.5 h-3.5 fill-white" />
-                                                    <span>Open & Play in Timeline</span>
-                                                </button>
-                                                <button onClick={() => updateAudioFile(null)} className="text-red-400 text-xs font-medium hover:underline px-2 py-1 cursor-pointer">
-                                                    Remove
-                                                </button>
-                                            </div>
+
+                                            {isVideoFile(audioFile) && generatorPreviewUrl && (
+                                                <div className="p-3 bg-black/40 border border-indigo-500/20 rounded-xl space-y-2">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                                                                <Video className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                                                Primary Video Preview
+                                                            </div>
+                                                            <div className="text-[10px] text-white/50 truncate">{audioFile.name}</div>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setActiveView('editor')}
+                                                            className="shrink-0 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[11px] font-bold text-white cursor-pointer"
+                                                        >
+                                                            Open Timeline
+                                                        </button>
+                                                    </div>
+                                                    <video
+                                                        key={generatorPreviewUrl}
+                                                        src={generatorPreviewUrl}
+                                                        controls
+                                                        playsInline
+                                                        preload="metadata"
+                                                        className="w-full max-h-[42vh] rounded-lg bg-black object-contain"
+                                                    />
+                                                </div>
+                                            )}
                                         </div>
                                     )
                                 ) : (
@@ -1136,35 +1167,6 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                                 </div>
                                             )}
                                         </div>
-
-                                        {mediaSourceType === 'upload' && audioFile && isVideoFile(audioFile) && generatorPreviewUrl && (
-                                            <div className="mt-3 p-3 bg-black/40 border border-indigo-500/20 rounded-xl space-y-2">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="min-w-0">
-                                                        <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                                                            <Video className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                                                            Primary Video Preview
-                                                        </div>
-                                                        <div className="text-[10px] text-white/50 truncate">{audioFile.name}</div>
-                                                    </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setActiveView('editor')}
-                                                        className="shrink-0 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[11px] font-bold text-white"
-                                                    >
-                                                        Open Timeline
-                                                    </button>
-                                                </div>
-                                                <video
-                                                    key={generatorPreviewUrl}
-                                                    src={generatorPreviewUrl}
-                                                    controls
-                                                    playsInline
-                                                    preload="metadata"
-                                                    className="w-full max-h-[42vh] rounded-lg bg-black object-contain"
-                                                />
-                                            </div>
-                                        )}
 
                                         {youtubeUrl ? (
                                             <div className="space-y-3 pt-2">
