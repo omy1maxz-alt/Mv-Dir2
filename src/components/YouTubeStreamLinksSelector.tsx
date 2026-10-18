@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { 
   Play, Download, ExternalLink, Copy, Check, Subtitles, 
-  Music, Video, Radio, Sparkles, RefreshCw, AlertCircle, FileText, ArrowRight 
+  Music, Video, Radio, Sparkles, RefreshCw, FileText 
 } from 'lucide-react';
 import { 
   ExtractedMediaDetails, 
   StreamFormatItem, 
   SubtitleTrackInfo, 
   downloadDirectStreamToMediaFile, 
+  fetchNativeYouTubeSubtitlesContent,
   DownloadStreamProgress 
 } from '../services/youtube';
 
@@ -47,7 +48,7 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
 
     try {
       const isAudio = format.type === 'audio';
-      const ext = isAudio ? 'mp3' : 'mp4';
+      const ext = isAudio ? 'm4a' : 'mp4';
       const cleanTitle = (details.title || 'youtube_stream').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
       const filename = `${cleanTitle}_${format.quality || format.type}.${ext}`;
 
@@ -61,7 +62,7 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
       onSelectStreamFile(file);
     } catch (err: any) {
       console.error('Failed to download selected stream format:', err);
-      alert(`Could not directly ingest this stream link: ${err?.message || 'Upstream connection error'}. Please click the direct link or use one of the 1-click downloaders below.`);
+      alert(`Could not directly ingest this stream link: ${err?.message || 'Upstream connection error'}. You can click the Direct Save icon next to the stream or use one of the 1-click downloaders below.`);
     } finally {
       setDownloadingId(null);
       setDownloadProgress(null);
@@ -73,14 +74,14 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
     setImportingSubLang(sub.code);
 
     try {
-      const proxyUrl = `/api/youtube/subtitles?url=${encodeURIComponent(sub.url)}`;
-      const res = await fetch(proxyUrl);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const content = await res.text();
+      const content = await fetchNativeYouTubeSubtitlesContent(sub.url);
+      if (!content || !content.trim()) {
+        throw new Error('Empty caption response');
+      }
       onImportSubtitleText(content, sub.name);
     } catch (err) {
       console.error('Failed to import subtitle track:', err);
-      alert('Failed to fetch closed caption track directly. Please try a different track or manual download.');
+      alert('Failed to fetch closed caption track directly. Please try "Fetch Official CC" or "Generate YouTube SRT Subtitles".');
     } finally {
       setImportingSubLang(null);
     }
@@ -138,7 +139,7 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
       <div className="p-3 bg-indigo-950/30 border border-indigo-500/20 rounded-xl flex items-center gap-2.5 text-xs text-indigo-200">
         <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
         <span>
-          <strong>Select your preferred stream link below</strong> to ingest it into the timeline for Gemini multimodal analysis, or use the 1-click verified downloaders.
+          <strong>Select your preferred stream link below</strong> to ingest it into the timeline, download the media file directly, or import native Closed Captions.
         </span>
       </div>
 
@@ -183,18 +184,19 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
             <Radio className="w-4 h-4 text-emerald-400" />
             <span>Available Direct Stream Formats ({details.formats.length})</span>
           </h4>
-          <span className="text-[10px] text-white/40">Click any format to load & play</span>
+          <span className="text-[10px] text-white/40">Select to load into app or save file</span>
         </div>
 
         <div className="grid grid-cols-1 gap-2 max-h-72 overflow-y-auto pr-1">
           {details.formats.length === 0 ? (
             <div className="p-4 bg-white/5 rounded-xl text-center text-xs text-white/50">
-              No direct stream formats were returned by upstream. Use the 1-click downloaders below.
+              No direct stream formats were returned by upstream. You can still click "Generate YouTube SRT Subtitles" below (Gemini reads YouTube links directly) or use the 1-click downloaders.
             </div>
           ) : (
             details.formats.map((fmt) => {
               const isAudio = fmt.type === 'audio';
               const isDownloading = downloadingId === fmt.id;
+              const fullDownloadUrl = fmt.url.startsWith('/') ? `${window.location.origin}${fmt.url}` : fmt.url;
 
               return (
                 <div 
@@ -234,10 +236,23 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
                       Test Play
                     </button>
 
+                    {/* Direct Browser Download */}
+                    <a
+                      href={fullDownloadUrl}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs transition-colors flex items-center gap-1 px-2"
+                      title="Download this stream file directly"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span className="hidden md:inline text-[10px] font-bold">Save</span>
+                    </a>
+
                     {/* Copy Link */}
                     <button
                       type="button"
-                      onClick={() => handleCopy(fmt.id, fmt.url.startsWith('/') ? `${window.location.origin}${fmt.url}` : fmt.url)}
+                      onClick={() => handleCopy(fmt.id, fmt.directUrl || fullDownloadUrl)}
                       className="p-1.5 bg-white/5 hover:bg-white/15 text-white/60 hover:text-white rounded-lg text-xs transition-colors"
                       title="Copy stream URL"
                     >
@@ -313,7 +328,7 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
                       type="button"
                       onClick={() => handleImportCaption(sub)}
                       disabled={importingSubLang === sub.code}
-                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 text-amber-300 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1"
+                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 text-amber-300 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer"
                       title="Import into SRT subtitle timeline editor"
                     >
                       {importingSubLang === sub.code ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
@@ -321,13 +336,14 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
                     </button>
                   )}
                   <a
-                    href={sub.url}
+                    href={`/api/youtube/subtitles?url=${encodeURIComponent(sub.url)}&format=srt`}
+                    download={`${(details.title || 'subtitles').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30)}_${sub.code}.srt`}
                     target="_blank"
                     rel="noreferrer"
                     className="p-1 bg-white/5 hover:bg-white/15 text-white/60 hover:text-white rounded-lg"
-                    title="Open raw caption track"
+                    title="Download caption track as .SRT"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
+                    <Download className="w-3.5 h-3.5" />
                   </a>
                 </div>
               </div>
@@ -381,7 +397,7 @@ export const YouTubeStreamLinksSelector: React.FC<YouTubeStreamLinksSelectorProp
               className="p-2.5 bg-white/5 hover:bg-emerald-600/20 border border-white/10 hover:border-emerald-500/40 rounded-xl transition-all flex items-center justify-between group"
             >
               <div>
-                <div className="text-xs font-bold text-white group-hover:text-emerald-300">Y2Mate</div>
+                <div className="text-xs font-bold text-white group-hover:text-emerald-300">SOSYouTube / Y2Mate</div>
                 <div className="text-[10px] text-white/40">Fast audio & video</div>
               </div>
               <ExternalLink className="w-3.5 h-3.5 text-white/30 group-hover:text-emerald-400 shrink-0" />

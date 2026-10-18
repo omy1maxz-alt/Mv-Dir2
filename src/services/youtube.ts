@@ -1,10 +1,23 @@
 /**
  * YouTube Media & Subtitle Extraction Service
- * 
+ *
  * Routes stream resolution, binary streaming, and caption fetching through
- * the same-origin backend proxy (/api/youtube/*) with complete stream format
- * link inspection and 1-click selection.
+ * the same-origin backend proxy (/api/youtube/*) with automatic client-side
+ * fallback to public CORS-enabled Piped/Invidious mirrors if the server IP is throttled.
  */
+
+import {
+  YouTubeCaptionResponse,
+  parseRawCaptionToSegments,
+  segmentsToSrt,
+} from './youtubeCaptionService';
+import {
+  auth,
+  signInWithGoogle,
+  signOutGoogle,
+  listenAuthState,
+  getCachedAccessToken,
+} from './auth';
 
 export interface YouTubeValidationResult {
   url: string;
@@ -28,6 +41,7 @@ export interface StreamFormatItem {
   bitrate?: number;
   mimeType: string;
   url: string;
+  directUrl?: string;
   isProxyUrl?: boolean;
 }
 
@@ -45,7 +59,7 @@ export enum MediaKind {
   DASH_MANIFEST = 'DASH_MANIFEST',
   PROGRESSIVE = 'PROGRESSIVE',
   SEGMENT = 'SEGMENT',
-  UNKNOWN = 'UNKNOWN'
+  UNKNOWN = 'UNKNOWN',
 }
 
 export interface ExtractedMediaDetails {
@@ -78,6 +92,21 @@ export interface DownloadStreamProgress {
   message: string;
 }
 
+const CLIENT_PIPED_MIRRORS = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.tokhmi.xyz',
+  'https://pipedapi.moomoo.me',
+  'https://pipedapi.syncpundit.io',
+  'https://pipedapi.adminforge.de',
+];
+
+const CLIENT_INVIDIOUS_MIRRORS = [
+  'https://inv.nadeko.net',
+  'https://invidious.nerdvpn.de',
+  'https://invidious.jing.rocks',
+  'https://invidious.privacyredirect.com',
+];
+
 export function normalizeYoutubeUrl(inputUrl: string): YouTubeValidationResult {
   if (!inputUrl) {
     return { url: '', videoId: null, isValid: false };
@@ -85,7 +114,6 @@ export function normalizeYoutubeUrl(inputUrl: string): YouTubeValidationResult {
 
   const clean = inputUrl.trim();
 
-  // If input is an 11-char ID
   if (/^[a-zA-Z0-9_-]{11}$/.test(clean)) {
     return {
       url: `https://www.youtube.com/watch?v=${clean}`,
@@ -107,6 +135,8 @@ export function normalizeYoutubeUrl(inputUrl: string): YouTubeValidationResult {
         videoId = urlObj.pathname.split('/v/')[1]?.split('/')[0]?.split('?')[0] || null;
       } else if (urlObj.pathname.startsWith('/shorts/')) {
         videoId = urlObj.pathname.split('/shorts/')[1]?.split('/')[0]?.split('?')[0] || null;
+      } else if (urlObj.pathname.startsWith('/live/')) {
+        videoId = urlObj.pathname.split('/live/')[1]?.split('/')[0]?.split('?')[0] || null;
       }
     } else if (urlObj.hostname.includes('youtu.be')) {
       videoId = urlObj.pathname.slice(1).split('/')[0]?.split('?')[0] || null;
@@ -123,9 +153,19 @@ export function normalizeYoutubeUrl(inputUrl: string): YouTubeValidationResult {
     return {
       url: clean,
       videoId: null,
-      isValid: true,
+      isValid: false,
     };
   } catch {
+    const regexMatch = clean.match(
+      /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts|live)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i
+    );
+    if (regexMatch && regexMatch[1]) {
+      return {
+        url: `https://www.youtube.com/watch?v=${regexMatch[1]}`,
+        videoId: regexMatch[1],
+        isValid: true,
+      };
+    }
     return { url: clean, videoId: null, isValid: false };
   }
 }
@@ -136,28 +176,42 @@ export function normalizeYoutubeUrl(inputUrl: string): YouTubeValidationResult {
 export async function downloadDirectStreamToMediaFile(
   streamUrl: string,
   suggestedFilename: string,
-  mimeType = 'audio/mpeg',
+  mimeType = 'audio/mp4',
   onProgress?: (progress: DownloadStreamProgress) => void
 ): Promise<File> {
   onProgress?.({
     stage: 'downloading',
     percent: 25,
-    message: `Fetching stream: ${suggestedFilename}...`
+    message: `Fetching stream: ${suggestedFilename}...`,
   });
 
-  // If it's a relative URL or direct backend stream
-  const targetUrl = streamUrl.startsWith('http') && !streamUrl.includes(window.location.host)
-    ? `/api/youtube/stream?url=${encodeURIComponent(streamUrl)}`
-    : streamUrl;
+  const targetUrl =
+    streamUrl.startsWith('http') && !streamUrl.includes(window.location.host)
+      ? `/api/youtube/stream?url=${encodeURIComponent(streamUrl)}`
+      : streamUrl;
 
   const response = await fetch(targetUrl);
   if (!response.ok && response.status !== 206) {
-    throw new Error(`Failed to stream from ${targetUrl} (HTTP ${response.status})`);
+    let errText = `HTTP ${response.status}`;
+    try {
+      const errJson = await response.json();
+      if (errJson?.error) errText = errJson.error;
+    } catch {
+      // ignore
+    }
+    throw new Error(`Failed to stream media (${errText})`);
+  }
+
+  const contentType = response.headers.get('content-type') || mimeType;
+  if (contentType.includes('text/html') || contentType.includes('application/json')) {
+    const bodyText = await response.text();
+    throw new Error(
+      `Upstream returned non-media response (${contentType}): ${bodyText.slice(0, 120)}`
+    );
   }
 
   const contentLength = response.headers.get('content-length');
   const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-  const contentType = response.headers.get('content-type') || mimeType;
 
   let blob: Blob;
 
@@ -176,7 +230,10 @@ export async function downloadDirectStreamToMediaFile(
         onProgress?.({
           stage: 'downloading',
           percent: pct,
-          message: `Streaming media (${Math.round(receivedBytes / (1024 * 1024))}MB / ${Math.round(totalBytes / (1024 * 1024))}MB)...`
+          message: `Streaming media (${(receivedBytes / (1024 * 1024)).toFixed(1)}MB / ${(
+            totalBytes /
+            (1024 * 1024)
+          ).toFixed(1)}MB)...`,
         });
       }
     }
@@ -186,15 +243,19 @@ export async function downloadDirectStreamToMediaFile(
     blob = await response.blob();
   }
 
+  if (blob.size < 1024) {
+    throw new Error('Downloaded stream was empty or truncated (< 1 KB).');
+  }
+
   onProgress?.({
     stage: 'done',
     percent: 100,
-    message: 'Stream conversion complete!'
+    message: 'Stream conversion complete!',
   });
 
   return new File([blob], suggestedFilename, {
     type: contentType,
-    lastModified: Date.now()
+    lastModified: Date.now(),
   });
 }
 
@@ -211,47 +272,72 @@ export async function downloadYouTubeMediaStream(
     throw new Error('Please provide a valid YouTube URL.');
   }
 
-  const cleanUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
   const isAudioOnly = quality === 'audio';
 
   onProgress?.({
     stage: 'resolving',
     percent: 10,
-    message: 'Resolving available stream links via backend API...'
+    message: 'Resolving available stream links...',
   });
 
-  const backendStreamUrl = `/api/youtube/stream?videoId=${encodeURIComponent(videoId || '')}&url=${encodeURIComponent(cleanUrl)}&quality=${quality}`;
+  // Note: Do NOT pass the YouTube watch page HTML URL in `url=`; `url=` is reserved for direct media stream URLs!
+  const backendStreamUrl = `/api/youtube/stream?videoId=${encodeURIComponent(
+    videoId || ''
+  )}&quality=${encodeURIComponent(quality)}`;
 
   try {
-    const ext = isAudioOnly ? 'mp3' : 'mp4';
+    const ext = isAudioOnly ? 'm4a' : 'mp4';
     const filename = `youtube_${videoId || 'media'}.${ext}`;
     return await downloadDirectStreamToMediaFile(
       backendStreamUrl,
       filename,
-      isAudioOnly ? 'audio/mpeg' : 'video/mp4',
+      isAudioOnly ? 'audio/mp4' : 'video/mp4',
       onProgress
     );
   } catch (err: any) {
+    // Fallback: Try client-side extraction from browser IP if backend IP was throttled
+    if (videoId) {
+      try {
+        const details = await extractYouTubeMediaDetailsClientSide(videoId);
+        const candidateUrl = isAudioOnly
+          ? details.audioOnlyUrl || details.combinedVideoUrl
+          : details.combinedVideoUrl || details.videoOnlyUrl;
+        if (candidateUrl) {
+          const ext = isAudioOnly ? 'm4a' : 'mp4';
+          return await downloadDirectStreamToMediaFile(
+            candidateUrl,
+            `youtube_${videoId}.${ext}`,
+            isAudioOnly ? 'audio/mp4' : 'video/mp4',
+            onProgress
+          );
+        }
+      } catch {
+        // ignore client fallback error
+      }
+    }
+
     const error: any = new Error(
-      err?.message || "Automated stream download was throttled. You can inspect all stream links and select the correct one directly."
+      err?.message ||
+        'Automated stream download was throttled. You can inspect all stream links and select the desired format directly.'
     );
     error.code = 'YOUTUBE_STREAM_THROTTLED';
     error.videoId = videoId;
-    error.cleanUrl = cleanUrl;
+    error.cleanUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
     throw error;
   }
 }
 
-/**
- * Classifies media format based on stream URLs.
- */
 export function classifyMedia(url: string, mimeType?: string): MediaKind {
   if (!url) return MediaKind.UNKNOWN;
   const cleanUrl = url.toLowerCase().split('?')[0];
 
   const isHls = cleanUrl.endsWith('.m3u8') || (mimeType && mimeType.includes('mpegurl'));
   const isDash = cleanUrl.endsWith('.mpd') || (mimeType && mimeType.includes('dash+xml'));
-  const isProgressive = cleanUrl.endsWith('.mp4') || cleanUrl.endsWith('.m4a') || cleanUrl.endsWith('.mp3') || cleanUrl.endsWith('.webm');
+  const isProgressive =
+    cleanUrl.endsWith('.mp4') ||
+    cleanUrl.endsWith('.m4a') ||
+    cleanUrl.endsWith('.mp3') ||
+    cleanUrl.endsWith('.webm');
   const isSegment =
     cleanUrl.endsWith('.ts') ||
     cleanUrl.endsWith('.m4s') ||
@@ -266,7 +352,194 @@ export function classifyMedia(url: string, mimeType?: string): MediaKind {
 }
 
 /**
- * Extracts YouTube media details, all selectable stream formats, and native subtitle tracks via the backend API.
+ * Client-side fallback extractor using CORS-friendly Piped & Invidious instances
+ * directly from the user's browser IP when the cloud server IP is restricted.
+ */
+async function extractYouTubeMediaDetailsClientSide(
+  videoId: string
+): Promise<Partial<ExtractedMediaDetails>> {
+  const formats: StreamFormatItem[] = [];
+  const subtitles: SubtitleTrackInfo[] = [];
+  let title = '';
+  let duration = 0;
+  let thumbnailUrl = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  let dashUrl: string | null = null;
+  let hlsUrl: string | null = null;
+  let combinedVideoUrl: string | null = null;
+  let combinedResolution: string | null = null;
+  let audioOnlyUrl: string | null = null;
+  let audioBitrate: number | null = null;
+  let videoOnlyUrl: string | null = null;
+  let videoOnlyResolution: string | null = null;
+
+  const tasks: Promise<void>[] = [];
+
+  for (const piped of CLIENT_PIPED_MIRRORS) {
+    tasks.push(
+      (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4500);
+        try {
+          const res = await fetch(`${piped}/streams/${videoId}`, { signal: controller.signal });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.title && !title) title = data.title;
+          if (data.duration && !duration) duration = data.duration;
+          if (data.thumbnailUrl) thumbnailUrl = data.thumbnailUrl;
+          if (data.hls && !hlsUrl) hlsUrl = data.hls;
+          if (data.dash && !dashUrl) dashUrl = data.dash;
+
+          if (Array.isArray(data.subtitles)) {
+            for (const s of data.subtitles) {
+              if (s?.url && !subtitles.some((ex) => ex.code === s.code)) {
+                subtitles.push({
+                  name: s.name || s.code || 'Captions',
+                  code: s.code || 'en',
+                  url: s.url,
+                  isAutoGenerated: Boolean(s.autoGenerated),
+                  mimeType: s.mimeType || 'text/vtt',
+                });
+              }
+            }
+          }
+
+          if (Array.isArray(data.audioStreams)) {
+            for (const a of data.audioStreams.slice(0, 3)) {
+              if (!a?.url) continue;
+              const kbps = a.bitrate ? Math.round(a.bitrate / 1000) : 128;
+              if (!audioOnlyUrl) {
+                audioOnlyUrl = a.url;
+                audioBitrate = a.bitrate || 128000;
+              }
+              if (!formats.some((f) => f.quality === `${kbps}kbps` && f.type === 'audio')) {
+                formats.push({
+                  id: `client-piped-aud-${kbps}`,
+                  type: 'audio',
+                  label: `Audio Stream (${a.format || 'M4A'} • ${kbps} kbps)`,
+                  quality: `${kbps}kbps`,
+                  bitrate: a.bitrate,
+                  mimeType: a.mimeType || 'audio/mp4',
+                  url: `/api/youtube/stream?videoId=${encodeURIComponent(videoId)}&quality=audio&url=${encodeURIComponent(a.url)}`,
+                  directUrl: a.url,
+                  isProxyUrl: true,
+                });
+              }
+            }
+          }
+
+          if (Array.isArray(data.videoStreams)) {
+            for (const v of data.videoStreams) {
+              if (!v?.url || v.videoOnly !== false) continue;
+              const q = v.quality || '720p';
+              if (!combinedVideoUrl) {
+                combinedVideoUrl = v.url;
+                combinedResolution = q;
+              }
+              if (!formats.some((f) => f.quality === q && f.type === 'combined')) {
+                formats.push({
+                  id: `client-piped-vid-${q}`,
+                  type: 'combined',
+                  label: `MP4 Video + Audio (${q})`,
+                  quality: q,
+                  mimeType: v.mimeType || 'video/mp4',
+                  url: `/api/youtube/stream?videoId=${encodeURIComponent(videoId)}&quality=${encodeURIComponent(q)}&url=${encodeURIComponent(v.url)}`,
+                  directUrl: v.url,
+                  isProxyUrl: true,
+                });
+              }
+            }
+          }
+        } catch {
+          // ignore
+        } finally {
+          clearTimeout(timer);
+        }
+      })()
+    );
+  }
+
+  for (const inv of CLIENT_INVIDIOUS_MIRRORS) {
+    tasks.push(
+      (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4500);
+        try {
+          const res = await fetch(`${inv}/api/v1/videos/${videoId}`, { signal: controller.signal });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.title && !title) title = data.title;
+          if (data.lengthSeconds && !duration) duration = data.lengthSeconds;
+
+          if (Array.isArray(data.captions)) {
+            for (const c of data.captions) {
+              if (!c?.url) continue;
+              const fullUrl = c.url.startsWith('http') ? c.url : `${inv}${c.url}`;
+              const code = c.language_code || c.languageCode || 'en';
+              if (!subtitles.some((ex) => ex.code === code)) {
+                subtitles.push({
+                  name: c.label || code,
+                  code,
+                  url: fullUrl,
+                  isAutoGenerated: Boolean(String(c.label || '').toLowerCase().includes('auto')),
+                  mimeType: 'text/vtt',
+                });
+              }
+            }
+          }
+
+          if (Array.isArray(data.formatStreams)) {
+            for (const f of data.formatStreams) {
+              if (!f?.url) continue;
+              const q = f.qualityLabel || '360p';
+              const localStreamUrl = `${inv}/latest_version?id=${videoId}&itag=${f.itag || 18}&local=true`;
+              if (!combinedVideoUrl) {
+                combinedVideoUrl = localStreamUrl;
+                combinedResolution = q;
+              }
+              if (!formats.some((ex) => ex.quality === q && ex.type === 'combined')) {
+                formats.push({
+                  id: `client-inv-vid-${q}`,
+                  type: 'combined',
+                  label: `MP4 Video + Audio (${q} • Mirror)`,
+                  quality: q,
+                  mimeType: f.type || 'video/mp4',
+                  url: `/api/youtube/stream?videoId=${encodeURIComponent(videoId)}&quality=${encodeURIComponent(q)}&url=${encodeURIComponent(localStreamUrl)}`,
+                  directUrl: localStreamUrl,
+                  isProxyUrl: true,
+                });
+              }
+            }
+          }
+        } catch {
+          // ignore
+        } finally {
+          clearTimeout(timer);
+        }
+      })()
+    );
+  }
+
+  await Promise.allSettled(tasks);
+
+  return {
+    title,
+    duration,
+    thumbnailUrl,
+    dashUrl,
+    hlsUrl,
+    combinedVideoUrl,
+    combinedResolution,
+    videoOnlyUrl,
+    videoOnlyResolution,
+    audioOnlyUrl,
+    audioBitrate,
+    subtitles,
+    formats,
+  };
+}
+
+/**
+ * Extracts YouTube media details, all selectable stream formats, and native subtitle tracks.
  */
 export async function extractYouTubeMediaDetails(rawUrl: string): Promise<ExtractedMediaDetails> {
   const { videoId, url } = normalizeYoutubeUrl(rawUrl);
@@ -275,19 +548,45 @@ export async function extractYouTubeMediaDetails(rawUrl: string): Promise<Extrac
   }
 
   const cleanVideoId = videoId || 'unknown';
+  let data: any = {};
 
-  const backendRes = await fetch('/api/youtube/extract', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: rawUrl, videoId: cleanVideoId })
-  });
-
-  if (!backendRes.ok) {
-    const errorData = await backendRes.json().catch(() => ({}));
-    throw new Error(errorData?.error || 'Failed to extract video streams from backend resolver.');
+  try {
+    const backendRes = await fetch('/api/youtube/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: rawUrl, videoId: cleanVideoId }),
+    });
+    if (backendRes.ok) {
+      data = await backendRes.json();
+    }
+  } catch (err) {
+    console.warn('[YouTube Extract] Backend call failed, using client-side fallback:', err);
   }
 
-  const data = await backendRes.json();
+  // If backend returned no formats or no subtitles, supplement with client-side mirror lookup
+  if (
+    cleanVideoId !== 'unknown' &&
+    (!Array.isArray(data.formats) ||
+      data.formats.length === 0 ||
+      !Array.isArray(data.subtitles) ||
+      data.subtitles.length === 0)
+  ) {
+    const clientData = await extractYouTubeMediaDetailsClientSide(cleanVideoId);
+    if (!data.title || data.title === 'YouTube_Video') data.title = clientData.title || data.title;
+    if (!data.duration) data.duration = clientData.duration;
+    if (!data.dashUrl) data.dashUrl = clientData.dashUrl;
+    if (!data.hlsUrl) data.hlsUrl = clientData.hlsUrl;
+    if (!data.combinedStreamUrl) data.combinedStreamUrl = clientData.combinedVideoUrl;
+    if (!data.combinedQuality) data.combinedQuality = clientData.combinedResolution;
+    if (!data.bestAudioUrl) data.bestAudioUrl = clientData.audioOnlyUrl;
+    if (!data.audioBitrate) data.audioBitrate = clientData.audioBitrate;
+    if (!Array.isArray(data.formats) || data.formats.length === 0) {
+      data.formats = clientData.formats || [];
+    }
+    if (!Array.isArray(data.subtitles) || data.subtitles.length === 0) {
+      data.subtitles = clientData.subtitles || [];
+    }
+  }
 
   let priority: 'DASH' | 'HLS' | 'COMBINED_MP4' | 'SPLIT_STREAM' | 'NONE' = 'NONE';
   let mediaKind = MediaKind.UNKNOWN;
@@ -312,18 +611,18 @@ export async function extractYouTubeMediaDetails(rawUrl: string): Promise<Extrac
   }
 
   const defaultDirectLinks: DirectDownloaderLinks = {
-    cobalt: `https://cobalt.tools`,
+    cobalt: `https://cobalt.tools/#https://www.youtube.com/watch?v=${cleanVideoId}`,
     tenDownloader: `https://10downloader.com/download?v=https://www.youtube.com/watch?v=${cleanVideoId}`,
-    y2mate: `https://www.y2mate.com/youtube/${cleanVideoId}`,
+    y2mate: `https://www.sosyoutube.com/watch?v=${cleanVideoId}`,
     saveFrom: `https://en.savefrom.net/20/#url=https://www.youtube.com/watch?v=${cleanVideoId}`,
     piped: `https://piped.video/watch?v=${cleanVideoId}`,
-    invidious: `https://inv.nadeko.net/watch?v=${cleanVideoId}`
+    invidious: `https://inv.nadeko.net/watch?v=${cleanVideoId}`,
   };
 
   return {
     title: data.title || 'YouTube_Video',
     videoId: cleanVideoId,
-    thumbnailUrl: data.thumbnailUrl,
+    thumbnailUrl: data.thumbnailUrl || `https://i.ytimg.com/vi/${cleanVideoId}/hqdefault.jpg`,
     duration: data.duration,
     dashUrl: data.dashUrl || null,
     hlsUrl: data.hlsUrl || null,
@@ -339,16 +638,10 @@ export async function extractYouTubeMediaDetails(rawUrl: string): Promise<Extrac
     selectedPriority: priority,
     activeStreamUrl,
     mediaKind,
-    error: data.error
+    error: data.error,
   };
 }
 
-import { YouTubeCaptionResponse } from './youtubeCaptionService';
-
-/**
- * Fetches structured YouTube captions via the backend caption retrieval service.
- */
-/** Discovers native timed-caption tracks without waiting for any stream/manifest provider. */
 export interface YouTubeManifestDetails {
   success: boolean;
   videoId: string;
@@ -360,36 +653,55 @@ export interface YouTubeManifestDetails {
   message?: string;
 }
 
-/** Retrieves HLS/DASH manifest URLs through the dedicated backend route, without the legacy stream resolver. */
-export async function fetchYouTubeManifestDetails(rawUrlOrVideoId: string): Promise<YouTubeManifestDetails> {
+export async function fetchYouTubeManifestDetails(
+  rawUrlOrVideoId: string
+): Promise<YouTubeManifestDetails> {
   const normalized = normalizeYoutubeUrl(rawUrlOrVideoId);
   const videoId = normalized.videoId || rawUrlOrVideoId.trim();
   if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
-    return { success: false, videoId, hlsUrl: null, dashUrl: null, message: 'A valid YouTube URL or video ID is required.' };
-  }
-
-  const response = await fetch(`/api/youtube/manifests?videoId=${encodeURIComponent(videoId)}`, {
-    cache: 'no-store'
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.success) {
     return {
       success: false,
       videoId,
       hlsUrl: null,
       dashUrl: null,
-      message: data.message || data.error || `Manifest lookup failed (HTTP ${response.status}).`
+      message: 'A valid YouTube URL or video ID is required.',
     };
   }
+
+  try {
+    const response = await fetch(`/api/youtube/manifests?videoId=${encodeURIComponent(videoId)}`, {
+      cache: 'no-store',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.success) {
+      return {
+        success: true,
+        videoId,
+        title: data.title,
+        duration: Number(data.duration) || 0,
+        thumbnailUrl: data.thumbnailUrl,
+        hlsUrl: typeof data.hlsUrl === 'string' ? data.hlsUrl : null,
+        dashUrl: typeof data.dashUrl === 'string' ? data.dashUrl : null,
+        message: data.message || '',
+      };
+    }
+  } catch {
+    // fallback to client side
+  }
+
+  const clientData = await extractYouTubeMediaDetailsClientSide(videoId);
   return {
     success: true,
     videoId,
-    title: data.title,
-    duration: Number(data.duration) || 0,
-    thumbnailUrl: data.thumbnailUrl,
-    hlsUrl: typeof data.hlsUrl === 'string' ? data.hlsUrl : null,
-    dashUrl: typeof data.dashUrl === 'string' ? data.dashUrl : null,
-    message: data.message || ''
+    title: clientData.title || 'YouTube Video',
+    duration: clientData.duration || 0,
+    thumbnailUrl: clientData.thumbnailUrl,
+    hlsUrl: clientData.hlsUrl || null,
+    dashUrl: clientData.dashUrl || null,
+    message:
+      clientData.hlsUrl || clientData.dashUrl
+        ? 'Manifest URLs discovered via client mirror.'
+        : 'No HLS/DASH manifest URL was exposed for this video.',
   };
 }
 
@@ -405,29 +717,45 @@ export async function fetchYouTubeCaptionTracks(rawUrlOrVideoId: string): Promis
   const normalized = normalizeYoutubeUrl(rawUrlOrVideoId);
   const videoId = normalized.videoId || rawUrlOrVideoId.trim();
   if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
-    return { success: false, videoId, tracks: [], message: 'A valid YouTube URL or video ID is required.' };
-  }
-
-  const response = await fetch(`/api/youtube/caption-tracks?videoId=${encodeURIComponent(videoId)}`, {
-    cache: 'no-store'
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.success || !Array.isArray(data.tracks)) {
     return {
       success: false,
       videoId,
       tracks: [],
-      message: data.message || data.error || `Caption track lookup failed (HTTP ${response.status}).`
+      message: 'A valid YouTube URL or video ID is required.',
     };
   }
+
+  try {
+    const response = await fetch(
+      `/api/youtube/caption-tracks?videoId=${encodeURIComponent(videoId)}`,
+      { cache: 'no-store' }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
+      return {
+        success: true,
+        videoId,
+        title: data.title,
+        duration: data.duration,
+        thumbnailUrl: data.thumbnailUrl,
+        tracks: data.tracks,
+      };
+    }
+  } catch {
+    // fallback to client side
+  }
+
+  const clientData = await extractYouTubeMediaDetailsClientSide(videoId);
   return {
     success: true,
     videoId,
-    title: data.title,
-    duration: data.duration,
-    thumbnailUrl: data.thumbnailUrl,
-    tracks: data.tracks,
-    message: data.tracks.length ? undefined : 'No native YouTube caption tracks were found for this video.'
+    title: clientData.title,
+    duration: clientData.duration,
+    thumbnailUrl: clientData.thumbnailUrl,
+    tracks: clientData.subtitles || [],
+    message: clientData.subtitles?.length
+      ? undefined
+      : 'No native YouTube caption tracks were found for this video.',
   };
 }
 
@@ -436,40 +764,127 @@ export async function fetchYouTubeCaptions(
   targetLang?: string
 ): Promise<YouTubeCaptionResponse> {
   const { videoId, url } = normalizeYoutubeUrl(rawUrlOrVideoId);
-  const cleanVideoId = videoId || rawUrlOrVideoId;
+  const cleanVideoId = videoId || rawUrlOrVideoId.trim();
 
-  const res = await fetch(`/api/youtube/captions?videoId=${encodeURIComponent(cleanVideoId)}&url=${encodeURIComponent(url || '')}&targetLang=${encodeURIComponent(targetLang || '')}`);
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    return {
-      success: false,
-      videoId: cleanVideoId,
-      source: 'unavailable',
-      requiresTranscription: true,
-      reason: errorData?.reason || 'SERVER_RETRIEVAL_FAILED',
-      message: errorData?.message || `Server returned HTTP ${res.status}`
-    };
+  try {
+    const res = await fetch(
+      `/api/youtube/captions?videoId=${encodeURIComponent(
+        cleanVideoId
+      )}&url=${encodeURIComponent(url || '')}&targetLang=${encodeURIComponent(targetLang || '')}`
+    );
+    if (res.ok) {
+      const data: YouTubeCaptionResponse = await res.json();
+      if (data.success && data.source === 'youtube_cc' && data.segments && data.segments.length > 0) {
+        return data;
+      }
+      // Try client-side caption fallback if server IP couldn't fetch captions
+      const clientFallback = await fetchYouTubeCaptionsClientSide(cleanVideoId, targetLang);
+      if (clientFallback) return clientFallback;
+      return data;
+    }
+  } catch {
+    // Try client-side fallback
   }
 
-  return res.json();
+  const clientFallback = await fetchYouTubeCaptionsClientSide(cleanVideoId, targetLang);
+  if (clientFallback) return clientFallback;
+
+  return {
+    success: false,
+    videoId: cleanVideoId,
+    source: 'unavailable',
+    requiresTranscription: true,
+    reason: 'CAPTIONS_NOT_AVAILABLE',
+    message:
+      'No official Closed Captions (CC) were returned. Click "Generate YouTube SRT Subtitles" to transcribe with Gemini Multimodal AI.',
+  };
+}
+
+async function fetchYouTubeCaptionsClientSide(
+  videoId: string,
+  targetLang?: string
+): Promise<YouTubeCaptionResponse | null> {
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) return null;
+  try {
+    const clientData = await extractYouTubeMediaDetailsClientSide(videoId);
+    const tracks = clientData.subtitles || [];
+    if (tracks.length === 0) return null;
+
+    const target = (targetLang || '').trim().toLowerCase();
+    const sorted = [...tracks].sort((a, b) => {
+      const aMatch =
+        target &&
+        (a.code.toLowerCase().startsWith(target) || a.name.toLowerCase().includes(target))
+          ? 1
+          : 0;
+      const bMatch =
+        target &&
+        (b.code.toLowerCase().startsWith(target) || b.name.toLowerCase().includes(target))
+          ? 1
+          : 0;
+      if (aMatch !== bMatch) return bMatch - aMatch;
+      return (a.isAutoGenerated ? 1 : 0) - (b.isAutoGenerated ? 1 : 0);
+    });
+
+    for (const track of sorted) {
+      try {
+        const res = await fetch(track.url);
+        if (!res.ok) continue;
+        const text = await res.text();
+        const segments = parseRawCaptionToSegments(text);
+        if (segments.length > 0) {
+          return {
+            success: true,
+            videoId,
+            title: clientData.title || 'YouTube Video',
+            source: 'youtube_cc',
+            language: track.code,
+            isAutoGenerated: track.isAutoGenerated,
+            segments,
+            rawSrt: segmentsToSrt(segments),
+            duration: clientData.duration || 0,
+            thumbnailUrl: clientData.thumbnailUrl,
+            availableTracks: tracks,
+          };
+        }
+      } catch {
+        // try next track
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
 /**
- * Downloads and parses native YouTube closed captions (.vtt / .srt) through the backend proxy.
+ * Downloads and parses native YouTube closed captions (.srt / .vtt) through the backend proxy
+ * with automatic client-side fallback.
  */
 export async function fetchNativeYouTubeSubtitlesContent(subtitleUrl: string): Promise<string> {
-  const proxyUrl = `/api/youtube/subtitles?url=${encodeURIComponent(subtitleUrl)}`;
-  const res = await fetch(proxyUrl);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch subtitle track via backend proxy: HTTP ${res.status}`);
+  try {
+    const proxyUrl = `/api/youtube/subtitles?url=${encodeURIComponent(subtitleUrl)}&format=srt`;
+    const res = await fetch(proxyUrl);
+    if (res.ok) {
+      const text = await res.text();
+      const segments = parseRawCaptionToSegments(text);
+      if (segments.length > 0) {
+        return segmentsToSrt(segments);
+      }
+      if (text && text.trim()) return text;
+    }
+  } catch {
+    // fallback to direct fetch
   }
-  return res.text();
-}
 
-/**
- * YouTube Playlists and Search Integration (using Google OAuth / YouTube Data API)
- */
-import { auth, signInWithGoogle, signOutGoogle, listenAuthState, getCachedAccessToken } from './auth';
+  const directRes = await fetch(subtitleUrl);
+  if (!directRes.ok) {
+    throw new Error(`Failed to fetch subtitle track: HTTP ${directRes.status}`);
+  }
+  const raw = await directRes.text();
+  const segments = parseRawCaptionToSegments(raw);
+  return segments.length > 0 ? segmentsToSrt(segments) : raw;
+}
 
 export const getAccessToken = (): string | null => {
   return getCachedAccessToken();
@@ -497,27 +912,38 @@ export const logout = async () => {
 };
 
 export async function fetchYouTubePlaylists(token: string) {
-  const res = await fetch('https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=50', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+  const res = await fetch(
+    'https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=50',
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
   if (!res.ok) throw new Error('Failed to fetch playlists');
   const data = await res.json();
   return data.items || [];
 }
 
 export async function fetchYouTubePlaylistItems(token: string, playlistId: string) {
-  const res = await fetch(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${playlistId}&maxResults=50`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+  const res = await fetch(
+    `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${playlistId}&maxResults=50`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
   if (!res.ok) throw new Error('Failed to fetch playlist items');
   const data = await res.json();
   return data.items || [];
 }
 
 export async function searchYouTube(token: string, query: string) {
-  const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=25`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+  const res = await fetch(
+    `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(
+      query
+    )}&type=video&maxResults=25`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
   if (!res.ok) throw new Error('Failed to search YouTube videos');
   const data = await res.json();
   return data.items || [];

@@ -6,11 +6,9 @@ import { segmentsToSrt } from "./youtubeCaptionService";
 
 // Candidate multimodal Gemini models for audio transcription in order of reliability
 const AUDIO_CANDIDATE_MODELS = [
-    'gemini-3.5-transcribe',
-    'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-2.5-flash'
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash'
 ];
 
 /**
@@ -964,10 +962,12 @@ Output ONLY the raw SRT format.`;
 
     if (youtubeUrl) {
         if (onProgress) onProgress(30);
+        const { videoId } = normalizeYoutubeUrl(youtubeUrl);
+        const canonicalYtUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : youtubeUrl.trim();
         parts.push({
             fileData: {
-                fileUri: youtubeUrl,
-                mimeType: "video/*"
+                fileUri: canonicalYtUrl,
+                mimeType: "video/mp4"
             }
         });
         if (onProgress) onProgress(50);
@@ -1171,10 +1171,40 @@ TASK:
         console.warn('[YouTube Captions] Backend caption service notice:', captionServiceErr);
     }
 
-    // STEP 2: Legitimate Multimodal Audio Stream Transcription Fallback
-    // When authentic CC is not uploaded on YouTube, stream the media audio so Gemini generates genuine acoustic timecodes
+    // STEP 2: Direct Gemini Multimodal YouTube URL Transcription Fallback
+    // Gemini 2.5 Flash natively ingests public YouTube URLs via fileData without requiring server-side stream downloading
     try {
         if (onProgress) onProgress(40);
+        console.log(`[Gemini Native YouTube Transcription] Analyzing YouTube video ${cleanUrl} directly with Gemini multimodal...`);
+        const directSrt = await generateSinglePassSRT(
+            {
+                ...opts,
+                youtubeUrl: cleanUrl,
+                audioFile: null,
+                mode,
+                targetLang,
+                sourceLang,
+                onProgress: (p) => {
+                    if (onProgress) onProgress(Math.min(98, Math.max(40, p)));
+                }
+            },
+            'video/mp4',
+            opts.processingMode !== 'audio',
+            genAI,
+            keyToUse
+        );
+        if (directSrt && parseSubtitles(directSrt).length > 0) {
+            if (onProgress) onProgress(100);
+            return directSrt;
+        }
+    } catch (directYtErr) {
+        console.warn('[Gemini Native YouTube Transcription] Direct YouTube fileUri pass failed, falling back to audio stream download:', directYtErr);
+    }
+
+    // STEP 2B: Legitimate Multimodal Audio Stream Transcription Fallback
+    // When authentic CC is not uploaded on YouTube, stream the media audio so Gemini generates genuine acoustic timecodes
+    try {
+        if (onProgress) onProgress(45);
         console.log(`[Gemini Media Transcription] Streaming audio for video ${videoId} to perform acoustic waveform transcription...`);
 
         const mediaFile = await downloadYouTubeMediaStream(cleanUrl, 'audio', (p) => {

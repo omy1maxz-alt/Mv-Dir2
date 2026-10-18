@@ -14,7 +14,7 @@ import { normalizeYoutubeUrl, downloadYouTubeMediaStream, fetchYouTubeCaptions, 
 import { segmentsToSrt } from '../services/youtubeCaptionService';
 import { syncSubtitleTranslations, translateSingleLine, fixSubtitleWithAgenticVideo, fixSubtitleWithAudio, uploadVideoToGemini, fixSubtitleWithFrame, getEffectiveGeminiApiKey } from '../services/gemini';
 import { captureScreenFrame } from '../utils/frameCapture';
-import { splitSingleBlockBySentences, splitSentences } from '../utils/subtitleParser';
+import { splitSingleBlockBySentences, splitSentences, parseSubtitles } from '../utils/subtitleParser';
 
 declare global {
     interface Window {
@@ -150,9 +150,11 @@ interface YouTubeSubtitleTimelineEditorProps {
     apiKey?: string;
 }
 
-// Resilient SRT parser and generator
+// Resilient SRT/VTT/XML/JSON3 parser and generator
 const parseSrt = (srt: string): SubtitleBlock[] => {
     if (!srt || srt.trim() === '') return [];
+    const universalBlocks = parseSubtitles(srt);
+    if (universalBlocks.length > 0) return universalBlocks;
     
     const blocks: SubtitleBlock[] = [];
     const chunks = srt.trim().split(/\r?\n\s*\r?\n/);

@@ -324,10 +324,13 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
             setError('Please enter a valid YouTube URL first.');
             return;
         }
-        const { videoId } = normalizeYoutubeUrl(targetUrl);
+        const { videoId, url: cleanYtUrl } = normalizeYoutubeUrl(targetUrl);
         if (!videoId) {
             setYoutubeCaptionFetchStatus('Could not identify a valid YouTube video ID.');
             return;
+        }
+        if (cleanYtUrl && cleanYtUrl !== youtubeUrl) {
+            setYoutubeUrl(cleanYtUrl);
         }
 
         setIsFetchingYoutubeCaptions(true);
@@ -416,6 +419,10 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         if (!targetUrl) {
             setError('Please enter a valid YouTube URL first.');
             return;
+        }
+        const { url: cleanYtUrl, isValid } = normalizeYoutubeUrl(targetUrl);
+        if (isValid && cleanYtUrl && cleanYtUrl !== youtubeUrl) {
+            setYoutubeUrl(cleanYtUrl);
         }
 
         setIsExtractingDetails(true);
@@ -540,10 +547,17 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     };
 
     const handleGenerate = async () => {
+        let effectiveYoutubeUrl = youtubeUrl.trim();
         if (mediaSourceType === 'youtube') {
-            if (!youtubeUrl || !youtubeUrl.trim()) {
-                setError('Please enter and apply a valid YouTube URL first.');
+            const candidateInput = youtubeInput.trim() || effectiveYoutubeUrl;
+            const { url: normalizedYt, isValid } = normalizeYoutubeUrl(candidateInput);
+            if (!isValid || !normalizedYt) {
+                setError('Please enter a valid YouTube URL first.');
                 return;
+            }
+            effectiveYoutubeUrl = normalizedYt;
+            if (effectiveYoutubeUrl !== youtubeUrl) {
+                setYoutubeUrl(effectiveYoutubeUrl);
             }
         } else {
             if (!audioFile) {
@@ -564,7 +578,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
             
             const srt = await generateSRT({
                 audioFile: mediaSourceType === 'upload' ? audioFile : null,
-                youtubeUrl: mediaSourceType === 'youtube' ? youtubeUrl.trim() : null,
+                youtubeUrl: mediaSourceType === 'youtube' ? effectiveYoutubeUrl : null,
                 mode: mode as any, 
                 targetLang: targetLanguage,
                 sourceLang: sourceLanguage,
@@ -1395,7 +1409,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
                     <button 
                         onClick={handleGenerate}
-                        disabled={(mediaSourceType === 'upload' && !audioFile) || (mediaSourceType === 'youtube' && !youtubeUrl) || isGenerating}
+                        disabled={(mediaSourceType === 'upload' && !audioFile) || (mediaSourceType === 'youtube' && !youtubeUrl && !youtubeInput.trim()) || isGenerating}
                         className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-white/10 disabled:text-white/30 text-white font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-xl cursor-pointer disabled:cursor-not-allowed"
                     >
                         {isGenerating ? (
@@ -1404,7 +1418,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 {mediaSourceType === 'youtube' ? 'Generating Subtitles from YouTube...' : 'Analyzing Media & Generating Subtitles...'}
                             </>
                         ) : mediaSourceType === 'youtube' ? (
-                            !youtubeUrl ? (
+                            (!youtubeUrl && !youtubeInput.trim()) ? (
                                 <>
                                     <Youtube className="w-5 h-5 text-red-400" />
                                     <span>Enter YouTube Link to Generate</span>

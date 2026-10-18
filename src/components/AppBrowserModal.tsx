@@ -211,7 +211,7 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
   const [showUaModal, setShowUaModal] = useState(false);
   const [currentEffectiveUa, setCurrentEffectiveUa] = useState(getEffectiveUserAgent());
   const [copiedUa, setCopiedUa] = useState(false);
-  const [useProxy, setUseProxy] = useState<boolean>(false);
+  const [useProxy, setUseProxy] = useState<boolean>(true);
 
   useEffect(() => {
     const handleUaChange = () => {
@@ -360,17 +360,16 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
 
   const getEffectiveIframeSrc = useCallback((url: string) => {
     if (!url || url === 'mv://newtab' || url === 'about:newtab') return url;
+    if (url.startsWith('/api/')) return url;
     // YouTube's approved embed endpoint should remain direct.
     if (url.includes('youtube-nocookie.com/embed/') || url.includes('youtube.com/embed/')) {
       return url;
     }
-    // Direct navigation is the default. The HTML proxy is an optional compatibility
-    // mode only; it cannot provide full browser behavior for arbitrary modern sites.
     if (useProxy) {
-      return `/api/proxy?url=${encodeURIComponent(url)}`;
+      return `/api/proxy?url=${encodeURIComponent(url)}&ua=${encodeURIComponent(currentEffectiveUa || '')}`;
     }
     return url;
-  }, [useProxy]);
+  }, [useProxy, currentEffectiveUa]);
 
   // Format any URL or YouTube link with YouTube's approved player configuration
   const formatBrowseUrl = (raw: string): string => {
@@ -556,6 +555,35 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
     setBookmarks(DEFAULT_BOOKMARKS);
     appendBrowserLog('info', `Reset bookmarks to defaults`);
   };
+
+  useEffect(() => {
+    const handleProxyMessage = (e: MessageEvent) => {
+      if (!e.data || e.data.type !== 'MV_BROWSER_NAVIGATE') return;
+      const nextUrl = typeof e.data.url === 'string' ? e.data.url.trim() : '';
+      const nextTitle = typeof e.data.title === 'string' ? e.data.title.trim() : '';
+      if (!nextUrl || nextUrl === 'mv://newtab') return;
+
+      setTabs(prev => prev.map(t => {
+        if (t.id !== activeTabId) return t;
+        const urlChanged = t.url !== nextUrl;
+        const slicedHistory = t.history.slice(0, t.historyIndex + 1);
+        const updatedHistory = urlChanged ? [...slicedHistory, nextUrl] : t.history;
+        const updatedIndex = urlChanged ? updatedHistory.length - 1 : t.historyIndex;
+        return {
+          ...t,
+          url: nextUrl,
+          inputUrl: nextUrl,
+          title: nextTitle ? nextTitle.slice(0, 45) : formatTabTitle(nextUrl),
+          history: updatedHistory,
+          historyIndex: updatedIndex,
+          isLoading: false,
+          loadStage: 'loaded'
+        };
+      }));
+    };
+    window.addEventListener('message', handleProxyMessage);
+    return () => window.removeEventListener('message', handleProxyMessage);
+  }, [activeTabId]);
 
   const handleIframeLoad = () => {
     const duration = Date.now() - loadStartTimerRef.current;
@@ -1603,7 +1631,7 @@ export const AppBrowserModal: React.FC<AppBrowserModalProps> = ({
             /* LIVE WEB VIEWPORT */
             <>
               {/* Anti-Frame Notice & Proxy Controls if Known Blocked Host */}
-              {currentAnalysis.isKnownBlockedHost && !activeTab.url.includes('/embed/') && (
+              {currentAnalysis.isKnownBlockedHost && !useProxy && !activeTab.url.includes('/embed/') && (
                 <div className="absolute top-2 left-2 right-2 z-20 bg-slate-900/95 border border-teal-500/40 p-2 sm:p-2.5 rounded-xl text-xs text-white shadow-2xl flex flex-wrap items-center justify-between gap-2 backdrop-blur-md animate-in fade-in">
                   <div className="flex items-center gap-2 truncate">
                     <Shield className={`w-4 h-4 shrink-0 ${useProxy ? 'text-emerald-400' : 'text-amber-400'}`} />

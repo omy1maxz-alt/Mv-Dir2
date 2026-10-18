@@ -4,61 +4,15 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import fs from 'fs';
+import { handleYouTubeAndBrowserApiMiddleware } from './src/server/youtubeAndBrowserHandlers';
 
 function setupCustomMiddlewares(middlewares: any) {
+  // 1. Unified YouTube Extraction, Captions, Stream Proxy & Smart Web Browser Proxy
+  middlewares.use((req: any, res: any, next: any) => {
+    void handleYouTubeAndBrowserApiMiddleware(req, res, next);
+  });
+
   middlewares.use(async (req: any, res: any, next: any) => {
-    // 1. In-App Browser Proxy Endpoint (strips X-Frame-Options and injects <base>)
-    if (req.url && req.url.startsWith('/api/proxy')) {
-      try {
-        const parsedUrl = new URL(req.url, 'http://localhost:3000');
-        const targetUrl = parsedUrl.searchParams.get('url');
-        if (!targetUrl) {
-          res.statusCode = 400;
-          res.end('Missing url parameter');
-          return;
-        }
-
-        const headers: Record<string, string> = {
-          'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9'
-        };
-
-        const response = await fetch(targetUrl, {
-          headers,
-          redirect: 'follow'
-        });
-
-        const contentType = response.headers.get('content-type') || 'text/html; charset=utf-8';
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-        // Do NOT forward x-frame-options or content-security-policy
-
-        if (contentType.includes('text/html')) {
-          let html = await response.text();
-          const targetOrigin = new URL(response.url || targetUrl).origin;
-          const baseTag = `<base href="${targetOrigin}/" target="_self">`;
-          if (html.includes('<head>')) {
-            html = html.replace('<head>', `<head>${baseTag}`);
-          } else {
-            html = baseTag + html;
-          }
-          res.statusCode = response.status;
-          res.end(html);
-        } else {
-          const buffer = await response.arrayBuffer();
-          res.statusCode = response.status;
-          res.end(Buffer.from(buffer));
-        }
-      } catch (err: any) {
-        res.statusCode = 502;
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.end(`<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px;background:#111;color:#fff;"><h2>Proxy Error</h2><p>${err.message}</p></body></html>`);
-      }
-      return;
-    }
-
     // Cloudflare Workers AI same-origin proxy for Vite dev/preview.
     if (req.url === '/api/cloudflare-image' && req.method === 'POST') {
       let rawBody = '';
