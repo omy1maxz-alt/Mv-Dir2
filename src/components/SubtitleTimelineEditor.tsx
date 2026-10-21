@@ -444,6 +444,41 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     const [visualVideoMuted, setVisualVideoMuted] = useState<boolean>(true);
     const [visualVideoVolume, setVisualVideoVolume] = useState<number>(0.5);
     
+    // Floating player volume & overlay autohide state & inactivity timer
+    const [showFloatingVolume, setShowFloatingVolume] = useState<boolean>(true);
+    const floatingVolumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const isInteractingWithVolumeRef = useRef<boolean>(false);
+
+    const wakeFloatingVolume = useCallback((durationMs = 2800) => {
+        setShowFloatingVolume(true);
+        if (floatingVolumeTimerRef.current) {
+            clearTimeout(floatingVolumeTimerRef.current);
+            floatingVolumeTimerRef.current = null;
+        }
+        if (!isInteractingWithVolumeRef.current) {
+            floatingVolumeTimerRef.current = setTimeout(() => {
+                if (!isInteractingWithVolumeRef.current) {
+                    setShowFloatingVolume(false);
+                }
+            }, durationMs);
+        }
+    }, []);
+
+    // Autohide floating volume initially 3.2s after loading or switching media
+    useEffect(() => {
+        wakeFloatingVolume(3200);
+        return () => {
+            if (floatingVolumeTimerRef.current) {
+                clearTimeout(floatingVolumeTimerRef.current);
+            }
+        };
+    }, [wakeFloatingVolume, mediaUrl, visualMediaUrl]);
+
+    // Briefly wake floating volume on play/pause or playback rate changes
+    useEffect(() => {
+        wakeFloatingVolume(2400);
+    }, [isPlaying, playbackRate, wakeFloatingVolume]);
+
     // Preview Settings
     const [previewSize, setPreviewSize] = useState(() => {
         const saved = localStorage.getItem('vlog_previewSize');
@@ -984,6 +1019,8 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     useEffect(() => {
         if (effectiveYoutubeUrl) {
             setMediaUrl(effectiveYoutubeUrl);
+            return;
+        } else if (effectiveAudioFile) {
             // Keep the original File URL when its MIME type is accurate. Some browsers and
             // Android pickers report video as application/octet-stream or audio/*; give those
             // cases a corrected MIME hint while preserving direct streaming capabilities.
@@ -2753,6 +2790,8 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             <div 
                 ref={playerContainerRef} 
                 onDoubleClick={toggleFullscreen} 
+                onPointerMove={() => wakeFloatingVolume()}
+                onTouchStart={() => wakeFloatingVolume()}
                 className={`bg-black relative flex flex-col items-center justify-center overflow-hidden group transition-all duration-200 ${
                     videoHeightMode === 'large' 
                         ? 'h-[40vh] min-h-[180px] shrink-0' 
@@ -2823,7 +2862,31 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                         )}
 
                         {/* Visual overlay indicator pill with sound adjustment */}
-                        <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl pointer-events-auto flex-wrap max-w-[95%]">
+                        <div 
+                            onMouseEnter={() => {
+                                isInteractingWithVolumeRef.current = true;
+                                if (floatingVolumeTimerRef.current) clearTimeout(floatingVolumeTimerRef.current);
+                                setShowFloatingVolume(true);
+                            }}
+                            onMouseLeave={() => {
+                                isInteractingWithVolumeRef.current = false;
+                                wakeFloatingVolume(1800);
+                            }}
+                            onTouchStart={() => {
+                                isInteractingWithVolumeRef.current = true;
+                                if (floatingVolumeTimerRef.current) clearTimeout(floatingVolumeTimerRef.current);
+                                setShowFloatingVolume(true);
+                            }}
+                            onTouchEnd={() => {
+                                isInteractingWithVolumeRef.current = false;
+                                wakeFloatingVolume(2200);
+                            }}
+                            className={`absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl flex-wrap max-w-[95%] transition-all duration-300 ease-in-out ${
+                                showFloatingVolume 
+                                    ? 'opacity-100 translate-y-0 pointer-events-auto' 
+                                    : 'opacity-0 -translate-y-1 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-hover:translate-y-0'
+                            }`}
+                        >
                             {visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name) ? (
                                 <ImageIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                             ) : (
@@ -2843,6 +2906,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                             if (!nextMuted && visualVideoVolume === 0) {
                                                 setVisualVideoVolume(0.5);
                                             }
+                                            wakeFloatingVolume(2500);
                                         }}
                                         className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
                                             visualVideoMuted 
@@ -2863,10 +2927,19 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                             step="0.05"
                                             value={visualVideoVolume}
                                             onClick={(e) => e.stopPropagation()}
+                                            onPointerDown={() => {
+                                                isInteractingWithVolumeRef.current = true;
+                                                if (floatingVolumeTimerRef.current) clearTimeout(floatingVolumeTimerRef.current);
+                                            }}
+                                            onPointerUp={() => {
+                                                isInteractingWithVolumeRef.current = false;
+                                                wakeFloatingVolume(2200);
+                                            }}
                                             onChange={(e) => {
                                                 const val = parseFloat(e.target.value);
                                                 setVisualVideoVolume(val);
                                                 if (val === 0) setVisualVideoMuted(true);
+                                                wakeFloatingVolume(2500);
                                             }}
                                             className="w-14 sm:w-20 h-1.5 accent-emerald-400 bg-white/20 rounded-lg cursor-pointer"
                                             title={`Adjust Video Sound Volume: ${Math.round(visualVideoVolume * 100)}%`}
@@ -2932,7 +3005,31 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                 </div>
                             )}
                             {/* Video overlay indicator pill with sound adjustment */}
-                            <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl pointer-events-auto flex-wrap max-w-[95%]">
+                            <div 
+                                onMouseEnter={() => {
+                                    isInteractingWithVolumeRef.current = true;
+                                    if (floatingVolumeTimerRef.current) clearTimeout(floatingVolumeTimerRef.current);
+                                    setShowFloatingVolume(true);
+                                }}
+                                onMouseLeave={() => {
+                                    isInteractingWithVolumeRef.current = false;
+                                    wakeFloatingVolume(1800);
+                                }}
+                                onTouchStart={() => {
+                                    isInteractingWithVolumeRef.current = true;
+                                    if (floatingVolumeTimerRef.current) clearTimeout(floatingVolumeTimerRef.current);
+                                    setShowFloatingVolume(true);
+                                }}
+                                onTouchEnd={() => {
+                                    isInteractingWithVolumeRef.current = false;
+                                    wakeFloatingVolume(2200);
+                                }}
+                                className={`absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl flex-wrap max-w-[95%] transition-all duration-300 ease-in-out ${
+                                    showFloatingVolume 
+                                        ? 'opacity-100 translate-y-0 pointer-events-auto' 
+                                        : 'opacity-0 -translate-y-1 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-hover:translate-y-0'
+                                }`}
+                            >
                                 <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                                 <span className="font-semibold max-w-[140px] sm:max-w-[200px] truncate">{effectiveAudioFile.name}</span>
                                 <span className="text-[10px] bg-purple-500/25 text-purple-300 px-1.5 py-0.5 rounded font-bold">Video + Audio</span>
@@ -2946,6 +3043,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                                 mediaRef.current.muted = nextMuted;
                                             }
                                             setPrimaryMediaMuted(nextMuted);
+                                            wakeFloatingVolume(2500);
                                         }}
                                         className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
                                             primaryMediaMuted 
@@ -2955,7 +3053,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                         title={primaryMediaMuted ? "Video Sound is Muted (Click to enable sound)" : "Video Sound is On (Click to mute)"}
                                     >
                                         {primaryMediaMuted ? <VolumeX className="w-3 h-3 text-amber-300" /> : <Volume2 className="w-3 h-3 text-emerald-300" />}
-                                        <span>{primaryMediaMuted ? 'Muted' : 'Sound On'}</span>
+                                        <span>{primaryMediaMuted ? 'Muted' : `${Math.round(primaryMediaVolume * 100)}%`}</span>
                                     </button>
                                     {!primaryMediaMuted && (
                                         <input
@@ -2965,10 +3063,19 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                             step="0.05"
                                             value={primaryMediaVolume}
                                             onClick={(e) => e.stopPropagation()}
+                                            onPointerDown={() => {
+                                                isInteractingWithVolumeRef.current = true;
+                                                if (floatingVolumeTimerRef.current) clearTimeout(floatingVolumeTimerRef.current);
+                                            }}
+                                            onPointerUp={() => {
+                                                isInteractingWithVolumeRef.current = false;
+                                                wakeFloatingVolume(2200);
+                                            }}
                                             onChange={(e) => {
                                                 const val = parseFloat(e.target.value);
                                                 setPrimaryMediaVolume(val);
                                                 if (val === 0) setPrimaryMediaMuted(true);
+                                                wakeFloatingVolume(2500);
                                             }}
                                             className="w-14 sm:w-20 h-1.5 accent-emerald-400 bg-white/20 rounded-lg cursor-pointer"
                                             title={`Adjust Video Audio Volume: ${Math.round(primaryMediaVolume * 100)}%`}
@@ -3099,14 +3206,41 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                 
                 <div className="flex justify-start sm:justify-end items-center gap-1 sm:gap-1.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] flex-nowrap shrink-0">
                     {isPrimaryVideo ? (
-                        <div 
-                            className="shrink-0 px-2.5 h-7 sm:h-8 flex items-center gap-1.5 rounded-md bg-purple-600/25 border border-purple-500/40 text-purple-200 text-xs font-semibold shadow-sm"
-                            title={`Primary Video Active: ${effectiveAudioFile?.name || 'Video'} provides both video view and audio track from AI Generator.`}
-                        >
-                            <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                            <span className="truncate max-w-[120px] sm:max-w-[180px]">{effectiveAudioFile?.name || 'Video Active'}</span>
-                            <span className="text-[10px] bg-purple-500/30 text-purple-200 px-1.5 py-0.5 rounded font-bold">Video+Audio</span>
-                        </div>
+                        <>
+                            <div 
+                                className="shrink-0 px-2.5 h-7 sm:h-8 flex items-center gap-1.5 rounded-md bg-purple-600/25 border border-purple-500/40 text-purple-200 text-xs font-semibold shadow-sm"
+                                title={`Primary Video Active: ${effectiveAudioFile?.name || 'Video'} provides both video view and audio track from AI Generator.`}
+                            >
+                                <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                <span className="truncate max-w-[120px] sm:max-w-[180px]">{effectiveAudioFile?.name || 'Video Active'}</span>
+                                <span className="text-[10px] bg-purple-500/30 text-purple-200 px-1.5 py-0.5 rounded font-bold">Video+Audio</span>
+                            </div>
+
+                            {/* Quick Sound Toggle for Primary Video */}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const nextMuted = !primaryMediaMuted;
+                                    if (mediaRef.current instanceof HTMLMediaElement) {
+                                        mediaRef.current.muted = nextMuted;
+                                    }
+                                    setPrimaryMediaMuted(nextMuted);
+                                    if (!nextMuted && primaryMediaVolume === 0) {
+                                        setPrimaryMediaVolume(1);
+                                    }
+                                    setSnapNotification(nextMuted ? "Video sound muted" : `Video sound active (${Math.round((primaryMediaVolume || 1) * 100)}%)`);
+                                }}
+                                className={`shrink-0 px-2 h-7 sm:h-8 flex items-center gap-1.5 rounded-md transition-all border shadow-sm cursor-pointer ${
+                                    primaryMediaMuted
+                                        ? 'bg-amber-600/20 hover:bg-amber-600/35 text-amber-300 border-amber-500/30'
+                                        : 'bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border-emerald-500/30'
+                                }`}
+                                title={primaryMediaMuted ? "Video audio is muted. Click to enable sound." : `Video audio active (${Math.round(primaryMediaVolume * 100)}%). Click to mute.`}
+                            >
+                                {primaryMediaMuted ? <VolumeX className="w-3.5 h-3.5 text-amber-400 shrink-0" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                                <span className="text-xs font-semibold">{primaryMediaMuted ? 'Muted' : `${Math.round(primaryMediaVolume * 100)}%`}</span>
+                            </button>
+                        </>
                     ) : (
                         <>
                             <button 

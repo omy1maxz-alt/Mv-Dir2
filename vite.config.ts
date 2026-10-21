@@ -138,7 +138,7 @@ export default defineConfig(({ mode }) => {
         hmr: false,
         ws: false,
         watch: {
-          ignored: ['**/agent_bridge.json']
+          ignored: ['**/agent_bridge.json', '**/android/**', '**/build_apk_work/**', '**/dist/**', '**/build/**', '**/export/**']
         },
       },
       plugins: [
@@ -275,12 +275,28 @@ export default defineConfig(({ mode }) => {
         dedupe: ['react', 'react-dom']
       },
       optimizeDeps: {
+        entries: ['index.html'],
+        exclude: ['@emotion/is-prop-valid'],
         include: [
+          '@capacitor/browser',
+          '@capacitor/core',
+          '@google/genai',
+          'firebase/app',
+          'firebase/auth',
+          'firebase/firestore',
+          'idb-keyval',
+          'jszip',
+          'lucide-react',
+          'motion/react',
           'react',
           'react-dom',
           'react-dom/client',
+          'react-markdown',
+          'react-player',
           'react/jsx-runtime',
-          'react/jsx-dev-runtime'
+          'react/jsx-dev-runtime',
+          'remark-breaks',
+          'remark-gfm'
         ]
       }
     };

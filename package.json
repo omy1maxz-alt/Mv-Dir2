@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
-    "build": "vite build && (mkdir -p build && cp -r dist/* build/ 2>/dev/null || true)",
+    "build": "vite build && mkdir -p build && cp -r dist/* build/ && test -s dist/index.html && test -s build/index.html",
     "preview": "vite preview",
-    "export:apk": "npm run build && npx cap sync android && node scripts/build_apk.mjs",
+    "export:apk": "npm run build && python3 scripts/pack_latest_apk.py",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

@@ -607,6 +607,86 @@ Line 2 (if dual/multi-layered)`;
     return translatedBlocks;
 }
 
+/**
+ * Transforms an existing native/original SRT transcript into the requested Subtitle Mode
+ * (Bilingual, Dual Translation, Triple Layer, Quad Layer, or Single-layer translation).
+ * Uses the native subtitle cues and exact timestamps as the source, eliminating the need
+ * to re-upload or re-analyze the audio media file!
+ */
+export async function generateSubModeFromNativeSRT(
+    nativeSrt: string,
+    options: {
+        mode: 'standard' | 'bilingual' | 'dual_trans' | 'triple' | 'quad';
+        targetLang: string;
+        sourceLang?: string;
+        contextInstruction?: string;
+        apiKey?: string;
+        onProgress?: (p: number) => void;
+    }
+): Promise<string> {
+    if (!nativeSrt || !nativeSrt.trim()) {
+        throw new Error("No native subtitle content provided to transform into sub mode.");
+    }
+
+    const { mode, targetLang, sourceLang, contextInstruction, apiKey, onProgress } = options;
+    const keyToUse = getEffectiveGeminiApiKey(apiKey);
+    const genAI = getGenAI(keyToUse);
+
+    const srtMode = mode === 'standard' ? 'ori' : mode === 'bilingual' ? 'dual' : mode === 'dual_trans' ? 'dual_trans' : mode === 'triple' ? 'triple' : 'quad';
+    const cleanTarget = (targetLang || '').trim();
+    const isOriginalOnly = cleanTarget === '' || cleanTarget.toLowerCase() === 'original' || cleanTarget.toLowerCase() === 'verbatim';
+
+    if (srtMode === 'ori' && isOriginalOnly) {
+        return nativeSrt;
+    }
+
+    const blocks = parseRawBlocks(nativeSrt);
+    if (blocks.length === 0) {
+        return nativeSrt;
+    }
+
+    // Ensure we work with the clean first/native line if input blocks were already multi-line
+    const normalizedBlocks: ParsedRawBlock[] = blocks.map(b => ({
+        ...b,
+        textLines: [b.textLines[0] || '']
+    }));
+
+    if (onProgress) onProgress(20);
+
+    const translatedBlocks = await translateCuesById(
+        normalizedBlocks,
+        {
+            mode: srtMode as any,
+            targetLang: isOriginalOnly ? 'English' : cleanTarget,
+            sourceLang,
+            contextInstruction,
+            apiKey: keyToUse
+        },
+        genAI,
+        onProgress
+    );
+
+    if (onProgress) onProgress(95);
+
+    const { repairedBlocks } = autoRepairTimeline(translatedBlocks.map(b => ({
+        start: b.startMs,
+        end: b.endMs,
+        startTs: b.startTs,
+        endTs: b.endTs,
+        textLines: b.textLines
+    })));
+
+    const finalBlocks: ParsedRawBlock[] = repairedBlocks.map(rb => ({
+        startMs: rb.start,
+        endMs: rb.end,
+        startTs: msToTime(rb.start),
+        endTs: msToTime(rb.end),
+        textLines: rb.textLines
+    }));
+
+    return reconstructSRT(finalBlocks);
+}
+
 async function transcribeSingleChunk(
     chunkBlob: Blob,
     chunkDurationSec: number,
@@ -1019,19 +1099,23 @@ Output ONLY the raw SRT format.`;
                 });
             } catch (uploadErr) {
                 console.warn('[SRT Generator] Single-pass file upload failed (possible 403 or quota). Attempting in-memory chunking or direct media slice:', uploadErr);
-                try {
-                    return await generateChunkedSRT(opts, 300, genAI, keyToUse);
-                } catch (chunkErr) {
-                    console.warn('[SRT Generator] Chunking also failed on container. Slicing media for inline single-pass:', chunkErr);
-                    const sliceBlob = audioFile.slice(0, 14 * 1024 * 1024);
-                    const base64 = await blobToBase64(sliceBlob);
-                    parts.push({
-                        inlineData: {
-                            data: base64,
-                            mimeType: safeMimeType
-                        }
-                    });
-                    usedInline = true;
+                if (audioFile.size <= 25 * 1024 * 1024) {
+                    try {
+                        return await generateChunkedSRT(opts, 300, genAI, keyToUse);
+                    } catch (chunkErr) {
+                        console.warn('[SRT Generator] Chunking also failed on container. Slicing media for inline single-pass:', chunkErr);
+                        const sliceBlob = audioFile.slice(0, 14 * 1024 * 1024);
+                        const base64 = await blobToBase64(sliceBlob);
+                        parts.push({
+                            inlineData: {
+                                data: base64,
+                                mimeType: safeMimeType
+                            }
+                        });
+                        usedInline = true;
+                    }
+                } else {
+                    throw new Error(`Failed to upload large media file (${(audioFile.size / (1024 * 1024)).toFixed(1)}MB) to Gemini File API: ${(uploadErr as any)?.message || uploadErr}`);
                 }
             }
         }
@@ -1356,8 +1440,13 @@ export async function generateSRT(
     try {
         const mediaDuration = await getMediaDuration(audioFile);
 
-        // If media duration > 75s or file > 3MB, activate Anti-Drift Chunking Engine to ensure 100% full-duration transcription
-        const shouldChunk = (mediaDuration > 75 || audioFile.size > 3 * 1024 * 1024 || (mediaDuration === 0 && audioFile.size > 1024 * 1024)) && (!resumeTime || resumeTime.trim() === '');
+        // For large media files (>25MB, such as 80MB audio), in-browser Web Audio decodeAudioData
+        // will allocate gigabytes of uncompressed PCM data and crash the preview tab.
+        // Large files MUST be streamed directly to Gemini File API (supports up to 2GB) without Web Audio decoding!
+        const isLargeFile = Boolean(audioFile && audioFile.size > 25 * 1024 * 1024);
+
+        // If media duration > 75s or file > 3MB (and <= 25MB), activate Anti-Drift Chunking Engine
+        const shouldChunk = !isLargeFile && (mediaDuration > 75 || audioFile.size > 3 * 1024 * 1024 || (mediaDuration === 0 && audioFile.size > 1024 * 1024)) && (!resumeTime || resumeTime.trim() === '');
         if (shouldChunk) {
             try {
                 console.log(`[SRT Generator] Activating Anti-Drift Chunking Engine (duration: ${Math.round(mediaDuration)}s, size: ${(audioFile.size / (1024 * 1024)).toFixed(1)}MB).`);
@@ -1371,7 +1460,7 @@ export async function generateSRT(
                 rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse);
             } catch (singleErr: any) {
                 const errMsg = (singleErr?.message || '') + JSON.stringify(singleErr || '');
-                if (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing')) {
+                if (!isLargeFile && (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing'))) {
                     console.warn('[SRT Generator] Single-pass hit upload/permission issue, falling back to in-memory chunking:', singleErr);
                     rawSRT = await generateChunkedSRT(opts, mediaDuration || 300, genAI, keyToUse);
                 } else {
@@ -1460,6 +1549,10 @@ function encodeWAV(samples: Float32Array, sampleRate: number): Blob {
 }
 
 export async function decodeAudioBufferFromFile(file: File): Promise<{ audioBuffer: AudioBuffer; duration: number }> {
+    if (file.size > 25 * 1024 * 1024) {
+        throw new Error(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB) for in-browser Web Audio decoding. Please use direct File API streaming.`);
+    }
+
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) {
         throw new Error('AudioContext is not supported in this browser environment');

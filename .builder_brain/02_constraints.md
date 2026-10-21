@@ -9,6 +9,8 @@
 ## Subtitle Generation (gemini_srt.ts)
 1. **Sentence Chunking:** The AI naturally wants to stuff multiple sentences into a single subtitle block, creating walls of text (especially in quad-language mode). The prompt MUST strictly enforce chronological splitting: one sentence or short clause per subtitle block.
 2. **Timing & Equal Distribution:** By default, LLMs tend to lazily distribute duration equally among words (`sentence duration / words`). The prompt MUST enforce strict "audio-first" timing, demanding exact vocal onsets/offsets, proper handling of humming/laughter, precise gaps for overlapping speech, and prolonged duration for held vocal notes.
+3. **Large Audio (>25MB) Web Audio Crash:** Never pass audio files >25MB into `AudioContext.decodeAudioData()`. Decompressing an 80MB MP3 allocates >1.5GB of Float32Array PCM data in browser memory, triggering an instant browser OOM crash. Large files must stream directly via Gemini File API without browser Web Audio decoding.
+4. **Decoupled 2-Stage Caption Pipeline:** The initial generation pass strictly focuses 100% on native audio transcription (`mode: 'ori'`). Multi-layer Sub Modes (Bilingual, Dual Trans, Triple, Quad) use the generated native subtitle cues as the source (`generateSubModeFromNativeSRT`), locking timecodes and eliminating redundant media re-uploads.
 
 ## AI Studio Iframe Constraints
 1. **Native Popups Blocked:** Native browser dialogs like `window.confirm()`, `window.alert()`, and `window.prompt()` are strictly blocked by the AI Studio iframe environment. Any destructive action requiring confirmation MUST use a custom-built React modal instead.

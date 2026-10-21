@@ -472,6 +472,9 @@ public class MainActivity extends Activity {
   if (fs.existsSync(staleApkInAssets)) {
     fs.unlinkSync(staleApkInAssets);
   }
+  if (fs.existsSync(workDir)) {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
 
   console.log(`\n🎉 SUCCESS! Native verified APK built: ${(finalApkBuffer.length / (1024 * 1024)).toFixed(2)} MB`);
   console.log(`   Export: ${path.join(exportDir, apkName)}`);

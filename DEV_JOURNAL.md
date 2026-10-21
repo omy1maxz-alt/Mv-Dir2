@@ -1,3 +1,81 @@
+### 225. Fix 80MB Audio Source Memory Crash & Decoupled Native Caption Ground-Truth Pipeline (20 Oct 2026)
+- **Problem & Root Cause:**
+  - Selecting an 80MB audio source in the app caused the preview tab to crash immediately.
+  - Root Cause Analysis:
+    1. When an audio file was selected in `SubtitlesTab`, `SubtitleTimelineEditor` mounted and invoked `analyzeAudioFile(file)` in `src/utils/audioSnap.ts`. The safety check only flagged audio files if `file.size > 200MB` (and video files >80MB). Consequently, the 80MB audio file was sent to `AudioContext.decodeAudioData(arrayBuffer)`.
+    2. Compressed audio (MP3, AAC, M4A) expands ~15-25x when decoded into 32-bit float PCM stereo in browser Web Audio. An 80MB audio file decompressed to >1.5GB of Float32Array PCM data, immediately triggering a browser Out-of-Memory (OOM) kill signal inside the AI Studio preview iframe.
+    3. During caption generation, `gemini_srt.ts` also flagged any file >3MB for anti-drift chunking via `decodeAudioBufferFromFile`, similarly trying to decode the entire 80MB file into Web Audio memory.
+    4. On IndexedDB error, `persistMediaFile` attempted to read the entire 80MB into an `ArrayBuffer`, doubling heap allocation.
+- **Fixes Applied:**
+  1. **Web Audio Decoding Safe Threshold:** In `src/utils/audioSnap.ts`, lowered the `decodeAudioData` threshold to 25MB for audio files and 20MB for video containers. Files exceeding this size immediately return a lightweight fallback energy profile, preventing browser memory exhaustion while keeping timeline scrub and playback fully functional.
+  2. **Streaming via Gemini File API:** In `src/services/gemini_srt.ts`, added `isLargeFile` guard for files >25MB. Large files bypass chunked Web Audio decoding and stream directly to Google servers via the Gemini File API (supporting up to 2GB).
+  3. **ArrayBuffer Guard in Storage:** In `src/components/SubtitlesTab.tsx`, guarded `persistMediaFile` to bypass `file.arrayBuffer()` for files >25MB if IndexedDB structured cloning encounters restrictions.
+  4. **Decoupled 2-Stage Caption Focus Architecture:**
+     - The user requested: "I think the app need to focus when generate subtitle, so I want the first generate only generate the native audio, then from the sub it generated become the source when we want generate sub mode."
+     - Refactored subtitle generation so Stage 1 strictly focuses 100% of model attention on listening to the native audio track (`mode: 'ori'`), generating verbatim native dialogue with exact timestamps.
+     - Stored ground-truth native SRT in `nativeSrtContent` and `localStorage`.
+     - Stage 2 takes the generated native subtitle cues and timestamps as the source and builds the selected Sub Mode (`bilingual`, `dual_trans`, `triple`, `quad`, or translated standard) via `generateSubModeFromNativeSRT`.
+     - Added a dedicated "Sub Mode Source" quick-transformation card in `SubtitlesTab.tsx`: users can instantly generate or switch between Bilingual, Triple, or Quad subtitles in 2-3 seconds directly from the generated native subtitles without having to re-upload or re-process the 80MB media file!
+     - Added "Restore Native" button to switch back to pure original native speech at any time.
+
+### 224. Android APK Export Updated to Latest Build (18 Oct 2026)
+- **Problem & User Feedback:**
+  - The previously exported APK file (`mv-director-ai-v1.0.apk`) was an older build with bundled assets dating back to October 11, missing recent feature additions (floating volume autohide, CapCut quick toolbar volume toggles, YouTube caption and stream improvements, and bug fixes).
+- **Solution & Repackaging Workflow:**
+  1. Ran production compile (`vite build`) to produce the current application bundle in `dist/`.
+  2. Implemented automated repackaging script (`scripts/pack_latest_apk.py`) which:
+     - Extracts the native Android binary wrapper (`AndroidManifest.xml`, `classes.dex`, `resources.arsc`, `res/`).
+     - Refreshes `assets/public/` with the exact latest files from `dist/`.
+     - Patches `assets/public/index.html` with explicit `<base href="file:///android_asset/public/">` and relative asset paths for WebView compatibility.
+     - Recreates unaligned APK archive and aligns on 4-byte boundaries with `zipalign`.
+     - Signs the APK with `apksigner` across v1 (JAR signing), v2 (APK Signature Scheme v2), and v3 (APK Signature Scheme v3) schemes.
+  3. Verified APK signatures with `apksigner verify --verbose` (v1, v2, v3 all confirmed valid) and tested ZIP integrity (`unzip -t` confirmed 0 errors).
+  4. Deployed the updated 2.14 MB signed APK across all download paths:
+     - `export/mv-director-ai-v1.0.apk`
+     - `export/app-debug.apk`
+     - `public/export/mv-director-ai-v1.0.apk`
+     - `public/mv-director.apk`
+     - `dist/export/mv-director-ai-v1.0.apk`
+     - `dist/mv-director.apk`
+  5. Updated `package.json` script `export:apk` to automate future updates with `npm run build && python3 scripts/pack_latest_apk.py`.
+
+### 223. Fix Unresolved Dependencies Error & Exclude APK Build Artifacts from Vite Optimizer (18 Oct 2026)
+- **Observed error & root cause:**
+  - Build/pre-warming error: `Error: The following dependencies are imported but could not be resolved: @emotion/is-prop-valid`.
+  - Root cause: Vite's dependency optimizer (`optimizeDeps`), when missing an explicit `entries` configuration, defaults to crawling all `**/*.html` files across the workspace. When an APK export was run via `scripts/build_apk.mjs`, temporary bundled output was saved into `android/build_apk_work/assets/public/index.html`. Vite scanned this build artifact, discovered a reference to `@emotion/is-prop-valid`, and attempted to pre-bundle it as a bare module dependency. Because `@emotion/is-prop-valid` is not in `package.json`, Vite threw an unresolvable dependency error.
+- **Fixes applied:**
+  1. Configured `optimizeDeps.entries: ['index.html']` in `vite.config.ts` to strictly constrain Vite's dependency discovery to the root web entry point.
+  2. Added `exclude: ['@emotion/is-prop-valid']` and populated the full list of client package dependencies in `optimizeDeps.include`.
+  3. Added `**/android/**`, `**/build_apk_work/**`, `**/dist/**`, `**/build/**`, and `**/export/**` to `server.watch.ignored` in `vite.config.ts`.
+  4. Added cleanup of `workDir` in `scripts/build_apk.mjs` and pruned `android/build_apk_work`.
+- **Verification:**
+  - `npx vite optimize --force` runs cleanly with exit code 0.
+  - `lint_applet` (`tsc --noEmit`) succeeded with 0 errors.
+  - `compile_applet` (`npm run build`) succeeded with 0 errors.
+
+### 222. Player Floating Volume Autohide & CapCut Toolbar Quick Controls (18 Oct 2026)
+- **Problem & User Feedback:**
+  - In `SubtitleTimelineEditor.tsx`, the floating video overlay pill with volume adjustment and media metadata was fixed at `top-2 left-2 z-20` and always visible. This permanently occluded the upper video frame and interfered with previewing scenes and subtitle placements.
+- **Implementation & Interaction Design:**
+  1. **Autohide Inactivity Engine:** Added `showFloatingVolume` state with a configurable `wakeFloatingVolume` inactivity timer (`2800ms`). After 2.8s of no pointer movement or touch interactions, the overlay pill smoothly transitions out (`opacity-0 -translate-y-1 pointer-events-none`).
+  2. **Touch & Pointer Wake Listeners:** Attached `onPointerMove` and `onTouchStart` to the media container (`playerContainerRef`) so any hover, mouse movement, or screen tap on handheld mobile devices instantly wakes up the floating volume overlay.
+  3. **Interaction Lock During Slider Adjustments:** Added `isInteractingWithVolumeRef` and attached `onPointerDown`/`onPointerUp`/`onTouchStart`/`onTouchEnd` to the volume slider and overlay container. The autohide timer is paused while the user is dragging the volume slider or hovering directly over the pill, ensuring controls never vanish mid-adjustment.
+  4. **CapCut Toolbar Quick Sound Toggle:** Added a one-tap primary video mute/unmute button with volume percentage feedback next to the video badge in the persistent CapCut-style bottom controls row. This provides instantaneous sound toggling on mobile without having to wake the floating video overlay.
+- **Verification:**
+  - `lint_applet` (`tsc --noEmit`) succeeded with 0 errors.
+  - `compile_applet` (`npm run build`) succeeded with 0 errors.
+
+### 221. Fix Timeline Editor Video Source Lifecycle & YouTube Caption Service Compilation (18 Oct 2026)
+- **Observed errors & root cause:**
+  1. Build failure with `✘ [ERROR] No matching export in "src/services/youtubeCaptionService.ts" for import "segmentsToVtt"` when building `src/server/youtubeAndBrowserHandlers.ts`. `youtubeAndBrowserHandlers.ts` expected `segmentsToVtt` and `CaptionSegment` from `youtubeCaptionService.ts`, which were missing.
+  2. Linter error TS2322 in `src/server/youtubeAndBrowserHandlers.ts(1332,15)`: `YoutubeTranscript.fetchTranscript` segment mapping omitted the required `duration` property in `TimedCaptionSegment`.
+  3. Video not showing in Timeline Editor: In `SubtitleTimelineEditor.tsx`, the `mediaUrl` `useEffect` had an invalid conditional branch where the `effectiveAudioFile` object URL creation was erroneously placed inside `if (effectiveYoutubeUrl)`. When an uploaded video or local media file was provided without a YouTube URL, `effectiveYoutubeUrl` was `null`, falling through to `else { setMediaUrl(null); }`. This left `<video src={mediaUrl || undefined} />` with no source, so the video was never decoded or displayed in the timeline editor.
+- **Fixes applied:**
+  1. Exported `segmentsToVtt`, `msToVttTimecode`, and `CaptionSegment` type alias from `src/services/youtubeCaptionService.ts`.
+  2. Added `duration` property calculation to `YoutubeTranscript.fetchTranscript` segments in `src/server/youtubeAndBrowserHandlers.ts` and added optional `end?: number;` to `TimedCaptionSegment`.
+  3. Corrected `useEffect` in `SubtitleTimelineEditor.tsx` to handle `if (effectiveYoutubeUrl)` and `else if (effectiveAudioFile)` as distinct branches, properly generating and revoking object URLs for uploaded video and audio files.
+- **Verification:** Both `lint_applet` (`tsc --noEmit`) and `compile_applet` (`npm run build`) succeeded with 0 errors, and the dev server was restarted cleanly.
+
 ### 220. Fix Timeline Editor Video Display, Stable Media Key, and TypeScript Resolution Errors (17 Oct 2026)
 - **Observed errors & root cause:**
   1. Build / linter failed with `Cannot find name 'FileAudio'` in `SubtitleTimelineEditor.tsx`: `FileAudio` was used in the audio track placeholder UI but omitted from the `lucide-react` import list.
