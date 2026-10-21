@@ -44,7 +44,7 @@ export async function callAudioTranscriptionModel(
     for (const model of modelsToTry) {
         try {
             const req = { ...request, model };
-            return await withRetry(() => genAI.models.generateContent(req), 1);
+            return await withRetry(() => genAI.models.generateContent(req), 3, 2500);
         } catch (err: any) {
             lastError = err;
             const msg = (err?.message || '') + JSON.stringify(err || '');
@@ -83,15 +83,37 @@ export async function callAudioTranscriptionModel(
 
 // Helper function to parse and fix a timestamp string (e.g. "01:09:50,500" or "01:00,000" or "00:01:23.456")
 function fixTimestamp(ts: string): string {
-    ts = ts.trim();
-    
+    // Strip any trailing WebVTT cue settings like "align:start position:0%"
+    ts = ts.trim().split(/\s+/)[0] || '';
+
+    // Case 0: HH:MM:SS:mmm (colon before 3-digit milliseconds)
+    const hhmmssColonMs = ts.match(/^(\d{1,2}):(\d{2}):(\d{2}):(\d{1,3})$/);
+    if (hhmmssColonMs) {
+        const [_, h, m, s, ms] = hhmmssColonMs;
+        return `${h.padStart(2, '0')}:${m.padStart(2, '0')}:${s.padStart(2, '0')},${ms.padEnd(3, '0').slice(0, 3)}`;
+    }
+
+    // Case 0b: MM:SS:mmm (where 3rd group is 3-digit milliseconds, e.g. 08:15:250)
+    const mmssColonMs = ts.match(/^(\d{1,2}):(\d{2}):(\d{3})$/);
+    if (mmssColonMs) {
+        const [_, m, s, ms] = mmssColonMs;
+        return `00:${m.padStart(2, '0')}:${s.padStart(2, '0')},${ms}`;
+    }
+
     // Case 1: MM:SS,mmm or MM:SS.mmm or M:SS,mmm (missing hour prefix)
     const mmssMatch = ts.match(/^(\d{1,2}):(\d{2})[.,](\d{1,3})$/);
     if (mmssMatch) {
         const [_, m, s, ms] = mmssMatch;
         return `00:${m.padStart(2, '0')}:${s.padStart(2, '0')},${ms.padEnd(3, '0').slice(0, 3)}`;
     }
-    
+
+    // Case 1b: MM:SS without milliseconds (e.g. 08:15)
+    const mmssNoMs = ts.match(/^(\d{1,2}):(\d{2})$/);
+    if (mmssNoMs) {
+        const [_, m, s] = mmssNoMs;
+        return `00:${m.padStart(2, '0')}:${s.padStart(2, '0')},000`;
+    }
+
     // Case 2: Standard HH:MM:SS,mmm or H:MM:SS.mmm or HH:MM:SS (no ms)
     const standardMatch = ts.match(/^(\d{1,3}):(\d{2}):(\d{2})(?:[.,](\d{1,3}))?$/);
     if (standardMatch) {
@@ -367,23 +389,44 @@ export function autoRepairTimeline<T extends { start: number; end: number; text?
  */
 export async function getMediaDuration(file: File): Promise<number> {
     return new Promise((resolve) => {
+        let settled = false;
+        let url = '';
+        const finish = (val: number) => {
+            if (settled) return;
+            settled = true;
+            if (url) {
+                try { URL.revokeObjectURL(url); } catch (_) {}
+            }
+            resolve(val > 0 && !isNaN(val) && isFinite(val) ? val : 0);
+        };
+        const timer = setTimeout(() => finish(0), 6000);
         try {
-            const isVideo = file.type.includes('video') || file.name.endsWith('.mp4') || file.name.endsWith('.webm') || file.name.endsWith('.mov');
+            const lower = (file.name || '').toLowerCase();
+            const isVideo = file.type.includes('video') || /\.(mp4|webm|mov|mkv|m4v|avi)$/i.test(lower);
             const element = document.createElement(isVideo ? 'video' : 'audio');
             element.preload = 'metadata';
-            const url = URL.createObjectURL(file);
+            url = URL.createObjectURL(file);
             element.onloadedmetadata = () => {
-                const dur = element.duration;
-                URL.revokeObjectURL(url);
-                resolve(dur && !isNaN(dur) && isFinite(dur) ? dur : 0);
+                if (element.duration === Infinity) {
+                    element.currentTime = 1e101;
+                    element.ontimeupdate = () => {
+                        element.ontimeupdate = null;
+                        clearTimeout(timer);
+                        finish(element.duration);
+                    };
+                } else {
+                    clearTimeout(timer);
+                    finish(element.duration);
+                }
             };
             element.onerror = () => {
-                URL.revokeObjectURL(url);
-                resolve(0);
+                clearTimeout(timer);
+                finish(0);
             };
             element.src = url;
         } catch {
-            resolve(0);
+            clearTimeout(timer);
+            finish(0);
         }
     });
 }
@@ -483,6 +526,76 @@ function deduplicateAndMergeBlocks(
     return result;
 }
 
+/**
+ * STAGE 1 TIMELINE LOCK:
+ * Segments any oversized multi-sentence native cues and repairs overlaps ONCE on the pure native 1-line cues,
+ * then freezes startMs, endMs, startTs, and endTs so Stage 2 (Style Format / Subtitle Mode) NEVER alters original timing.
+ */
+export function lockStage1NativeBlocks(rawNativeBlocks: ParsedRawBlock[]): ParsedRawBlock[] {
+    if (!rawNativeBlocks || rawNativeBlocks.length === 0) return [];
+    const blocksForRepair = rawNativeBlocks.map((b, i) => ({
+        id: String(i + 1),
+        start: b.startMs,
+        end: b.endMs,
+        text: b.textLines.join('\n').trim(),
+        textLines: b.textLines
+    }));
+    const { repairedBlocks } = autoRepairTimeline(blocksForRepair);
+    const locked: ParsedRawBlock[] = repairedBlocks.map(rb => {
+        const startMs = Math.max(0, Math.round(rb.start));
+        const endMs = Math.max(startMs + 400, Math.round(rb.end));
+        const cleanLines = (rb.textLines && rb.textLines.length > 0
+            ? rb.textLines
+            : String(rb.text || '').split('\n')
+        ).map((l: string) => l.replace(/\.$/, '').trim()).filter(Boolean);
+        return {
+            startMs,
+            endMs,
+            startTs: msToTime(startMs),
+            endTs: msToTime(endMs),
+            textLines: cleanLines.length > 0 ? cleanLines : ['...']
+        };
+    });
+
+    // Persist the pure Stage 1 native SRT so the user can re-apply any Style Format / Mode later while keeping original time
+    try {
+        if (typeof localStorage !== 'undefined' && locked.length > 0) {
+            localStorage.setItem('mv_stage1_native_srt', reconstructSRT(locked));
+        }
+    } catch (_) {}
+
+    return locked;
+}
+
+function applyVisualLayerStyling(lines: string[], mode: string, styling?: string): string[] {
+    const clean = lines.map(l => l.replace(/<\/?font[^>]*>/gi, '').replace(/\.$/, '').trim()).filter(Boolean);
+    if (styling !== 'colors' || clean.length === 0) {
+        return clean;
+    }
+    if (clean.length === 1) {
+        return [`<font color="#38bdf8">${clean[0]}</font>`];
+    }
+    if (clean.length === 2) {
+        return [
+            clean[0],
+            `<font color="#facc15">${clean[1]}</font>`
+        ];
+    }
+    if (clean.length === 3) {
+        return [
+            clean[0],
+            `<font color="#38bdf8">${clean[1]}</font>`,
+            `<font color="#facc15">${clean[2]}</font>`
+        ];
+    }
+    return [
+        clean[0],
+        `<font color="#38bdf8">${clean[1]}</font>`,
+        `<font color="#4ade80">${clean[2]}</font>`,
+        `<font color="#facc15">${clean.slice(3).join(' ')}</font>`
+    ];
+}
+
 function parseCueMap(text: string): Map<number, string[]> {
     const cueMap = new Map<number, string[]>();
     const lines = text.split(/\r?\n/);
@@ -497,14 +610,18 @@ function parseCueMap(text: string): Map<number, string[]> {
     };
 
     for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
-        const match = line.match(/^\[(?:CUE\s*)?(\d+)\]\s*(.*)$/i);
+        const line = rawLine.trim().replace(/^\*\*|\*\*$/g, '').trim();
+        if (!line || line.startsWith('```')) continue;
+        // Skip accidental SRT timestamp lines if the model ever echoed one
+        if (line.includes('-->')) continue;
+
+        const match = line.match(/^(?:\[\s*(?:CUE\s*#?\s*)?(\d+)(?:\s*\|[^\]]*)?\s*\]|CUE\s*#?\s*(\d+)\s*[:\-])\s*(.*)$/i);
         if (match) {
             flush();
-            currentCueId = parseInt(match[1], 10);
-            if (match[2].trim()) {
-                currentLines.push(match[2].trim());
+            currentCueId = parseInt(match[1] || match[2], 10);
+            const remainder = (match[3] || '').trim();
+            if (remainder && !remainder.includes('-->')) {
+                currentLines.push(remainder);
             }
         } else if (currentCueId !== null) {
             currentLines.push(line);
@@ -514,71 +631,120 @@ function parseCueMap(text: string): Map<number, string[]> {
     return cueMap;
 }
 
+/**
+ * STAGE 2 — STYLE FORMAT / SUBTITLE MODE ADJUSTMENT (STRICT ORIGINAL TIME LOCK):
+ * Takes the Stage 1 Native blocks and transforms ONLY `textLines` according to the user's selected
+ * Style Format (`ori`, `dual`, `dual_trans`, `triple`, `quad`), Target Language, and Visual Styling (`none` | `colors`),
+ * while keeping every block's original `startMs`, `endMs`, `startTs`, and `endTs` 100% untouched.
+ */
 async function translateCuesById(
     blocks: ParsedRawBlock[],
     opts: GenerateSrtOptions,
     genAI: GoogleGenAI,
     onProgress?: (p: number) => void
 ): Promise<ParsedRawBlock[]> {
-    const { mode = 'ori', targetLang = 'Original' } = opts;
-    const cleanTarget = targetLang.trim();
-    const isOriginalOnly = cleanTarget === '' || cleanTarget.toLowerCase() === 'original' || cleanTarget.toLowerCase() === 'verbatim';
+    const { mode = 'ori', targetLang = 'Original', sourceLang, styling = 'none' } = opts;
+    const cleanTarget = (targetLang || '').trim();
+    const cleanSource = (sourceLang || '').trim();
+    const isSameAsSource = Boolean(
+        cleanSource &&
+        cleanSource.toLowerCase() !== 'auto-detect' &&
+        cleanTarget.toLowerCase() === cleanSource.toLowerCase()
+    );
+    const isOriginalOnly =
+        cleanTarget === '' ||
+        cleanTarget.toLowerCase() === 'original' ||
+        cleanTarget.toLowerCase() === 'verbatim' ||
+        isSameAsSource;
 
+    // If Standard 1-line mode in Original language, no translation call is needed—just apply visual styling while keeping exact original time
     if (mode === 'ori' && isOriginalOnly) {
-        return blocks;
+        return blocks.map(b => ({
+            startMs: b.startMs,
+            endMs: b.endMs,
+            startTs: b.startTs,
+            endTs: b.endTs,
+            textLines: applyVisualLayerStyling([b.textLines.join(' ').trim()], mode, styling)
+        }));
     }
 
-    const currentModel = getCurrentTextModel();
-    const BATCH_SIZE = 40;
+    const BATCH_SIZE = 45;
     const totalBatches = Math.ceil(blocks.length / BATCH_SIZE);
-    const translatedBlocks: ParsedRawBlock[] = blocks.map(b => ({ ...b, textLines: [...b.textLines] }));
+    // Deep-clone while strictly locking startMs, endMs, startTs, and endTs from Stage 1
+    const formattedBlocks: ParsedRawBlock[] = blocks.map(b => ({
+        startMs: b.startMs,
+        endMs: b.endMs,
+        startTs: b.startTs,
+        endTs: b.endTs,
+        textLines: [...b.textLines]
+    }));
+
+    const destLang = isOriginalOnly ? 'English' : cleanTarget;
 
     for (let b = 0; b < totalBatches; b++) {
         const batchStart = b * BATCH_SIZE;
         const batchBlocks = blocks.slice(batchStart, batchStart + BATCH_SIZE);
 
-        let systemInstruction = `You are an expert subtitle translation and formatting engine.
-Translate/format the provided dialogue cues according to the instructions.
+        let systemInstruction = `You are Stage 2 of a precision 2-Stage Subtitle Engine.
+Stage 1 has ALREADY transcribed the native spoken dialogue and locked the exact acoustic timestamps.
+Your job in Stage 2 is to adjust/format each native cue into the requested STYLE FORMAT / SUBTITLE MODE so that it fits naturally inside its locked time window WITHOUT ever changing timestamps or merging/splitting cues.
 
-CRITICAL ARCHITECTURAL RULES:
-1. PRESERVE EVERY CUE ID: Return each cue starting with [CUE X] where X is the exact integer ID.
-2. DO NOT MERGE OR SKIP: You must provide a translation for every single [CUE X].
-3. DO NOT OUTPUT TIMESTAMPS: Do not generate any timestamps. Timecodes are managed externally.
-4. Output format:
-[CUE X]
-Line 1
-Line 2 (if dual/multi-layered)`;
+CRITICAL RULES:
+1. PRESERVE EVERY CUE ID 1-TO-1: Return every cue starting with [CUE X] where X is the exact integer ID.
+2. NEVER MERGE, SPLIT, OR SKIP CUES: Output exactly 1 [CUE X] block for each input [CUE X].
+3. NEVER OUTPUT TIMESTAMPS: Do not output any timecodes. The original Stage 1 timestamps are locked externally.
+4. DURATION-AWARE BREVITY: Each input header shows its locked duration (e.g. [CUE 1 | 2.1s]). Keep translations concise and natural so the viewer can read them comfortably within that exact time window. Do not end lines with trailing periods (.).`;
 
         if (mode === 'ori') {
-            systemInstruction += `\n\nMODE: SINGLE-LAYER TRANSLATION into ${cleanTarget}. For each cue, output only the translated text in ${cleanTarget}.`;
+            systemInstruction += `\n\nSTYLE FORMAT: STANDARD (1-LINE TRANSLATED)
+For each [CUE X], output ONLY 1 concise line translated into ${destLang}:
+[CUE X]
+<Concise ${destLang} translation>`;
         } else if (mode === 'dual') {
-            const destLang = isOriginalOnly ? 'English' : cleanTarget;
-            systemInstruction += `\n\nMODE: BILINGUAL (DUAL-LAYER). For each cue, output exactly two lines:\nLine 1: Original verbatim spoken text\nLine 2: Faithful ${destLang} translation`;
+            systemInstruction += `\n\nSTYLE FORMAT: BILINGUAL (2-LINE: NATIVE + TRANSLATED)
+For each [CUE X], output ONLY the faithful, concise ${destLang} translation (1 line). Our engine will automatically lock the original Native line on Line 1 and place your ${destLang} translation on Line 2:
+[CUE X]
+<Concise ${destLang} translation>`;
         } else if (mode === 'dual_trans') {
-            const destLang = isOriginalOnly ? 'Spanish' : cleanTarget;
-            systemInstruction += `\n\nMODE: DUAL TRANSLATION. For each cue, output exactly two lines:\nLine 1: English translation\nLine 2: ${destLang} translation`;
+            const secondLang = destLang.toLowerCase() === 'english' ? 'Indonesian' : destLang;
+            systemInstruction += `\n\nSTYLE FORMAT: DUAL TRANSLATION (2-LINE: ENGLISH + ${secondLang.toUpperCase()})
+For each [CUE X], output EXACTLY 2 lines:
+[CUE X]
+<Line 1: Concise English translation>
+<Line 2: Concise ${secondLang} translation>`;
         } else if (mode === 'triple') {
-            const destLang = isOriginalOnly ? 'English' : cleanTarget;
-            systemInstruction += `\n\nMODE: TRIPLE-LAYER. For each cue, output three lines:\nLine 1: Original verbatim spoken text\nLine 2: Accurate phonetic transliteration\nLine 3: Faithful ${destLang} translation`;
+            systemInstruction += `\n\nSTYLE FORMAT: TRIPLE LAYER (3-LINE: NATIVE + ROMANIZED + TRANSLATED)
+For each [CUE X], output EXACTLY 2 lines (Line 1: Accurate Romanized phonetic reading such as Romaji/Pinyin/Revised Romanization; Line 2: Concise ${destLang} translation). Our engine will automatically lock the original Native script on the top line:
+[CUE X]
+<Accurate Romanized phonetic pronunciation>
+<Concise ${destLang} translation>`;
         } else if (mode === 'quad') {
-            const destLang = isOriginalOnly ? 'Spanish' : cleanTarget;
-            systemInstruction += `\n\nMODE: QUAD-LAYER. For each cue, output four lines:\nLine 1: Original verbatim spoken text\nLine 2: Accurate phonetic transliteration\nLine 3: Literal English translation\nLine 4: Faithful ${destLang} translation`;
+            const fourthLang = destLang.toLowerCase() === 'english' ? 'Indonesian' : destLang;
+            systemInstruction += `\n\nSTYLE FORMAT: QUAD LAYER (4-LINE: NATIVE + ROMANIZED + ENGLISH + ${fourthLang.toUpperCase()})
+For each [CUE X], output EXACTLY 3 lines (Line 1: Accurate Romanized phonetic pronunciation; Line 2: Literal English meaning; Line 3: Natural ${fourthLang} translation). Our engine will automatically lock the original Native script on the top line:
+[CUE X]
+<Accurate Romanized phonetic pronunciation>
+<Literal English translation>
+<Natural ${fourthLang} translation>`;
         }
 
         if (opts.contextInstruction && opts.contextInstruction.trim() !== '') {
-            systemInstruction += `\n\nUSER CONTEXT:\n"""\n${opts.contextInstruction.trim()}\n"""`;
+            systemInstruction += `\n\nUSER CONTEXT & TERMINOLOGY:\n"""\n${opts.contextInstruction.trim()}\n"""`;
         }
 
         const inputPayload = batchBlocks.map((blk, idx) => {
             const cueId = batchStart + idx + 1;
-            return `[CUE ${cueId}]\n${blk.textLines.join('\n')}`;
+            const durSec = Math.max(0.5, (blk.endMs - blk.startMs) / 1000).toFixed(1);
+            const nativeLine = blk.textLines.join(' ').trim();
+            return `[CUE ${cueId} | ${durSec}s]\n${nativeLine}`;
         }).join('\n\n');
 
         try {
             const res = await callAudioTranscriptionModel(genAI, {
-                contents: `Please translate and format these dialogue cues:\n\n${inputPayload}`,
+                contents: `Format and translate these Stage 1 native dialogue cues into the requested Subtitle Mode while respecting each cue's locked duration:\n\n${inputPayload}`,
                 config: {
                     temperature: 0.1,
+                    maxOutputTokens: 16384,
                     systemInstruction
                 }
             });
@@ -588,15 +754,56 @@ Line 2 (if dual/multi-layered)`;
             for (let i = 0; i < batchBlocks.length; i++) {
                 const cueId = batchStart + i + 1;
                 const globalIdx = batchStart + i;
-                if (cueMap.has(cueId)) {
-                    const translatedLines = cueMap.get(cueId)!;
-                    if (translatedLines.length > 0) {
-                        translatedBlocks[globalIdx].textLines = translatedLines;
+                const nativeLine = batchBlocks[i].textLines.join(' ').replace(/<\/?font[^>]*>/gi, '').trim();
+                const aiLines = (cueMap.get(cueId) || []).map(l => l.replace(/<\/?font[^>]*>/gi, '').trim()).filter(Boolean);
+
+                let finalLines: string[] = [nativeLine];
+
+                if (aiLines.length > 0) {
+                    if (mode === 'ori') {
+                        finalLines = [aiLines.join(' ')];
+                    } else if (mode === 'dual') {
+                        // If AI returned 2 lines where line 1 repeats native, take line 2; otherwise aiLines[0] is the translation
+                        const transLine = (aiLines.length >= 2 && normalizeTextForMatch(aiLines[0]) === normalizeTextForMatch(nativeLine))
+                            ? aiLines.slice(1).join(' ')
+                            : aiLines[aiLines.length - 1];
+                        finalLines = [nativeLine, transLine];
+                    } else if (mode === 'dual_trans') {
+                        if (aiLines.length >= 2) {
+                            finalLines = [aiLines[0], aiLines.slice(1).join(' ')];
+                        } else {
+                            finalLines = [aiLines[0], aiLines[0]];
+                        }
+                    } else if (mode === 'triple') {
+                        // Filter out nativeLine if AI echoed it as the first line
+                        const filtered = (aiLines.length >= 3 && normalizeTextForMatch(aiLines[0]) === normalizeTextForMatch(nativeLine))
+                            ? aiLines.slice(1)
+                            : aiLines;
+                        const romaji = filtered[0] || nativeLine;
+                        const trans = filtered.slice(1).join(' ') || filtered[0] || '';
+                        finalLines = [nativeLine, romaji, trans].filter(Boolean);
+                    } else if (mode === 'quad') {
+                        const filtered = (aiLines.length >= 4 && normalizeTextForMatch(aiLines[0]) === normalizeTextForMatch(nativeLine))
+                            ? aiLines.slice(1)
+                            : aiLines;
+                        const romaji = filtered[0] || '';
+                        const litEn = filtered[1] || filtered[0] || '';
+                        const targetTrans = filtered.slice(2).join(' ') || filtered[filtered.length - 1] || '';
+                        finalLines = [nativeLine, romaji, litEn, targetTrans].filter(Boolean);
                     }
                 }
+
+                // Lock original Stage 1 timestamps and apply optional visual layer styling
+                formattedBlocks[globalIdx] = {
+                    startMs: batchBlocks[i].startMs,
+                    endMs: batchBlocks[i].endMs,
+                    startTs: batchBlocks[i].startTs,
+                    endTs: batchBlocks[i].endTs,
+                    textLines: applyVisualLayerStyling(finalLines, mode, styling)
+                };
             }
         } catch (err) {
-            console.warn(`[SRT Generator] Batch translation failed for cues ${batchStart + 1}-${batchStart + batchBlocks.length}:`, err);
+            console.warn(`[SRT Stage 2] Batch formatting failed for cues ${batchStart + 1}-${batchStart + batchBlocks.length}:`, err);
         }
 
         if (onProgress) {
@@ -604,87 +811,37 @@ Line 2 (if dual/multi-layered)`;
         }
     }
 
-    return translatedBlocks;
+    return formattedBlocks;
 }
 
 /**
- * Transforms an existing native/original SRT transcript into the requested Subtitle Mode
- * (Bilingual, Dual Translation, Triple Layer, Quad Layer, or Single-layer translation).
- * Uses the native subtitle cues and exact timestamps as the source, eliminating the need
- * to re-upload or re-analyze the audio media file!
+ * Re-applies any Style Format / Subtitle Mode (`ori`, `dual`, `dual_trans`, `triple`, `quad`),
+ * Target Language, and Visual Styling (`none` | `colors`) to an existing SRT string
+ * while keeping 100% of the original timestamps locked.
  */
-export async function generateSubModeFromNativeSRT(
-    nativeSrt: string,
-    options: {
-        mode: 'standard' | 'bilingual' | 'dual_trans' | 'triple' | 'quad';
-        targetLang: string;
-        sourceLang?: string;
-        contextInstruction?: string;
-        apiKey?: string;
-        onProgress?: (p: number) => void;
-    }
+export async function formatExistingSRTKeepTime(
+    existingSrt: string,
+    opts: GenerateSrtOptions
 ): Promise<string> {
-    if (!nativeSrt || !nativeSrt.trim()) {
-        throw new Error("No native subtitle content provided to transform into sub mode.");
+    const rawBlocks = parseRawBlocks(existingSrt);
+    if (rawBlocks.length === 0) {
+        throw new Error("No valid timed subtitle cues found to format.");
     }
-
-    const { mode, targetLang, sourceLang, contextInstruction, apiKey, onProgress } = options;
-    const keyToUse = getEffectiveGeminiApiKey(apiKey);
-    const genAI = getGenAI(keyToUse);
-
-    const srtMode = mode === 'standard' ? 'ori' : mode === 'bilingual' ? 'dual' : mode === 'dual_trans' ? 'dual_trans' : mode === 'triple' ? 'triple' : 'quad';
-    const cleanTarget = (targetLang || '').trim();
-    const isOriginalOnly = cleanTarget === '' || cleanTarget.toLowerCase() === 'original' || cleanTarget.toLowerCase() === 'verbatim';
-
-    if (srtMode === 'ori' && isOriginalOnly) {
-        return nativeSrt;
-    }
-
-    const blocks = parseRawBlocks(nativeSrt);
-    if (blocks.length === 0) {
-        return nativeSrt;
-    }
-
-    // Ensure we work with the clean first/native line if input blocks were already multi-line
-    const normalizedBlocks: ParsedRawBlock[] = blocks.map(b => ({
-        ...b,
-        textLines: [b.textLines[0] || '']
-    }));
-
-    if (onProgress) onProgress(20);
-
-    const translatedBlocks = await translateCuesById(
-        normalizedBlocks,
-        {
-            mode: srtMode as any,
-            targetLang: isOriginalOnly ? 'English' : cleanTarget,
-            sourceLang,
-            contextInstruction,
-            apiKey: keyToUse
-        },
-        genAI,
-        onProgress
-    );
-
-    if (onProgress) onProgress(95);
-
-    const { repairedBlocks } = autoRepairTimeline(translatedBlocks.map(b => ({
-        start: b.startMs,
-        end: b.endMs,
+    // Extract the top native line from each block while keeping exact original startMs/endMs/startTs/endTs
+    const nativeLockedBlocks: ParsedRawBlock[] = rawBlocks.map(b => ({
+        startMs: b.startMs,
+        endMs: b.endMs,
         startTs: b.startTs,
         endTs: b.endTs,
-        textLines: b.textLines
-    })));
-
-    const finalBlocks: ParsedRawBlock[] = repairedBlocks.map(rb => ({
-        startMs: rb.start,
-        endMs: rb.end,
-        startTs: msToTime(rb.start),
-        endTs: msToTime(rb.end),
-        textLines: rb.textLines
+        textLines: [b.textLines[0]?.replace(/<\/?font[^>]*>/gi, '').trim() || b.textLines.join(' ').trim()]
     }));
 
-    return reconstructSRT(finalBlocks);
+    const keyToUse = getEffectiveGeminiApiKey(opts.apiKey);
+    const genAI = getGenAI(keyToUse);
+    if (opts.onProgress) opts.onProgress(20);
+    const formatted = await translateCuesById(nativeLockedBlocks, opts, genAI, opts.onProgress);
+    if (opts.onProgress) opts.onProgress(100);
+    return reconstructSRT(formatted);
 }
 
 async function transcribeSingleChunk(
@@ -760,7 +917,7 @@ CRITICAL TEMPORAL & COMPLETENESS CONSTRAINTS:
         contents: { parts },
         config: {
             temperature: 0.1,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 32768,
             systemInstruction: pass1Instruction,
         }
     });
@@ -770,6 +927,114 @@ CRITICAL TEMPORAL & COMPLETENESS CONSTRAINTS:
         srt = srt.replace(/^```[a-z]*\r?\n/, '').replace(/\r?\n```$/, '');
     }
     return srt;
+}
+
+function parseResumeTimeToSec(resumeTime?: string): number {
+    if (!resumeTime || !resumeTime.trim()) return 0;
+    const parts = resumeTime.trim().replace(',', '.').split(':').map(Number);
+    if (parts.some(isNaN)) return 0;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0] || 0;
+}
+
+/**
+ * Byte-windowed streaming audio decode fallback for massive audio files (e.g. 80MB+ MP3/AAC/WAV)
+ * when full-file decodeAudioData exceeds browser/WebView contiguous PCM memory limits.
+ */
+async function generateByteWindowedChunkedSRT(
+    opts: GenerateSrtOptions,
+    totalDurationSec: number,
+    genAI: GoogleGenAI,
+    apiKey: string
+): Promise<string> {
+    const { audioFile, onProgress } = opts;
+    if (!audioFile) throw new Error("No audio file provided.");
+
+    const WINDOW_BYTES = 10 * 1024 * 1024; // 10 MB per window (~4.5 to 5 minutes of audio)
+    const totalWindows = Math.max(1, Math.ceil(audioFile.size / WINDOW_BYTES));
+    const CHUNK_DURATION_SEC = 150;
+    const OVERLAP_SEC = 5;
+    const STEP_SEC = CHUNK_DURATION_SEC - OVERLAP_SEC;
+
+    let allBlocks: ParsedRawBlock[] = [];
+    let accumulatedTimeOffsetSec = parseResumeTimeToSec(opts.resumeTime);
+    const startByteRatio = totalDurationSec > 0 && accumulatedTimeOffsetSec > 0
+        ? Math.min(0.95, accumulatedTimeOffsetSec / totalDurationSec)
+        : 0;
+    const startWindowIdx = Math.floor(startByteRatio * totalWindows);
+
+    for (let w = startWindowIdx; w < totalWindows; w++) {
+        const byteStart = w * WINDOW_BYTES;
+        const byteEnd = Math.min(audioFile.size, (w + 1) * WINDOW_BYTES);
+        if (byteEnd - byteStart < 32 * 1024) break;
+
+        const sliceFile = new File(
+            [audioFile.slice(byteStart, byteEnd)],
+            `window_${w}_${audioFile.name}`,
+            { type: audioFile.type || 'audio/mpeg' }
+        );
+
+        const decoded = await decodeAudioBufferFromFile(sliceFile);
+        const winBuffer = decoded.audioBuffer;
+        const winDur = winBuffer.duration;
+        const subChunks = Math.max(1, Math.ceil((winDur - OVERLAP_SEC) / STEP_SEC));
+
+        for (let c = 0; c < subChunks; c++) {
+            const subStartSec = c * STEP_SEC;
+            const subDurSec = Math.min(CHUNK_DURATION_SEC, winDur - subStartSec);
+            if (subDurSec <= 1) break;
+
+            if (onProgress) {
+                const overallProgress = ((w - startWindowIdx) + (c / subChunks)) / Math.max(1, totalWindows - startWindowIdx);
+                onProgress(Math.round(15 + overallProgress * 58));
+            }
+
+            const { wavBlob } = extractWavSliceFromBuffer(winBuffer, subStartSec, subDurSec, 12000);
+            let rawChunkSrt = '';
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    rawChunkSrt = await transcribeSingleChunk(wavBlob, subDurSec, opts, genAI, apiKey);
+                    if (rawChunkSrt && rawChunkSrt.trim()) break;
+                } catch (err) {
+                    console.warn(`[SRT Byte-Window] Window ${w + 1}/${totalWindows} chunk ${c + 1} attempt ${attempt + 1} notice:`, err);
+                    await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
+                }
+            }
+
+            const chunkBlocks = parseRawBlocks(rawChunkSrt);
+            const globalChunkStartMs = Math.round((accumulatedTimeOffsetSec + subStartSec) * 1000);
+            const shiftedBlocks: ParsedRawBlock[] = chunkBlocks.map(b => {
+                const startMs = b.startMs + globalChunkStartMs;
+                const endMs = b.endMs + globalChunkStartMs;
+                return {
+                    startMs,
+                    endMs,
+                    startTs: msToTime(startMs),
+                    endTs: msToTime(endMs),
+                    textLines: b.textLines
+                };
+            });
+
+            allBlocks = deduplicateAndMergeBlocks(allBlocks, shiftedBlocks, globalChunkStartMs);
+        }
+
+        accumulatedTimeOffsetSec += winDur;
+    }
+
+    if (allBlocks.length === 0) {
+        throw new Error("No speech segments decoded from byte-windowed audio.");
+    }
+
+    // Stage 1 Lock: Clean and lock original native timestamps BEFORE Stage 2 Mode/Style adjustment
+    allBlocks = lockStage1NativeBlocks(allBlocks);
+
+    // Stage 2: Adjust Style Format / Subtitle Mode & Visual Styling while keeping 100% of original Stage 1 timestamps
+    if (onProgress) onProgress(75);
+    allBlocks = await translateCuesById(allBlocks, opts, genAI, onProgress);
+
+    if (onProgress) onProgress(95);
+    return reconstructSRT(allBlocks);
 }
 
 async function generateChunkedSRT(
@@ -791,9 +1056,13 @@ async function generateChunkedSRT(
     try {
         const decoded = await decodeAudioBufferFromFile(audioFile);
         audioBuffer = decoded.audioBuffer;
-        duration = Math.min(totalDurationSec, audioBuffer.duration);
+        // CRITICAL FIX: Never cap audioBuffer.duration with a 300s fallback!
+        // Always trust the real decoded PCM duration (e.g. 2280s = 38 minutes).
+        duration = audioBuffer.duration > 0
+            ? audioBuffer.duration
+            : (totalDurationSec > 0 ? totalDurationSec : 3600);
     } catch (decodeErr) {
-        console.warn('[SRT Generator] decodeAudioData failed on media file (likely video container or unsupported codec). Falling back to direct single-pass transcription:', decodeErr);
+        console.warn('[SRT Generator] Full-file decodeAudioData failed on media file:', decodeErr);
         let safeMimeType = audioFile.type || '';
         const lowerName = (audioFile.name || '').toLowerCase();
         const extension = lowerName.split('.').pop() || '';
@@ -817,47 +1086,95 @@ async function generateChunkedSRT(
         } else if (genericMimeType) {
             safeMimeType = 'audio/mpeg';
         }
+
+        // If this is a large streamable audio file (e.g. 80MB MP3/AAC/WAV/OGG) that ran out of contiguous PCM RAM,
+        // decode it in 10MB byte windows before falling back to cloud single-pass!
+        const isStreamableAudio = /\.(mp3|aac|wav|ogg|opus|flac)$/i.test(lowerName) || /^audio\/(mpeg|mp3|aac|wav|ogg|flac)/i.test(safeMimeType);
+        if (isStreamableAudio && audioFile.size > 12 * 1024 * 1024) {
+            try {
+                console.log('[SRT Generator] Trying 10MB Byte-Windowed Audio Decoding for large audio file...');
+                return await generateByteWindowedChunkedSRT(opts, totalDurationSec, genAI, apiKey);
+            } catch (byteWinErr) {
+                console.warn('[SRT Generator] Byte-windowed decode fallback failed, proceeding to Cloud Multi-Pass Transcription:', byteWinErr);
+            }
+        }
+
         const isVideoSource = safeMimeType.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts|mxf|vob|rm|rmvb|divx|f4v|asf)$/i.test(lowerName);
         const isVideo = isVideoSource && opts.processingMode === 'video_audio';
-        return await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, apiKey);
+        return await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, apiKey, totalDurationSec);
     }
 
-    // 90-second chunks (90s) with 6-second overlap to guarantee compact ~2.8MB inlineData payloads and eliminate 15-cue token truncation
-    const CHUNK_DURATION_SEC = 90; 
-    const OVERLAP_SEC = 6;
-    const STEP_SEC = CHUNK_DURATION_SEC - OVERLAP_SEC; // 84 seconds
-    const totalChunks = Math.max(1, Math.ceil((duration - OVERLAP_SEC) / STEP_SEC));
+    // 150-second chunks (2.5 min) with 5-second overlap at 12kHz mono (~3.6MB WAV)
+    // Reduces total API calls for a 38-minute file from 28 down to 16 and prevents 8-10min rate-limit cutoffs
+    const CHUNK_DURATION_SEC = 150; 
+    const OVERLAP_SEC = 5;
+    const STEP_SEC = CHUNK_DURATION_SEC - OVERLAP_SEC; // 145 seconds
+    const resumeOffsetSec = parseResumeTimeToSec(opts.resumeTime);
+    const effectiveDurationSec = Math.max(0, duration - resumeOffsetSec);
+    const totalChunks = Math.max(1, Math.ceil((effectiveDurationSec - OVERLAP_SEC) / STEP_SEC));
 
-    console.log(`[SRT Generator] Anti-Drift Chunking active: ${totalChunks} chunks for ${Math.round(duration)}s audio`);
+    console.log(`[SRT Generator] Anti-Drift Chunking active: ${totalChunks} chunks for ${Math.round(duration)}s total audio (starting at ${Math.round(resumeOffsetSec)}s)`);
 
     let allBlocks: ParsedRawBlock[] = [];
 
     for (let c = 0; c < totalChunks; c++) {
-        const chunkStartSec = c * STEP_SEC;
+        const chunkStartSec = resumeOffsetSec + c * STEP_SEC;
         const chunkDurSec = Math.min(CHUNK_DURATION_SEC, duration - chunkStartSec);
         if (chunkDurSec <= 1) break;
 
         if (onProgress) {
-            const pct = Math.round(15 + (c / totalChunks) * 55);
+            const pct = Math.round(12 + (c / totalChunks) * 62);
             onProgress(pct);
         }
 
-        const { wavBlob } = extractWavSliceFromBuffer(audioBuffer, chunkStartSec, chunkDurSec);
-        const rawChunkSrt = await transcribeSingleChunk(wavBlob, chunkDurSec, opts, genAI, apiKey);
+        // Gentle pacing between chunks on long files (> 8 minutes) to avoid 429 RPM/TPM rate limit spikes at 8-10 min
+        if (c > 0 && totalChunks > 4) {
+            await new Promise(resolve => setTimeout(resolve, 900));
+        }
+
+        const { wavBlob } = extractWavSliceFromBuffer(audioBuffer, chunkStartSec, chunkDurSec, 12000);
+
+        let rawChunkSrt = '';
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                rawChunkSrt = await transcribeSingleChunk(wavBlob, chunkDurSec, opts, genAI, apiKey);
+                if (rawChunkSrt && rawChunkSrt.trim()) break;
+            } catch (chunkErr: any) {
+                console.warn(`[SRT Generator] Chunk ${c + 1}/${totalChunks} (${Math.round(chunkStartSec)}s-${Math.round(chunkStartSec + chunkDurSec)}s) attempt ${attempt + 1} failed:`, chunkErr?.message || chunkErr);
+                if (attempt < 2) {
+                    await new Promise(resolve => setTimeout(resolve, 3000 * (attempt + 1)));
+                }
+            }
+        }
+
+        if (!rawChunkSrt || !rawChunkSrt.trim()) {
+            console.warn(`[SRT Generator] Skipping empty chunk ${c + 1}/${totalChunks} and continuing remaining chunks...`);
+            continue;
+        }
+
         const chunkBlocks = parseRawBlocks(rawChunkSrt);
+        if (chunkBlocks.length === 0) continue;
 
         const chunkStartMs = Math.round(chunkStartSec * 1000);
-        const shiftedBlocks: ParsedRawBlock[] = chunkBlocks.map(b => {
-            const startMs = b.startMs + chunkStartMs;
-            const endMs = b.endMs + chunkStartMs;
-            return {
-                startMs,
-                endMs,
-                startTs: msToTime(startMs),
-                endTs: msToTime(endMs),
-                textLines: b.textLines
-            };
-        });
+        const chunkMaxRelMs = Math.round((chunkDurSec + 20) * 1000);
+
+        // Detect if Gemini returned already-absolute timestamps (e.g., around chunkStartMs) instead of 0-based relative timestamps
+        const firstStartMs = chunkBlocks[0].startMs;
+        const isAlreadyAbsolute = chunkStartSec >= 120 && firstStartMs >= (chunkStartMs - 15000);
+
+        const shiftedBlocks: ParsedRawBlock[] = chunkBlocks
+            .filter(b => isAlreadyAbsolute || b.startMs <= chunkMaxRelMs)
+            .map(b => {
+                const startMs = isAlreadyAbsolute ? b.startMs : b.startMs + chunkStartMs;
+                const endMs = isAlreadyAbsolute ? b.endMs : b.endMs + chunkStartMs;
+                return {
+                    startMs,
+                    endMs,
+                    startTs: msToTime(startMs),
+                    endTs: msToTime(endMs),
+                    textLines: b.textLines
+                };
+            });
 
         allBlocks = deduplicateAndMergeBlocks(allBlocks, shiftedBlocks, chunkStartMs);
     }
@@ -866,11 +1183,12 @@ async function generateChunkedSRT(
         throw new Error("No speech segments detected in any audio chunks.");
     }
 
-    // Pass 2: Translate cues by ID (if requested)
-    if (opts.mode !== 'ori' || (opts.targetLang && opts.targetLang !== 'Original' && opts.targetLang.toLowerCase() !== 'verbatim')) {
-        if (onProgress) onProgress(75);
-        allBlocks = await translateCuesById(allBlocks, opts, genAI, onProgress);
-    }
+    // Stage 1 Lock: Clean and lock original native timestamps BEFORE Stage 2 Mode/Style adjustment
+    allBlocks = lockStage1NativeBlocks(allBlocks);
+
+    // Stage 2: Adjust Style Format / Subtitle Mode & Visual Styling while keeping 100% of original Stage 1 timestamps
+    if (onProgress) onProgress(75);
+    allBlocks = await translateCuesById(allBlocks, opts, genAI, onProgress);
 
     if (onProgress) onProgress(95);
     return reconstructSRT(allBlocks);
@@ -881,7 +1199,8 @@ async function generateSinglePassSRT(
     safeMimeType: string,
     isVideo: boolean,
     genAI: GoogleGenAI,
-    keyToUse: string
+    keyToUse: string,
+    knownDurationSec = 0
 ): Promise<string> {
     const {
         audioFile,
@@ -1099,23 +1418,19 @@ Output ONLY the raw SRT format.`;
                 });
             } catch (uploadErr) {
                 console.warn('[SRT Generator] Single-pass file upload failed (possible 403 or quota). Attempting in-memory chunking or direct media slice:', uploadErr);
-                if (audioFile.size <= 25 * 1024 * 1024) {
-                    try {
-                        return await generateChunkedSRT(opts, 300, genAI, keyToUse);
-                    } catch (chunkErr) {
-                        console.warn('[SRT Generator] Chunking also failed on container. Slicing media for inline single-pass:', chunkErr);
-                        const sliceBlob = audioFile.slice(0, 14 * 1024 * 1024);
-                        const base64 = await blobToBase64(sliceBlob);
-                        parts.push({
-                            inlineData: {
-                                data: base64,
-                                mimeType: safeMimeType
-                            }
-                        });
-                        usedInline = true;
-                    }
-                } else {
-                    throw new Error(`Failed to upload large media file (${(audioFile.size / (1024 * 1024)).toFixed(1)}MB) to Gemini File API: ${(uploadErr as any)?.message || uploadErr}`);
+                try {
+                    return await generateChunkedSRT(opts, knownDurationSec || 3600, genAI, keyToUse);
+                } catch (chunkErr) {
+                    console.warn('[SRT Generator] Chunking also failed on container. Slicing media for inline single-pass:', chunkErr);
+                    const sliceBlob = audioFile.slice(0, 14 * 1024 * 1024);
+                    const base64 = await blobToBase64(sliceBlob);
+                    parts.push({
+                        inlineData: {
+                            data: base64,
+                            mimeType: safeMimeType
+                        }
+                    });
+                    usedInline = true;
                 }
             }
         }
@@ -1124,13 +1439,14 @@ Output ONLY the raw SRT format.`;
     }
 
     try {
-        if (onProgress) onProgress(60);
-        // Execute Pass 1 with model fallback
+        if (onProgress) onProgress(50);
+        // Execute Pass 1 with 65536 maxOutputTokens and automatic multi-window continuation for long media (e.g. 38+ min)
+        const mediaOnlyParts = parts.slice(1);
         const res1 = await callAudioTranscriptionModel(genAI, {
             contents: { parts },
             config: {
                 temperature: 0.1,
-                maxOutputTokens: 8192,
+                maxOutputTokens: 65536,
                 systemInstruction: pass1Instruction,
             }
         });
@@ -1145,12 +1461,114 @@ Output ONLY the raw SRT format.`;
             return validateAndFixSRT(pass1Srt);
         }
 
-        if (isSimpleOriginal) {
-            if (onProgress) onProgress(95);
-            return reconstructSRT(pass1Blocks);
+        // Determine target duration in ms so we detect if Gemini stopped early (e.g. at 8-10 min of a 38-min file)
+        let effectiveDurationSec = knownDurationSec;
+        if (!effectiveDurationSec && audioFile) {
+            try {
+                effectiveDurationSec = await getMediaDuration(audioFile);
+            } catch (_) {}
+        }
+        const targetDurationMs = effectiveDurationSec > 0 ? Math.round(effectiveDurationSec * 1000) : 0;
+
+        // Multi-Pass Auto-Continuation Loop:
+        // If Pass 1 stopped before the end of a long media file (or hit the ~8-10 minute single-turn generation window),
+        // automatically continue transcribing from the last cue timestamp using the already-uploaded media part!
+        const MAX_CONTINUATION_PASSES = 12;
+        for (let contPass = 1; contPass <= MAX_CONTINUATION_PASSES; contPass++) {
+            const lastBlock = pass1Blocks[pass1Blocks.length - 1];
+            const lastEndMs = lastBlock ? lastBlock.endMs : 0;
+
+            const needsContinuation = targetDurationMs > 0
+                ? (lastEndMs < targetDurationMs - 45000)
+                : (lastEndMs >= 210000 || pass1Blocks.length >= 90);
+
+            if (!needsContinuation || mediaOnlyParts.length === 0) {
+                break;
+            }
+
+            const resumeTs = msToTime(lastEndMs);
+            const targetEndTs = targetDurationMs > 0 ? msToTime(targetDurationMs) : 'the very end of the media';
+            console.log(`[SRT Generator] Auto-Continuation Pass #${contPass}: continuing from ${resumeTs} toward ${targetEndTs}...`);
+
+            if (onProgress) {
+                const pct = targetDurationMs > 0
+                    ? Math.min(74, Math.round(50 + (lastEndMs / targetDurationMs) * 24))
+                    : Math.min(74, 50 + contPass * 4);
+                onProgress(pct);
+            }
+
+            // Gentle delay before continuation pass to respect rate limits
+            await new Promise(resolve => setTimeout(resolve, 1200));
+
+            const contInstruction = `${pass1Instruction}
+
+CRITICAL CONTINUATION DIRECTIVE (PASS #${contPass + 1}):
+- The previous transcription pass already covered 00:00:00,000 up to ${resumeTs}.
+- Last transcribed line at ${resumeTs}: "${lastBlock.textLines.join(' ')}"
+- You MUST now CONTINUE transcribing strictly AFTER ${resumeTs} and proceed chronologically toward ${targetEndTs}.
+- DO NOT repeat any dialogue before ${resumeTs}.
+- Output your very first subtitle block at the exact timestamp >= ${resumeTs} where the next speech occurs, using absolute media timestamps (HH:MM:SS,mmm --> HH:MM:SS,mmm).`;
+
+            try {
+                const contRes = await callAudioTranscriptionModel(genAI, {
+                    contents: {
+                        parts: [
+                            { text: `Continue the SRT transcription strictly starting after timestamp ${resumeTs} through ${targetEndTs}.` },
+                            ...mediaOnlyParts
+                        ]
+                    },
+                    config: {
+                        temperature: 0.1,
+                        maxOutputTokens: 65536,
+                        systemInstruction: contInstruction,
+                    }
+                });
+
+                let contSrt = (contRes.text || "").trim();
+                if (contSrt.startsWith('```')) {
+                    contSrt = contSrt.replace(/^```[a-z]*\r?\n/, '').replace(/\r?\n```$/, '');
+                }
+
+                let contBlocks = parseRawBlocks(contSrt);
+                if (contBlocks.length === 0) {
+                    console.log(`[SRT Generator] Continuation pass #${contPass} returned 0 additional blocks. Finishing Pass 1.`);
+                    break;
+                }
+
+                // If the model accidentally returned 0-based relative timestamps instead of timestamps >= lastEndMs, shift them
+                if (lastEndMs > 60000 && contBlocks[0].startMs < lastEndMs * 0.4) {
+                    contBlocks = contBlocks.map(b => {
+                        const startMs = b.startMs + lastEndMs;
+                        const endMs = b.endMs + lastEndMs;
+                        return {
+                            startMs,
+                            endMs,
+                            startTs: msToTime(startMs),
+                            endTs: msToTime(endMs),
+                            textLines: b.textLines
+                        };
+                    });
+                }
+
+                const prevEndMs = lastEndMs;
+                pass1Blocks = deduplicateAndMergeBlocks(pass1Blocks, contBlocks, Math.max(0, lastEndMs - 5000));
+                const newLastEndMs = pass1Blocks[pass1Blocks.length - 1]?.endMs || prevEndMs;
+
+                // If timeline did not advance by at least 5 seconds, we have reached the end of spoken dialogue
+                if (newLastEndMs - prevEndMs < 5000) {
+                    console.log(`[SRT Generator] Continuation pass #${contPass} reached end of speech at ${msToTime(newLastEndMs)}.`);
+                    break;
+                }
+            } catch (contErr) {
+                console.warn(`[SRT Generator] Continuation pass #${contPass} encountered an error, preserving ${pass1Blocks.length} transcribed blocks:`, contErr);
+                break;
+            }
         }
 
-        // Pass 2: Translate cues by ID (preserving timestamps with 100% fidelity)
+        // Stage 1 Lock: Clean and lock original native timestamps BEFORE Stage 2 Mode/Style adjustment
+        pass1Blocks = lockStage1NativeBlocks(pass1Blocks);
+
+        // Stage 2: Adjust Style Format / Subtitle Mode & Visual Styling while keeping 100% of original Stage 1 timestamps
         if (onProgress) onProgress(75);
         pass1Blocks = await translateCuesById(pass1Blocks, opts, genAI, onProgress);
         if (onProgress) onProgress(95);
@@ -1161,7 +1579,7 @@ Output ONLY the raw SRT format.`;
         const errMsg = (e?.message || '') + JSON.stringify(e || '');
         if (!usedInline && (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing'))) {
             console.warn('[SRT Generator] Single-pass generation failed with permission error. Attempting in-memory chunking fallback...');
-            return await generateChunkedSRT(opts, 300, genAI, keyToUse);
+            return await generateChunkedSRT(opts, knownDurationSec || 3600, genAI, keyToUse);
         }
         console.error("SRT generation failed", e);
         throw e;
@@ -1197,55 +1615,20 @@ export async function generateYouTubeSRT(
         if (captionRes.success && captionRes.source === 'youtube_cc' && captionRes.segments && captionRes.segments.length > 0) {
             console.log(`[YouTube Captions] Retrieved ${captionRes.segments.length} authentic CC segments from YouTube:`, captionRes.language);
 
-            const isOriginalOnly = mode === 'ori' && (!targetLang || targetLang === 'Original' || targetLang.toLowerCase() === 'original' || (sourceLang && targetLang.toLowerCase() === sourceLang.toLowerCase()));
-
-            if (isOriginalOnly && captionRes.rawSrt) {
-                if (onProgress) onProgress(100);
-                const blocks = parseSubtitles(captionRes.rawSrt);
-                const { repairedBlocks } = autoRepairTimeline(blocks);
-                return generateSrt(repairedBlocks);
-            }
-
-            // Translate authentic timed cues while locking timestamps
-            if (onProgress) onProgress(65);
+            // Stage 1: Lock authentic YouTube CC native cues & timestamps
             const rawSrt = captionRes.rawSrt || segmentsToSrt(captionRes.segments);
+            let stage1Blocks = lockStage1NativeBlocks(parseRawBlocks(rawSrt));
 
-            const translationPrompt = `You are an expert subtitle translation and formatting engine.
-INPUT SUBTITLES (Official YouTube Closed Captions with precise millisecond timecodes):
-${rawSrt}
-
-CRITICAL TIMING & BREVITY RULES:
-1. You MUST keep EVERY timestamp (HH:MM:SS,mmm --> HH:MM:SS,mmm) and block number 100% IDENTICAL and INTACT.
-2. Do NOT modify, recalculate, merge, or re-time any timestamp.
-3. CONCISE SUBTITLES: Never output excessive text or long run-on sentences. Keep translations natural, concise, and punchy.
-
-TASK:
-- Mode: ${mode === 'dual' ? `Dual-layer bilingual (Line 1: Original text, Line 2: ${targetLang} translation)` : mode === 'dual_trans' ? `Dual translation (Line 1: English, Line 2: ${targetLang})` : mode === 'triple' ? `Triple layer (Line 1: Original, Line 2: Romanized phonetic, Line 3: ${targetLang} translation)` : `Translate to ${targetLang}`}
-- Ensure natural, context-aware translation while preserving the exact speech duration and subtitle segmentation.
-- Output ONLY the formatted standard SRT blocks without markdown fences or additional commentary.`;
-
-            try {
-                const translationRes = await withRetry(() => genAI.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: translationPrompt,
-                    config: { temperature: 0.1 }
-                }), 1);
-
-                const translatedText = (translationRes.text || '').replace(/^```(?:srt)?\s*/i, '').replace(/\s*```$/i, '').trim();
-                const translatedBlocks = parseSubtitles(translatedText);
-                if (translatedBlocks.length > 0) {
-                    if (onProgress) onProgress(100);
-                    const { repairedBlocks } = autoRepairTimeline(translatedBlocks);
-                    return generateSrt(repairedBlocks);
-                }
-            } catch (transErr) {
-                console.warn('[YouTube Captions] Translation error, returning authentic native original cues:', transErr);
-            }
-
+            // Stage 2: Apply Style Format / Subtitle Mode & Visual Styling while keeping 100% of original timestamps
+            if (onProgress) onProgress(65);
+            const stage2Blocks = await translateCuesById(
+                stage1Blocks,
+                { ...opts, mode, targetLang, sourceLang },
+                genAI,
+                onProgress
+            );
             if (onProgress) onProgress(100);
-            const fallbackBlocks = parseSubtitles(rawSrt);
-            const { repairedBlocks: repairedFallback } = autoRepairTimeline(fallbackBlocks);
-            return generateSrt(repairedFallback);
+            return reconstructSRT(stage2Blocks);
         }
 
         if (captionRes.requiresTranscription || captionRes.source === 'unavailable') {
@@ -1440,58 +1823,33 @@ export async function generateSRT(
     try {
         const mediaDuration = await getMediaDuration(audioFile);
 
-        // For large media files (>25MB, such as 80MB audio), in-browser Web Audio decodeAudioData
-        // will allocate gigabytes of uncompressed PCM data and crash the preview tab.
-        // Large files MUST be streamed directly to Gemini File API (supports up to 2GB) without Web Audio decoding!
-        const isLargeFile = Boolean(audioFile && audioFile.size > 25 * 1024 * 1024);
-
-        // If media duration > 75s or file > 3MB (and <= 25MB), activate Anti-Drift Chunking Engine
-        const shouldChunk = !isLargeFile && (mediaDuration > 75 || audioFile.size > 3 * 1024 * 1024 || (mediaDuration === 0 && audioFile.size > 1024 * 1024)) && (!resumeTime || resumeTime.trim() === '');
+        // If media duration > 75s or file > 3MB, activate Anti-Drift Chunking Engine to ensure 100% full-duration transcription
+        const shouldChunk = (mediaDuration > 75 || audioFile.size > 3 * 1024 * 1024 || (mediaDuration === 0 && audioFile.size > 1024 * 1024));
         if (shouldChunk) {
             try {
                 console.log(`[SRT Generator] Activating Anti-Drift Chunking Engine (duration: ${Math.round(mediaDuration)}s, size: ${(audioFile.size / (1024 * 1024)).toFixed(1)}MB).`);
-                rawSRT = await generateChunkedSRT(opts, mediaDuration || 300, genAI, keyToUse);
+                rawSRT = await generateChunkedSRT(opts, mediaDuration || 3600, genAI, keyToUse);
             } catch (chunkErr) {
-                console.warn('[SRT Generator] Chunked generation failed, attempting single-pass fallback:', chunkErr);
-                rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse);
+                console.warn('[SRT Generator] Chunked generation failed, attempting multi-pass cloud fallback:', chunkErr);
+                rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse, mediaDuration);
             }
         } else {
             try {
-                rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse);
+                rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse, mediaDuration);
             } catch (singleErr: any) {
                 const errMsg = (singleErr?.message || '') + JSON.stringify(singleErr || '');
-                if (!isLargeFile && (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing'))) {
+                if (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing')) {
                     console.warn('[SRT Generator] Single-pass hit upload/permission issue, falling back to in-memory chunking:', singleErr);
-                    rawSRT = await generateChunkedSRT(opts, mediaDuration || 300, genAI, keyToUse);
+                    rawSRT = await generateChunkedSRT(opts, mediaDuration || 3600, genAI, keyToUse);
                 } else {
                     throw singleErr;
                 }
             }
         }
 
-        let parsedBlocks = parseRawBlocks(rawSRT);
-        if (parsedBlocks.length > 0) {
-            const blocksForRepair = parsedBlocks.map(b => ({
-                start: b.startMs,
-                end: b.endMs,
-                startTs: b.startTs,
-                endTs: b.endTs,
-                textLines: b.textLines
-            }));
-            const { repairedBlocks } = autoRepairTimeline(blocksForRepair);
-            const issues = validateTimeline(repairedBlocks);
-            if (issues.length > 0) {
-                console.warn('[SRT Generator] Timeline validation notices:', issues);
-            }
-            const finalBlocks: ParsedRawBlock[] = repairedBlocks.map(rb => ({
-                startMs: rb.start,
-                endMs: rb.end,
-                startTs: msToTime(rb.start),
-                endTs: msToTime(rb.end),
-                textLines: rb.textLines
-            }));
-            return reconstructSRT(finalBlocks);
-        }
+        // Stage 1 already locked all native timestamps via lockStage1NativeBlocks,
+        // and Stage 2 adjusted only the text lines for the chosen Style Format / Mode.
+        // Return rawSRT directly so post-Stage-2 multi-line blocks are NEVER re-split or re-timed!
         return rawSRT;
     } catch (e) {
         console.error("SRT generation failed", e);
@@ -1549,10 +1907,6 @@ function encodeWAV(samples: Float32Array, sampleRate: number): Blob {
 }
 
 export async function decodeAudioBufferFromFile(file: File): Promise<{ audioBuffer: AudioBuffer; duration: number }> {
-    if (file.size > 25 * 1024 * 1024) {
-        throw new Error(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB) for in-browser Web Audio decoding. Please use direct File API streaming.`);
-    }
-
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) {
         throw new Error('AudioContext is not supported in this browser environment');
@@ -1563,7 +1917,13 @@ export async function decodeAudioBufferFromFile(file: File): Promise<{ audioBuff
         throw new Error('Media file buffer is empty (0 bytes)');
     }
 
-    const audioCtx = new AudioContextClass();
+    // Use 16kHz sampleRate when supported to reduce PCM memory footprint by 3x (67% less RAM on 80MB+ / 38-min files)
+    let audioCtx: AudioContext;
+    try {
+        audioCtx = new AudioContextClass({ sampleRate: 16000 });
+    } catch {
+        audioCtx = new AudioContextClass();
+    }
     try {
         let audioBuffer: AudioBuffer | null = null;
         let lastError: any = null;
@@ -1574,7 +1934,7 @@ export async function decodeAudioBufferFromFile(file: File): Promise<{ audioBuff
                 let settled = false;
                 try {
                     const ret = audioCtx.decodeAudioData(
-                        arrayBuffer.slice(0),
+                        arrayBuffer,
                         (decoded) => {
                             if (!settled) { settled = true; resolve(decoded); }
                         },

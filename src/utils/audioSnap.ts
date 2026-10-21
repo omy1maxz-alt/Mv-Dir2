@@ -82,11 +82,9 @@ export async function analyzeAudioFile(file: File, frameDurationMs: number = 10)
         return fallbackProfile;
     }
 
-    // Safety check for large video/audio files (>25MB for audio, or >20MB for video)
-    // Decoding an 80MB compressed audio file expands to >1.5GB of uncompressed 32-bit float PCM,
-    // which causes the browser process to run out of memory and immediately crash the preview tab.
-    if (file.size > 25 * 1024 * 1024 || (isVideoFile && file.size > 20 * 1024 * 1024)) {
-        console.warn(`[audioSnap] File (${(file.size / 1024 / 1024).toFixed(1)}MB, video=${isVideoFile}) exceeds in-memory Web Audio limit. Using lightweight fallback audio profile to protect browser memory.`);
+    // Safety check for extremely large video/audio files (>150MB or video files >80MB)
+    if (file.size > 200 * 1024 * 1024 || (isVideoFile && file.size > 80 * 1024 * 1024)) {
+        console.warn(`[audioSnap] File (${(file.size / 1024 / 1024).toFixed(1)}MB, video=${isVideoFile}) is large. Using lightweight fallback audio profile to protect browser memory.`);
         const estDurationSec = Math.max(10, Math.floor(file.size / (128 * 1024 / 8)));
         const fallbackFrames = Math.max(100, Math.floor(estDurationSec * 100));
         const dummyRms = new Float32Array(fallbackFrames).fill(0.3);
@@ -106,9 +104,8 @@ export async function analyzeAudioFile(file: File, frameDurationMs: number = 10)
         return profile;
     }
 
-    let audioCtx: any = null;
+    const audioCtx = new AudioContextClass();
     try {
-        audioCtx = new AudioContextClass();
         const arrayBuffer = await file.arrayBuffer();
         let audioBuffer: AudioBuffer | null = null;
         

@@ -1,46 +1,12 @@
 ## [Unreleased]
 
 ### Fixed
-- **80MB Audio Source Selection Crash & Web Audio Memory Exhaustion**:
-  - Fixed preview tab crash when selecting 80MB audio source: `analyzeAudioFile` in `src/utils/audioSnap.ts` previously permitted audio files up to 200MB into `AudioContext.decodeAudioData()`. Uncompressing 80MB of compressed MP3/AAC audio yields >1.5GB of raw Float32Array PCM data, exhausting browser memory and causing hard OOM crashes in the preview iframe.
-  - Lowered Web Audio decoding threshold to 25MB for audio files and 20MB for video containers, automatically switching to lightweight memory-safe fallback energy profiles.
-  - Guarded `decodeAudioBufferFromFile` and `generateSRT` in `src/services/gemini_srt.ts`: files >25MB bypass browser Web Audio chunking and stream directly to Gemini File API (supporting up to 2GB).
-  - Protected `persistMediaFile` in `src/components/SubtitlesTab.tsx` from allocating massive 80MB ArrayBuffers on IndexedDB structured clone fallbacks.
-
-### Added
-- **Focused Native Audio Caption Generation & Sub Mode from Subtitle Source**:
-  - Implemented 2-stage subtitle generation pipeline:
-    - **Stage 1 (Acoustic Focus)**: The initial generation strictly transcribes the native spoken audio (`mode: 'ori'`), dedicating 100% of model attention to vocal onsets/offsets and verbatim dialogue without translation interference.
-    - **Stage 2 (Sub Mode from Subtitle Source)**: Takes the generated native subtitle cues as the ground-truth source and builds the requested Sub Mode (`bilingual`, `dual_trans`, `triple`, `quad`, or translated standard) with 100% timecode lock.
-  - Added "Sub Mode Source" quick-transformation card in `SubtitlesTab.tsx`: Users can instantly generate or switch between Bilingual, Triple, or Quad subtitles directly from existing native subtitles in seconds without re-uploading or re-processing the 80MB media file.
-  - Added "Restore Native" button to switch back to the original native audio transcript at any time.
-
-### Added
-- **Android APK Export Updated with Latest Application Build**:
-  - Recompiled production bundle via Vite (`dist/`) and repackaged the Android APK (`mv-director-ai-v1.0.apk` and `mv-director.apk`) with all recent application updates, including floating player volume autohide, CapCut toolbar sound toggles, and YouTube caption enhancements.
-  - Aligned on 4-byte boundaries with `zipalign` and verified signatures using `apksigner` (v1 JAR, v2 scheme, and v3 scheme).
-  - Updated `export/export-info.json` and direct download endpoints (`/export/mv-director-ai-v1.0.apk` and `/mv-director.apk`).
-  - Added streamlined automated packaging tool `scripts/pack_latest_apk.py` and updated `npm run export:apk` in `package.json`.
-
-### Fixed
-- **Vite Dependency Scanner & APK Build Artifact Crawl Exclusion**:
-  - Resolved `Error: The following dependencies are imported but could not be resolved: @emotion/is-prop-valid`: Vite's dependency optimizer was scanning the entire repository without explicit entry constraints, accidentally discovering an internal HTML and bundled script in `android/build_apk_work/` and attempting to resolve bare internal modules.
-  - Configured `optimizeDeps.entries: ['index.html']` in `vite.config.ts` to strictly scope dependency scanning to the application entry point.
-  - Added `android/**`, `build_apk_work/**`, `dist/**`, and `export/**` to `server.watch.ignored`.
-  - Added automatic cleanup of `build_apk_work` in `scripts/build_apk.mjs` and pruned temporary build artifacts.
-
-### Added
-- **Player Floating Volume Autohide & CapCut Toolbar Quick Volume Control**:
-  - Implemented smart autohide for floating video player volume and information overlays in `SubtitleTimelineEditor.tsx`: the overlay pill (`top-2 left-2`) now automatically fades out smoothly after 2.8s of inactivity, leaving the video playback and preview frame 100% unobstructed.
-  - Added multi-touch and pointer wake listeners: tapping or moving a cursor/finger across the player immediately reveals the floating volume controls.
-  - Hover and active interaction lock: dragging the volume slider or hovering/touching the overlay pill pauses the autohide timer, preventing controls from disappearing mid-adjustment.
-  - Added dedicated one-tap primary video sound toggle and percentage indicator in the CapCut-style bottom controls bar so users on mobile can instantly check or toggle sound without needing the floating overlay to appear.
-
-### Fixed
-- **Timeline Editor Video Player & YouTube Caption Service Compilation**:
-  - Fixed video not showing in Timeline Editor: corrected the `mediaUrl` generation effect in `SubtitleTimelineEditor.tsx` where an accidental condition nesting caused `mediaUrl` to evaluate to `null` whenever `effectiveYoutubeUrl` was empty, leaving uploaded videos and audio files with no media source. Uploaded video and audio files now properly generate their object URLs and stream directly into the primary player.
-  - Resolved build failure in `src/server/youtubeAndBrowserHandlers.ts` by exporting `segmentsToVtt`, `CaptionSegment`, and `msToVttTimecode` from `src/services/youtubeCaptionService.ts`.
-  - Added missing `duration` property mapping to YouTube transcript segments in `src/server/youtubeAndBrowserHandlers.ts` to satisfy `TimedCaptionSegment` type contracts.
+- **Timeline Editor Video Display & Build Resolution**:
+  - Resolved `Cannot find name 'FileAudio'` in `SubtitleTimelineEditor.tsx` by adding `FileAudio` to named `lucide-react` imports.
+  - Resolved TS2367 type overlap error in `SubtitlesTab.tsx` by relocating the Primary Video Preview card under the local media card and removing the misplaced block from the YouTube section.
+  - Fixed video not showing in Timeline Editor by eliminating disruptive `new Blob` wrapping in favor of direct streaming via `URL.createObjectURL(mediaForPlayback)`, enabling browsers and mobile WebViews to stream byte ranges without decoder stalls.
+  - Stabilized primary `<video>` element `key` to prevent React from tearing down and remounting the video DOM element and detaching media references on object URL state updates.
+  - Reinforced clear media role separation: an uploaded video in the AI Generator serves as the unified video picture and audio dialogue source; companion "Match View" uploads are reserved for pairing with audio-only tracks in the Timeline Editor.
 
 ### Fixed
 - **Max Generator primary-video playback and stale soundtrack preview**: Keep an uploaded video as one primary HTML video source (picture and embedded audio together) in the timeline editor. The View Media companion is only rendered for an audio-only primary source, so an old reference can no longer replace the uploaded video or make it appear as a separate soundtrack player. Uploading source media in Max Generator no longer overwrites the app-wide soundtrack or playlist, and the floating Soundtrack panel is hidden while the subtitle workspace is active. Timeline-selected media takes precedence over stale source props, while preserving the Local/YouTube workflow separation.

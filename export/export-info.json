@@ -1,20 +1,20 @@
 {
   "appName": "MV Director AI - Mobile Cinematic Studio",
   "packageName": "com.mvdirector.studio",
-  "version": "1.0.1",
-  "buildDate": "2026-10-18T22:25:43.315676Z",
+  "version": "1.0.0",
+  "buildDate": "2026-10-11T07:36:04.271Z",
   "files": [
     {
       "fileName": "mv-director-ai-v1.0.apk",
       "path": "export/mv-director-ai-v1.0.apk",
-      "sizeBytes": 2097047,
-      "sizeFormatted": "2.00 MB"
+      "sizeBytes": 2146117,
+      "sizeFormatted": "2.05 MB"
     },
     {
       "fileName": "app-debug.apk",
       "path": "export/app-debug.apk",
-      "sizeBytes": 2097047,
-      "sizeFormatted": "2.00 MB"
+      "sizeBytes": 2146117,
+      "sizeFormatted": "2.05 MB"
     }
   ],
   "verified": true,
@@ -25,5 +25,5 @@
   ],
   "targetSdkVersion": 33,
   "minSdkVersion": 21,
-  "instructions": "100% installable Android APK signed with v1/v2/v3 schemes. Updated with the latest application build."
+  "instructions": "100% installable Android APK signed with v1/v2/v3 schemes. Tested and verified with apksigner and aapt."
 }

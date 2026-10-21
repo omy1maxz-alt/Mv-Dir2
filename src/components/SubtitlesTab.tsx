@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import ReactPlayer from 'react-player';
 const Player = ReactPlayer as any;
-import { generateSRT, generateSubModeFromNativeSRT } from '../services/gemini_srt';
+import { generateSRT, formatExistingSRTKeepTime } from '../services/gemini_srt';
 import { SubtitleTimelineEditor } from './SubtitleTimelineEditor';
 import { YouTubeSubtitleTimelineEditor } from './YouTubeSubtitleTimelineEditor';
 import { ExportModal } from './ExportModal';
@@ -73,11 +73,6 @@ async function persistMediaFile(key: string, file: File): Promise<void> {
         await set(key, file);
     } catch (blobStorageError) {
         // Fallback for IndexedDB implementations that reject File/Blob structured cloning.
-        // For large media files (>25MB), do not allocate huge ArrayBuffers in memory
-        if (file.size > 25 * 1024 * 1024) {
-            console.warn('[Media Storage] File is too large for ArrayBuffer persistence fallback, keeping in-memory:', file.size);
-            return;
-        }
         const data = await file.arrayBuffer();
         const record: PersistedMediaRecord = {
             __mvDirectorMediaRecord: true,
@@ -167,14 +162,6 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
     // Initialize from localStorage
     const [srtContent, setSrtContent] = useState<string>(() => safeGetItem('mv_subtitles_srt', ''));
-    const [nativeSrtContent, setNativeSrtContent] = useState<string>(() => safeGetItem('mv_subtitles_native_srt', ''));
-    const [isTransformingSubMode, setIsTransformingSubMode] = useState<boolean>(false);
-    const [generationStatusText, setGenerationStatusText] = useState<string>('');
-    
-    // Persist native SRT content
-    useEffect(() => {
-        safeSetItem('mv_subtitles_native_srt', nativeSrtContent);
-    }, [nativeSrtContent]);
     
     const [activeView, setActiveView] = useState<'generator' | 'editor'>(() => {
         const saved = safeGetItem('mv_subtitles_view', 'generator');
@@ -559,52 +546,37 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         }
     };
 
-    const handleGenerateSubModeFromSource = async (overrideType?: SubtitleType) => {
-        const targetType = overrideType || subtitleType;
-        const sourceSrt = (nativeSrtContent && nativeSrtContent.trim()) ? nativeSrtContent : srtContent;
-        if (!sourceSrt || !sourceSrt.trim()) {
-            setError('No native subtitles found. Please generate native audio subtitles first.');
+    const [isReformattingMode, setIsReformattingMode] = useState(false);
+
+    const handleReformatKeepTime = async () => {
+        const baseSrt = safeGetItem('mv_stage1_native_srt', '') || srtContent;
+        if (!baseSrt || !baseSrt.trim()) {
+            setError('Generate or import native subtitles first before adjusting Style Format / Mode.');
             return;
         }
-
-        setIsTransformingSubMode(true);
+        setIsReformattingMode(true);
         setError(null);
-        setProgress(20);
-        setGenerationStatusText(`Building ${targetType.toUpperCase()} sub mode from native subtitle source...`);
-
+        setProgress(15);
         try {
+            const mode = subtitleType === 'standard' ? 'ori' : subtitleType === 'bilingual' ? 'dual' : subtitleType === 'dual_trans' ? 'dual_trans' : subtitleType === 'triple' ? 'triple' : 'quad';
             const apiKey = (apiKeySource === 'custom' ? apiKeys?.google : undefined) || apiKeys?.google || (localStorage.getItem('gemini_api_key') || undefined);
-            const transformedSrt = await generateSubModeFromNativeSRT(sourceSrt, {
-                mode: targetType as any,
+            const updatedSrt = await formatExistingSRTKeepTime(baseSrt, {
+                mode: mode as any,
                 targetLang: targetLanguage,
                 sourceLang: sourceLanguage,
-                contextInstruction,
+                styling,
                 apiKey,
-                onProgress: (p) => setProgress(Math.max(20, p))
+                contextInstruction,
+                onProgress: (p) => setProgress(Math.max(15, p))
             });
-
-            if (transformedSrt) {
-                setSrtContent(transformedSrt);
-                setProgress(100);
+            if (updatedSrt && updatedSrt.trim()) {
+                setSrtContent(updatedSrt);
                 setActiveView('editor');
-            } else {
-                setError('Failed to transform into sub mode.');
             }
         } catch (err: any) {
-            console.error('Sub mode generation failed:', err);
-            setError(`Sub mode generation error: ${err?.message || 'Unknown error'}`);
+            setError(err?.message || 'Failed to adjust Style Format / Subtitle Mode.');
         } finally {
-            setTimeout(() => {
-                setIsTransformingSubMode(false);
-                setGenerationStatusText('');
-            }, 500);
-        }
-    };
-
-    const handleRestoreNativeSrt = () => {
-        if (nativeSrtContent && nativeSrtContent.trim()) {
-            setSrtContent(nativeSrtContent);
-            setSubtitleType('standard');
+            setIsReformattingMode(false);
         }
     };
 
@@ -632,118 +604,81 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         setError(null);
         setProgress(10);
         setGenerationTime(null);
-        setGenerationStatusText('Stage 1/2: Focused Native Audio Transcription...');
         const startTime = Date.now();
 
         try {
+            const mode = subtitleType === 'standard' ? 'ori' : subtitleType === 'bilingual' ? 'dual' : subtitleType === 'dual_trans' ? 'dual_trans' : subtitleType === 'triple' ? 'triple' : 'quad';
             const apiKey = (apiKeySource === 'custom' ? apiKeys?.google : undefined) || apiKeys?.google || (localStorage.getItem('gemini_api_key') || undefined);
             
-            // STAGE 1: Focused Acoustic Listening - Always generate pure native audio transcription first!
-            const nativeSrt = await generateSRT({
+            const srt = await generateSRT({
                 audioFile: mediaSourceType === 'upload' ? audioFile : null,
                 youtubeUrl: mediaSourceType === 'youtube' ? effectiveYoutubeUrl : null,
-                mode: 'ori', // Strictly native audio transcription
-                targetLang: 'Original',
+                mode: mode as any, 
+                targetLang: targetLanguage,
                 sourceLang: sourceLanguage,
+                styling,
                 apiKey,
-                onProgress: (p) => {
-                    // Stage 1 maps to 10% - 70%
-                    setProgress(Math.min(70, Math.max(10, Math.round(p * 0.7))));
-                },
+                onProgress: (p) => setProgress(Math.max(10, p)),
                 processingMode,
                 resumeTime,
                 contextInstruction
             });
             
-            setProgress(70);
-            if (!nativeSrt) {
-                setError('Failed to generate native audio subtitles.');
-                return;
-            }
-
-            let processedNativeSrt = nativeSrt;
-            if (resumeTime && resumeTime.trim() !== '' && srtContent && srtContent.trim() !== '') {
-                try {
-                    const existingBlocks = parseSubtitles(srtContent);
-                    const newBlocks = parseSubtitles(nativeSrt);
-                    
-                    const parts = resumeTime.replace(',', '.').split(':').map(Number);
-                    let h = 0, m = 0, s = 0;
-                    if (parts.length === 3) {
-                        [h, m, s] = parts;
-                    } else if (parts.length === 2) {
-                        [m, s] = parts;
-                    } else {
-                        s = parts[0] || 0;
-                    }
-                    const resumeTimeMs = (h * 3600 + m * 60 + s) * 1000;
-                    
-                    const keptBlocks = existingBlocks.filter(b => b.start < resumeTimeMs);
-                    
-                    let adjustedNewBlocks = newBlocks;
-                    if (newBlocks.length > 0 && resumeTimeMs > 10000 && newBlocks[0].start < resumeTimeMs * 0.5) {
-                        adjustedNewBlocks = newBlocks.map(b => ({
-                            ...b,
-                            start: b.start + resumeTimeMs,
-                            end: b.end + resumeTimeMs
-                        }));
-                    }
-                    
-                    const combined = [...keptBlocks, ...adjustedNewBlocks].sort((a, b) => a.start - b.start);
-                    combined.forEach((b, idx) => b.id = (idx + 1).toString());
-                    processedNativeSrt = generateSrtString(combined);
-                } catch (e) {
-                    console.error("Error merging SRTs:", e);
-                }
-            }
-
-            // Automatically ensure no oversized, long-sentence blocks are dumped into single boxes
-            try {
-                const parsed = parseSubtitles(processedNativeSrt);
-                const { blocks: autoSplitBlocks, splitCount } = splitOversizedBlocks(parsed);
-                if (splitCount > 0) {
-                    console.log(`[Subtitles] Auto-segmented ${splitCount} oversized cues into concise individual boxes`);
-                    processedNativeSrt = generateSrtString(autoSplitBlocks);
-                }
-            } catch (splitErr) {
-                console.warn('[Subtitles] Auto-split pass notice:', splitErr);
-            }
-
-            // Save the ground-truth native audio transcript
-            setNativeSrtContent(processedNativeSrt);
-            let finalSrt = processedNativeSrt;
-
-            // STAGE 2: If a multi-layer Sub Mode or translated format was requested,
-            // use the newly generated native subtitle as the source!
-            const isSubModeRequested = subtitleType !== 'standard' || (targetLanguage && targetLanguage.trim() !== '' && targetLanguage.toLowerCase() !== 'original' && targetLanguage.toLowerCase() !== 'auto-detect');
-
-            if (isSubModeRequested && processedNativeSrt) {
-                setGenerationStatusText(`Stage 2/2: Building ${subtitleType.toUpperCase()} Sub Mode from Native Subtitle Source...`);
-                setProgress(75);
-                try {
-                    finalSrt = await generateSubModeFromNativeSRT(processedNativeSrt, {
-                        mode: subtitleType,
-                        targetLang: targetLanguage,
-                        sourceLang: sourceLanguage,
-                        contextInstruction,
-                        apiKey,
-                        onProgress: (p) => setProgress(Math.min(95, 75 + Math.round(p * 0.2)))
-                    });
-                } catch (subModeErr) {
-                    console.warn('[Subtitles] Stage 2 sub mode generation warning:', subModeErr);
-                }
-            }
-
             const endTime = Date.now();
             setGenerationTime(endTime - startTime);
+            
+            setProgress(90);
+            if (srt) {
+                let finalSrt = srt;
+                if (resumeTime && resumeTime.trim() !== '' && srtContent && srtContent.trim() !== '') {
+                    try {
+                        const existingBlocks = parseSubtitles(srtContent);
+                        const newBlocks = parseSubtitles(srt);
+                        
+                        const parts = resumeTime.replace(',', '.').split(':').map(Number);
+                        let h = 0, m = 0, s = 0;
+                        if (parts.length === 3) {
+                            [h, m, s] = parts;
+                        } else if (parts.length === 2) {
+                            [m, s] = parts;
+                        } else {
+                            s = parts[0] || 0;
+                        }
+                        const resumeTimeMs = (h * 3600 + m * 60 + s) * 1000;
+                        
+                        const keptBlocks = existingBlocks.filter(b => b.start < resumeTimeMs);
+                        
+                        let adjustedNewBlocks = newBlocks;
+                        if (newBlocks.length > 0 && resumeTimeMs > 10000 && newBlocks[0].start < resumeTimeMs * 0.5) {
+                            adjustedNewBlocks = newBlocks.map(b => ({
+                                ...b,
+                                start: b.start + resumeTimeMs,
+                                end: b.end + resumeTimeMs
+                            }));
+                        }
+                        
+                        const combined = [...keptBlocks, ...adjustedNewBlocks].sort((a, b) => a.start - b.start);
+                        combined.forEach((b, idx) => b.id = (idx + 1).toString());
+                        finalSrt = generateSrtString(combined);
+                    } catch (e) {
+                        console.error("Error merging SRTs:", e);
+                    }
+                }
 
-            setSrtContent(finalSrt);
-            const resolvedSource = mediaSourceType === 'youtube'
-                ? (processingMode === 'youtube_transcript' ? 'youtube_cc' : 'gemini_transcription')
-                : 'gemini_transcription';
-            setSubtitleSource(resolvedSource);
-            safeSetItem('ai_sub_source', resolvedSource);
-            setActiveView('editor');
+                // Note: Stage 1 already segmented oversized native cues and locked original timestamps
+                // BEFORE Stage 2 formatted the selected Style Format / Subtitle Mode.
+                // Do not re-split after Stage 2 so original timestamps and multi-layer lines stay 100% intact.
+
+                setSrtContent(finalSrt);
+                const resolvedSource = mediaSourceType === 'youtube'
+                    ? (processingMode === 'youtube_transcript' ? 'youtube_cc' : 'gemini_transcription')
+                    : 'gemini_transcription';
+                setSubtitleSource(resolvedSource);
+                safeSetItem('ai_sub_source', resolvedSource);
+                setActiveView('editor');
+            } else {
+                setError('Failed to generate subtitles.');
+            }
         } catch (err: any) {
             let msg = err?.message || 'An unexpected error occurred.';
             try {
@@ -768,10 +703,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
             setError(msg);
         } finally {
             setProgress(100);
-            setTimeout(() => {
-                setIsGenerating(false);
-                setGenerationStatusText('');
-            }, 500);
+            setTimeout(() => setIsGenerating(false), 500);
         }
     };
 
@@ -1350,49 +1282,6 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 {subtitleType === 'triple' && 'Native + Romanized + Translated.'}
                                 {subtitleType === 'quad' && 'Native + Romanized + English + Target.'}
                             </p>
-
-                            {/* Sub Mode from Native Subtitle Source Quick-Trigger */}
-                            {Boolean(nativeSrtContent || srtContent) && (
-                                <div className="mt-2.5 p-3 bg-indigo-950/40 border border-indigo-500/30 rounded-xl space-y-2">
-                                    <div className="flex items-center justify-between gap-1">
-                                        <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1">
-                                            <Sparkles className="w-3 h-3 text-indigo-400" />
-                                            <span>Sub Mode Source</span>
-                                        </span>
-                                        {Boolean(nativeSrtContent && srtContent !== nativeSrtContent) && (
-                                            <button
-                                                type="button"
-                                                onClick={handleRestoreNativeSrt}
-                                                className="text-[10px] text-indigo-300 hover:text-white underline cursor-pointer"
-                                                title="Revert back to pure native audio transcription"
-                                            >
-                                                View Native
-                                            </button>
-                                        )}
-                                    </div>
-                                    <p className="text-[10px] text-white/50 leading-relaxed">
-                                        Transform existing native subtitles into <strong>{subtitleType.toUpperCase()}</strong> instantly without re-processing media!
-                                    </p>
-                                    <button
-                                        type="button"
-                                        disabled={isGenerating || isTransformingSubMode}
-                                        onClick={() => handleGenerateSubModeFromSource()}
-                                        className="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold text-[11px] rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
-                                    >
-                                        {isTransformingSubMode ? (
-                                            <>
-                                                <RefreshCw className="w-3 h-3 animate-spin" />
-                                                <span>Building Sub Mode...</span>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Sparkles className="w-3 h-3 text-amber-300" />
-                                                <span>Apply {subtitleType === 'standard' ? 'Translation' : subtitleType.charAt(0).toUpperCase() + subtitleType.slice(1)} Mode</span>
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-                            )}
                         </div>
 
                         <datalist id="language-suggestions">
@@ -1461,6 +1350,31 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                 </button>
                             </div>
                         </div>
+                    </div>
+
+                    {/* 2-Stage Native-First & Locked Original Time Bar */}
+                    <div className="mt-4 p-3.5 rounded-xl bg-indigo-950/25 border border-indigo-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="space-y-0.5 text-left">
+                            <div className="text-xs font-bold text-indigo-200 flex items-center gap-1.5">
+                                <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                                <span>2-Stage Pipeline: Native First → Style Format / Mode (Original Time Locked)</span>
+                            </div>
+                            <p className="text-[11px] text-white/60">
+                                Stage 1 transcribes the native spoken audio and locks exact timestamps. Stage 2 adjusts your selected <strong>Style format</strong>, <strong>Target Language</strong>, and <strong>Visual Styling</strong> without altering original timecodes.
+                            </p>
+                        </div>
+                        {Boolean(srtContent.trim()) && (
+                            <button
+                                type="button"
+                                onClick={() => void handleReformatKeepTime()}
+                                disabled={isReformattingMode || isGenerating}
+                                className="px-3.5 py-2 bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-400/40 disabled:opacity-40 text-indigo-100 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
+                                title="Re-adjust Style Format, Target Language, or Visual Styling from the Stage 1 native baseline while keeping 100% of the original timestamps"
+                            >
+                                {isReformattingMode ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-indigo-300" />}
+                                <span>{isReformattingMode ? 'Adjusting Format...' : 'Adjust Mode / Style (Keep Original Time)'}</span>
+                            </button>
+                        )}
                     </div>
 
                     {mediaSourceType === 'youtube' ? (
@@ -1545,27 +1459,15 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                         {tinyFishCaptionSources.length > 0 && <div className="space-y-2">{tinyFishCaptionSources.map((source, index) => <a key={source.url + index} href={source.url} target="_blank" rel="noopener noreferrer" className="block rounded-xl border border-white/10 bg-black/30 p-3 hover:border-teal-500/30"><div className="text-xs font-semibold text-teal-100">{source.title}</div><div className="text-[10px] text-white/40 mt-0.5">{source.domain}</div>{source.snippet && <p className="text-[11px] text-white/65 mt-1">{source.snippet}</p>}</a>)}</div>}
                     </div>
 
-                    <div className="flex items-center justify-between text-[11px] text-white/50 px-1">
-                        <span className="flex items-center gap-1.5">
-                            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                            <span><strong>Focus Engine:</strong> 1. Native Audio Transcription → 2. Sub Mode from Subtitle Source</span>
-                        </span>
-                        {subtitleType !== 'standard' && (
-                            <span className="text-indigo-300 font-semibold uppercase text-[10px]">
-                                Target Sub Mode: {subtitleType}
-                            </span>
-                        )}
-                    </div>
-
                     <button 
                         onClick={handleGenerate}
-                        disabled={(mediaSourceType === 'upload' && !audioFile) || (mediaSourceType === 'youtube' && !youtubeUrl && !youtubeInput.trim()) || isGenerating || isTransformingSubMode}
+                        disabled={(mediaSourceType === 'upload' && !audioFile) || (mediaSourceType === 'youtube' && !youtubeUrl && !youtubeInput.trim()) || isGenerating}
                         className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-white/10 disabled:text-white/30 text-white font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-xl cursor-pointer disabled:cursor-not-allowed"
                     >
                         {isGenerating ? (
                             <>
                                 <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                                <span>{generationStatusText || (mediaSourceType === 'youtube' ? 'Generating Subtitles from YouTube...' : 'Analyzing Media & Generating Subtitles...')}</span>
+                                {mediaSourceType === 'youtube' ? 'Generating Subtitles from YouTube...' : 'Analyzing Media & Generating Subtitles...'}
                             </>
                         ) : mediaSourceType === 'youtube' ? (
                             (!youtubeUrl && !youtubeInput.trim()) ? (
@@ -1576,7 +1478,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                             ) : (
                                 <>
                                     <Sparkles className="w-5 h-5" />
-                                    <span>Generate Subtitles (Native Audio First)</span>
+                                    <span>Generate YouTube SRT Subtitles</span>
                                 </>
                             )
                         ) : !audioFile ? (
@@ -1587,7 +1489,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                         ) : (
                             <>
                                 <Sparkles className="w-5 h-5" />
-                                <span>Generate Subtitles (Native Audio First)</span>
+                                <span>Generate SRT Subtitles</span>
                             </>
                         )}
                     </button>
@@ -1600,14 +1502,8 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                     )}
                     
                     {isGenerating && (
-                        <div className="space-y-1.5 mt-4">
-                            <div className="flex items-center justify-between text-xs font-mono text-indigo-300 px-1">
-                                <span>{generationStatusText || 'Processing audio stream...'}</span>
-                                <span>{progress}%</span>
-                            </div>
-                            <div className="w-full bg-white/5 rounded-full h-2 overflow-hidden">
-                                <div className="bg-indigo-500 h-full transition-all duration-300" style={{ width: `${progress}%` }} />
-                            </div>
+                        <div className="w-full bg-white/5 rounded-full h-2 mt-4 overflow-hidden">
+                            <div className="bg-indigo-500 h-full transition-all duration-300" style={{ width: `${progress}%` }} />
                         </div>
                     )}
 
