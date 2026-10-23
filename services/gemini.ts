@@ -613,7 +613,13 @@ export const generateSceneVideo = async (
 
       onLog?.("Video request sent. Queued...", 'info');
 
+      // Bound render polling so stalled provider operations cannot hang the UI indefinitely.
+      const pollStartedAt = Date.now();
+      const maxWaitMs = 10 * 60 * 1000;
       while (!operation.done) {
+        if (Date.now() - pollStartedAt >= maxWaitMs) {
+          throw new Error("Video generation timed out after 10 minutes. Check the job status and try again.");
+        }
         await new Promise(resolve => setTimeout(resolve, 5000));
         onLog?.("Rendering video frames...", 'info');
         operation = await ai.operations.getVideosOperation({operation: operation});
@@ -625,7 +631,9 @@ export const generateSceneVideo = async (
       if (!videoUri) throw new Error("Video generation failed: No URI returned.");
 
       onLog?.("Video completed.", 'success');
-      return `${videoUri}&key=${finalKey}`;
+      // Never persist a provider URI with an API key embedded in it.
+      // Callers should retrieve the video through a trusted server-side handler.
+      return videoUri;
   } catch (error: any) {
       let msg = error.message || String(error);
       if (msg.includes("429")) msg = QUOTA_ERROR_MESSAGE;
