@@ -2,8 +2,8 @@
 
 ### Fixed
 - **Mature fashion/glamour prompt preservation**: Removed app-level prompt substitutions that turned non-explicit adult fashion, sensual styling, and revealing wardrobe descriptions into unrelated conservative clothing or generic aesthetic language.
-- **Provider-policy boundary**: Prompt enhancement now preserves user intent for clearly adult, non-explicit glamour requests without attempting to evade provider-side safeguards.
-- **Regression test**: Added `npm run test:prompt-sanitizer` to verify fashion/glamour wording is preserved while unrelated graphic-content cleanup remains active.
+- **Provider-policy boundary**: Prompt enhancement preserves user intent for clearly adult, non-explicit glamour requests. Explicit provider safety/policy blocks are surfaced to the user instead of being retried with altered wording or automatically routed to another image provider.
+- **Regression test**: Added `npm run test:prompt-sanitizer` and wired it into the Android build workflow to verify fashion/glamour wording is preserved while unrelated graphic-content cleanup remains active.
 
 ## [Unreleased]
 
