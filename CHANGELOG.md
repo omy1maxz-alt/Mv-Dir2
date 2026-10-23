@@ -1,9 +1,10 @@
 ## [Unreleased]
 
 ### Fixed
-- **Mature fashion/glamour prompt preservation**: Removed app-level prompt substitutions that turned non-explicit adult fashion, sensual styling, and revealing wardrobe descriptions into unrelated conservative clothing or generic aesthetic language.
-- **Provider-policy boundary**: Prompt enhancement preserves user intent for clearly adult, non-explicit glamour requests. Explicit provider safety/policy blocks are surfaced to the user instead of being retried with altered wording or automatically routed to another image provider.
-- **Regression test**: Added `npm run test:prompt-sanitizer` and wired it into the Android build workflow to verify fashion/glamour wording is preserved while unrelated graphic-content cleanup remains active.
+- **Frontend credential exposure**: Removed Vite compile-time substitutions for `process.env.API_KEY`, `process.env.GEMINI_API_KEY`, and `process.env.KIE_API_KEY`. Runtime server secrets must stay on the server; client-supplied provider keys remain user-controlled settings.
+- **Veo generation reliability and URL secrecy**: Added a 10-minute polling deadline to stop stalled video jobs from waiting forever, and stopped appending the API key to the returned video URI.
+
+## [Unreleased]
 
 ### Added
 - **Live Gemini Model Discovery & Real-Time `v1beta/models` Verification Engine (`gemini.ts`, `gemini_srt.ts`, `SubtitlesTab.tsx`, `ApiKeyVault.tsx`, `App.tsx`)**:

@@ -275,11 +275,9 @@ export default defineConfig(({ mode }) => {
           }
         }
       ],
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
-        'process.env.KIE_API_KEY': JSON.stringify(env.KIE_API_KEY || ''),
-      },
+      // Never compile private server credentials into browser code.
+      // Client-supplied keys remain user-owned settings; server deployments should
+      // read GEMINI_API_KEY / KIE_API_KEY from the runtime environment.
       build: {
         outDir: 'dist',
         emptyOutDir: true,
