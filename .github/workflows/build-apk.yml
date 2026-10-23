@@ -36,10 +36,14 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install & Build Web App
-        run: |
-          npm install --legacy-peer-deps
-          npm run build
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Verify Prompt Sanitizer Regression
+        run: npm run test:prompt-sanitizer
+
+      - name: Build Web App
+        run: npm run build
 
       - name: Setup Capacitor
         run: |
