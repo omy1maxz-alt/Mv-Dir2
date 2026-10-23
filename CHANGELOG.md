@@ -5,8 +5,6 @@
 - **Provider-policy boundary**: Prompt enhancement preserves user intent for clearly adult, non-explicit glamour requests. Explicit provider safety/policy blocks are surfaced to the user instead of being retried with altered wording or automatically routed to another image provider.
 - **Regression test**: Added `npm run test:prompt-sanitizer` and wired it into the Android build workflow to verify fashion/glamour wording is preserved while unrelated graphic-content cleanup remains active.
 
-## [Unreleased]
-
 ### Added
 - **Live Gemini Model Discovery & Real-Time `v1beta/models` Verification Engine (`gemini.ts`, `gemini_srt.ts`, `SubtitlesTab.tsx`, `ApiKeyVault.tsx`, `App.tsx`)**:
   - **Runtime Google API Catalog Probing (`discoverAvailableGeminiModels`)**: Instead of relying on static or hardcoded model lists that can become outdated or differ by region/account, the app now queries Google's official `GET https://generativelanguage.googleapis.com/v1beta/models` endpoint directly with the user's active API key and caches the verified `generateContent` models (with 30-minute TTL and 1-click **"Detect Live Models"** refresh).
