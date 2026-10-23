@@ -3,6 +3,7 @@ import { ApiKeys, ApiKeySource } from '@/types';
 import { X, Key, Shield, Check, AlertCircle, LogOut, User as UserIcon, Loader2, Search, ChevronDown, ChevronUp, MessageSquareText, Image as ImageIcon, Cpu } from 'lucide-react';
 import { signInWithGoogle, signOutGoogle, listenAuthState, isNativeEnvironment } from '@/services/auth';
 import { APP_ENV } from '@/services/environment';
+import { cleanGeminiApiKey, getEffectiveGeminiApiKey, getMaskedGeminiApiKey, discoverAvailableGeminiModels, getLiveMultimodalCandidateModels, DiscoveredGeminiModel } from '@/services/gemini';
 import type { User } from 'firebase/auth';
 
 
@@ -149,8 +150,13 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
 
   useEffect(() => {
     if (isOpen) {
-      setSource(currentSource);
-      setKeys(currentKeys);
+      let resolvedGoogle = cleanGeminiApiKey(currentKeys.google);
+      if (!resolvedGoogle && typeof window !== 'undefined') {
+        resolvedGoogle = getEffectiveGeminiApiKey();
+      }
+      const initialKeys = { ...currentKeys, google: resolvedGoogle };
+      setKeys(initialKeys);
+      setSource(resolvedGoogle ? 'custom' : currentSource);
       setTextModel(currentTextModel);
       setImageModel(currentImageModel);
       setAuthError(null);
@@ -203,6 +209,62 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     });
     return () => unsubscribe();
   }, []);
+
+  const [liveGeminiModels, setLiveGeminiModels] = useState<DiscoveredGeminiModel[]>([]);
+  const [liveGeminiCandidates, setLiveGeminiCandidates] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const keyToCheck = cleanGeminiApiKey(keys.google) || getEffectiveGeminiApiKey();
+    if (!keyToCheck) {
+      setLiveGeminiModels([]);
+      setLiveGeminiCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    Promise.all([
+      discoverAvailableGeminiModels(keyToCheck),
+      getLiveMultimodalCandidateModels(keyToCheck, false)
+    ]).then(([discovered, candidates]) => {
+      if (cancelled) return;
+      setLiveGeminiModels(discovered);
+      setLiveGeminiCandidates(candidates);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [isOpen, keys.google]);
+
+  const geminiDirectTextGroup: ModelOptionGroup = (() => {
+    const defaultOptions: ModelOption[] = [
+      { value: "gemini-flash-latest", label: "Gemini Flash Latest (Auto-Updated Stable Alias)" },
+      { value: "gemini-3.8-pro", label: "Gemini 3.8 Pro (Next Gen Reasoning)" },
+      { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Next Gen Fast)" },
+      { value: "gemini-3.7-pro", label: "Gemini 3.7 Pro (Ultimate Reasoning)" },
+      { value: "gemini-3.7-flash", label: "Gemini 3.7 Flash (Latest Fast)" },
+      { value: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+      { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (Balanced)" },
+      { value: "gemini-3.5-transcribe", label: "Gemini 3.5 Transcribe (Audio Transcription)" },
+      { value: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Legacy Reasoning)" },
+      { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite (Highest Quota)" }
+    ];
+    if (liveGeminiCandidates.length > 0 && liveGeminiModels.length > 0) {
+      const liveOptions: ModelOption[] = liveGeminiCandidates.map(id => {
+        const meta = liveGeminiModels.find(m => m.id === id);
+        const display = meta?.displayName && meta.displayName !== id ? `${meta.displayName} (${id})` : id;
+        return {
+          value: id,
+          label: `🟢 ${display} — Verified Live on Your API Key`
+        };
+      });
+      return {
+        label: `Google Gemini Models — Verified Live via v1beta/models (${liveOptions.length} active)`,
+        options: liveOptions
+      };
+    }
+    return {
+      label: "Google Gemini Models (Direct / Native)",
+      options: defaultOptions
+    };
+  })();
 
   const normalizedTask = (model: CloudflareCatalogModel) => String(model.task || '').toLowerCase().replace(/[_ ]+/g, '-');
   const cloudflareVisionModels = cloudflareCatalog.filter(model => normalizedTask(model) === 'image-to-text');
@@ -324,7 +386,17 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   };
 
   const handleSave = () => {
-    onSave(keys, source, textModel, imageModel);
+    const cleanedGoogle = cleanGeminiApiKey(keys.google);
+    const updatedKeys = { ...keys, google: cleanedGoogle };
+    const effectiveSource = cleanedGoogle ? 'custom' : source;
+    try {
+      if (cleanedGoogle) {
+        localStorage.setItem('gemini_api_key', cleanedGoogle);
+        localStorage.setItem('google_api_key', cleanedGoogle);
+        localStorage.setItem('mv_gemini_api_key', cleanedGoogle);
+      }
+    } catch (_) {}
+    onSave(updatedKeys, effectiveSource, textModel, imageModel);
     onClose();
   };
 
@@ -466,14 +538,30 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
           {source === 'custom' && (
             <div className="space-y-4 animate-in slide-in-from-top-2">
               <div className="space-y-2">
-                <label className="text-xs font-medium text-white/70">Google Gemini API Key</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-white/70">Google Gemini API Key</label>
+                  {cleanGeminiApiKey(keys.google) && (
+                    <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                      <Check className="w-3 h-3" /> Key Loaded ({getMaskedGeminiApiKey(keys.google)})
+                    </span>
+                  )}
+                </div>
                 <input 
                   type="password" 
                   value={keys.google || ''} 
-                  onChange={(e) => setKeys({ ...keys, google: e.target.value })}
+                  onChange={(e) => {
+                    const cleaned = cleanGeminiApiKey(e.target.value);
+                    setKeys({ ...keys, google: cleaned });
+                    if (cleaned) {
+                      setSource('custom');
+                    }
+                  }}
                   placeholder="AIzaSy..."
-                  className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-indigo-500 transition-colors"
+                  className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-indigo-500 transition-colors font-mono"
                 />
+                <div className="text-[10px] text-white/40">
+                  Used directly for Scene Direction, Multimodal Subtitles & Transcription, Storyboard prompts, and Vision analysis.
+                </div>
               </div>
               
               <div className="space-y-2">
@@ -641,7 +729,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               value={textModel}
               onChange={setTextModel}
               accent="indigo"
-              groups={[{"label":"Google Gemini Models (Direct / Native)","options":[{"value":"gemini-3.8-pro","label":"Gemini 3.8 Pro (Next Gen Reasoning)"},{"value":"gemini-3.8-flash","label":"Gemini 3.8 Flash (Next Gen Fast)"},{"value":"gemini-3.7-pro","label":"Gemini 3.7 Pro (Ultimate Reasoning)"},{"value":"gemini-3.7-flash","label":"Gemini 3.7 Flash (Latest Fast)"},{"value":"gemini-3.6-flash","label":"Gemini 3.6 Flash"},{"value":"gemini-3.5-flash","label":"Gemini 3.5 Flash (Balanced)"},{"value":"gemini-3.1-pro-preview","label":"Gemini 3.1 Pro (Legacy Reasoning)"},{"value":"gemini-3.1-flash-lite","label":"Gemini 3.1 Flash Lite (Highest Quota)"}]},{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},...cloudflareTextGroup.options.length ? [{label: cloudflareTextGroup.label, options: cloudflareTextGroup.options}] : [],{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
+              groups={[geminiDirectTextGroup,{"label":"KIE AI — Anthropic Claude","options":[{"value":"kie:claude-sonnet-5-5","label":"KIE Claude Sonnet 5.5 (Frontier Flagship • 30%+ Faster)"},{"value":"kie:claude-opus-5-5","label":"KIE Claude Opus 5.5 (Frontier Intelligence & Reasoning)"},{"value":"kie:claude-haiku-5-5","label":"KIE Claude Haiku 5.5 (1M Context • Ultra Fast)"},{"value":"kie:claude-fable-5-1","label":"KIE Claude Fable 5.1 (Mythos-Class Agentic)"},{"value":"kie:claude-sonnet-5","label":"KIE Claude Sonnet 5 (Frontier Reasoning & Nuance)"},{"value":"kie:claude-opus-5","label":"KIE Claude Opus 5 (Deep Thought & Prose)"},{"value":"kie:claude-sonnet-4-6","label":"KIE Claude Sonnet 4.6 (Clear Writing & Code)"},{"value":"kie:claude-haiku-4-5","label":"KIE Claude Haiku 4.5 (Ultra Fast)"},{"value":"kie:claude-fable-5","label":"KIE Claude Fable 5 (Creative & Scripting)"}]},{"label":"KIE AI — OpenAI & Codex","options":[{"value":"kie:gpt-6-1-sol","label":"KIE GPT-6.1 Sol (Frontier Flagship • 1M Context)"},{"value":"kie:gpt-6-sol","label":"KIE GPT-6 Sol (Frontier Reasoning & Coding)"},{"value":"kie:gpt-6-luna","label":"KIE GPT-6 Luna (High Speed & Scale)"},{"value":"kie:gpt-6-astra","label":"KIE GPT-6 Astra (Frontier Codex)"},{"value":"kie:gpt-5-6-sol","label":"KIE GPT-5.6 Sol (Codex Flagship Tier)"},{"value":"kie:gpt-5-6-terra","label":"KIE GPT-5.6 Terra (Balanced Scale)"},{"value":"kie:gpt-5-6-luna","label":"KIE GPT-5.6 Luna (Fast & Affordable)"},{"value":"kie:gpt-5-5","label":"KIE GPT-5.5 (High Intelligence)"},{"value":"kie:gpt-5-4","label":"KIE GPT-5.4 (Multimodal Reasoning)"},{"value":"kie:gpt-5-2","label":"KIE GPT-5.2 (Multimodal Reasoning)"},{"value":"kie:codex","label":"KIE OpenAI Codex (Code Synthesis)"}]},{"label":"KIE AI — Google Gemini","options":[{"value":"kie:gemini-3.8-flash","label":"KIE Gemini 3.8 Flash (Advanced Coding & Agents)"},{"value":"kie:gemini-3.7-flash","label":"KIE Gemini 3.7 Flash (Hybrid Reasoning)"},{"value":"kie:gemini-3.6-flash","label":"KIE Gemini 3.6 Flash (High Throughput)"},{"value":"kie:gemini-3.5-flash","label":"KIE Gemini 3.5 Flash (Fast Agentic)"},{"value":"kie:gemini-3.1-pro","label":"KIE Gemini 3.1 Pro (Deep Analysis)"},{"value":"kie:gemini-3-pro","label":"KIE Gemini 3 Pro (Deep Reasoning)"},{"value":"kie:gemini-2.5-pro","label":"KIE Gemini 2.5 Pro (Massive Context)"}]},{"label":"KIE AI — xAI, DeepSeek & Moonshot","options":[{"value":"kie:grok-4-7","label":"KIE Grok 4.7 (500K Context • SWE 71% Reasoning)"},{"value":"kie:grok-4-6","label":"KIE Grok 4.6 (Fast Interactive)"},{"value":"kie:grok-4-5","label":"KIE Grok 4.5 (Coding & Logic)"},{"value":"kie:grok-4-3","label":"KIE Grok 4.3 (Speed & Chat)"},{"value":"kie:deepseek-v4-1-flash","label":"KIE DeepSeek V4.1 Flash (Fast Open Reasoning)"},{"value":"kie:deepseek-r1","label":"KIE DeepSeek R1 (Reasoning Engine)"},{"value":"kie:deepseek-v3","label":"KIE DeepSeek V3 (671B MoE)"},{"value":"kie:kimi-k3","label":"KIE Moonshot Kimi K3 (1M Context)"},{"value":"kie:custom","label":"KIE Custom Model (Specify below)"}]},...cloudflareTextGroup.options.length ? [{label: cloudflareTextGroup.label, options: cloudflareTextGroup.options}] : [],{"label":"AI Horde — Text Generation (Volunteer Workers)","options":[{"value":"aihorde-text","label":"AI Horde Text (Anonymous / priority with personal key)"}]},{"label":"Custom Provider","options":[{"value":"custom-openai","label":"Custom OpenAI Provider (Set above)"}]}]}
             />
 
             {textModel.startsWith('kie:') && (

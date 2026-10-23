@@ -4,9 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
-    "start": "tsx server.ts",
-    "build": "vite build && (mkdir -p build && cp -r dist/* build/ 2>/dev/null || true)",
+    "dev": "vite",
+    "build": "vite build",
     "preview": "vite preview",
     "export:apk": "npm run build && npx cap sync android && node scripts/build_apk.mjs",
     "lint": "tsc --noEmit"
@@ -16,6 +15,7 @@
     "@capacitor/browser": "^8.0.4",
     "@capacitor/cli": "^8.5.2",
     "@capacitor/core": "^8.5.2",
+    "@emotion/is-prop-valid": "^1.4.0",
     "@google/genai": "latest",
     "@tailwindcss/typography": "^0.5.19",
     "cors": "^2.8.6",

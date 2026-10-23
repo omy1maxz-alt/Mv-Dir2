@@ -695,7 +695,7 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
         setIsGeneratingYtSubtitles(true);
         setSnapNotification("AI is inspecting YouTube video and generating subtitles...");
         try {
-            const effectiveApiKey = apiKey || localStorage.getItem('gemini_api_key') || undefined;
+            const effectiveApiKey = getEffectiveGeminiApiKey(apiKey);
             const srt = await generateYouTubeSRT(effectiveYoutubeUrl, {
                 apiKey: effectiveApiKey,
                 mode: 'ori',
@@ -1919,6 +1919,61 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
         setSnapNotification(`Set Mark Out: ${formatTimeWithMs(targetEnd)}`);
     };
 
+    // Mark Out & Ripple: Align subtitle end to current playhead AND shift all subsequent subtitles accordingly
+    const handleSetMarkOutAndRipple = (blockId: string) => {
+        const targetEnd = Math.round(currentTime);
+        let shiftedCount = 0;
+        let deltaMs = 0;
+
+        setBlocksAndNotify(prev => {
+            const sorted = [...prev].sort((a, b) => a.start - b.start);
+            const currentIdx = sorted.findIndex(b => b.id === blockId);
+            if (currentIdx === -1) return prev;
+
+            const currentBlock = sorted[currentIdx];
+            const oldEnd = currentBlock.end;
+            deltaMs = targetEnd - oldEnd;
+
+            // If delta is 0, nothing changes
+            if (deltaMs === 0) return prev;
+
+            const newStart = currentBlock.start >= targetEnd 
+                ? Math.max(0, targetEnd - 1500) 
+                : currentBlock.start;
+
+            const updatedCurrentBlock = {
+                ...currentBlock,
+                start: newStart,
+                end: targetEnd
+            };
+
+            const updated = sorted.map((block, idx) => {
+                if (idx < currentIdx) {
+                    return block;
+                }
+                if (idx === currentIdx) {
+                    return updatedCurrentBlock;
+                }
+                // Subsequent blocks (after current block): shift by deltaMs
+                shiftedCount++;
+                const newSubStart = Math.max(targetEnd, block.start + deltaMs);
+                const newSubEnd = Math.max(newSubStart + 100, block.end + deltaMs);
+                return {
+                    ...block,
+                    start: newSubStart,
+                    end: Math.max(newSubStart + 100, newSubEnd)
+                };
+            }).sort((a, b) => a.start - b.start);
+
+            return updated;
+        });
+
+        seekTo(targetEnd, false);
+        const sDelta = (Math.abs(deltaMs) / 1000).toFixed(2);
+        const sign = deltaMs >= 0 ? `+${sDelta}s` : `-${sDelta}s`;
+        setSnapNotification(`Set Out (${formatTimeWithMs(targetEnd)}) & Shifted ${shiftedCount} Subtitle${shiftedCount !== 1 ? 's' : ''} After (${sign})`);
+    };
+
     const handleSelectPrevSubtitle = useCallback(() => {
         if (blocksState.length === 0) return;
         const sorted = [...blocksState].sort((a, b) => a.start - b.start);
@@ -1965,7 +2020,11 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                 handleSetMarkIn(selectedId);
             } else if (e.key === ']' && selectedId) {
                 e.preventDefault();
-                handleSetMarkOut(selectedId);
+                if (e.shiftKey) {
+                    handleSetMarkOutAndRipple(selectedId);
+                } else {
+                    handleSetMarkOut(selectedId);
+                }
             } else if (selectedId && e.shiftKey && e.key === 'ArrowLeft') {
                 e.preventDefault();
                 handleNudge(e.altKey ? -500 : -100);
@@ -2420,6 +2479,14 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                                     title="Mark Out [out]: Align subtitle end to current YouTube position (])"
                                 >
                                     <span>Out]</span>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onClick={() => handleSetMarkOutAndRipple(selectedBlock.id)}
+                                    className="flex items-center gap-0.5 px-2 py-1 bg-white/5 hover:bg-emerald-500/25 active:bg-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold transition-all shrink-0 cursor-pointer"
+                                    title="Mark Out & Move Sub After [Out»]: Align subtitle end to current YouTube position AND shift all subsequent subtitles accordingly (Shift+])"
+                                >
+                                    <span>Out»</span>
                                 </button>
                                 <button 
                                     type="button"

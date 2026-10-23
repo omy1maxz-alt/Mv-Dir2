@@ -1,12 +1,13 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
     Subtitles, Youtube, ChevronDown, Sparkles, AlertCircle, FileText, Download, Play, Pause, 
     Video, FileAudio, Upload, Layers, Globe, Languages, Link, Check, Copy, RefreshCw, Info, ListFilter, 
-    ExternalLink, Search
+    ExternalLink, Search, Key
 } from 'lucide-react';
 import ReactPlayer from 'react-player';
 const Player = ReactPlayer as any;
-import { generateSRT, formatExistingSRTKeepTime } from '../services/gemini_srt';
+import { generateSRT, formatExistingSRTKeepTime, getMediaDuration } from '../services/gemini_srt';
+import { getEffectiveGeminiApiKey, getMaskedGeminiApiKey, discoverAvailableGeminiModels, getLiveMultimodalCandidateModels, setTextModel, getCurrentTextModel, DiscoveredGeminiModel } from '../services/gemini';
 import { SubtitleTimelineEditor } from './SubtitleTimelineEditor';
 import { YouTubeSubtitleTimelineEditor } from './YouTubeSubtitleTimelineEditor';
 import { ExportModal } from './ExportModal';
@@ -33,6 +34,7 @@ interface SubtitlesTabProps {
     apiKeys?: any;
     apiKeySource?: string;
     onMediaSwap?: (file: File) => void;
+    onOpenKeyVault?: () => void;
 }
 
 type PersistedMediaRecord = {
@@ -73,6 +75,14 @@ async function persistMediaFile(key: string, file: File): Promise<void> {
         await set(key, file);
     } catch (blobStorageError) {
         // Fallback for IndexedDB implementations that reject File/Blob structured cloning.
+        if (file.size > 20 * 1024 * 1024) {
+            console.warn('[Media Storage] File is >20MB and IndexedDB Blob cloning failed. Skipping in-memory ArrayBuffer fallback to protect browser memory.', {
+                fileName: file.name,
+                fileSize: file.size,
+                blobStorageError
+            });
+            return;
+        }
         const data = await file.arrayBuffer();
         const record: PersistedMediaRecord = {
             __mvDirectorMediaRecord: true,
@@ -95,7 +105,48 @@ async function persistMediaFile(key: string, file: File): Promise<void> {
     }
 }
 
-export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKeySource, onMediaSwap }) => {
+export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKeySource, onMediaSwap, onOpenKeyVault }) => {
+    const effectiveApiKey = useMemo(() => {
+        return getEffectiveGeminiApiKey(apiKeys?.google);
+    }, [apiKeys?.google, apiKeySource]);
+
+    const [liveModels, setLiveModels] = useState<DiscoveredGeminiModel[]>([]);
+    const [recommendedLiveModels, setRecommendedLiveModels] = useState<string[]>([]);
+    const [activeLiveModel, setActiveLiveModel] = useState<string>(() => getCurrentTextModel());
+    const [isDiscoveringModels, setIsDiscoveringModels] = useState(false);
+
+    const handleSyncLiveModels = async (forceRefresh = false) => {
+        if (!effectiveApiKey) {
+            setLiveModels([]);
+            setRecommendedLiveModels([]);
+            return;
+        }
+        setIsDiscoveringModels(true);
+        try {
+            const discovered = await discoverAvailableGeminiModels(effectiveApiKey, forceRefresh);
+            setLiveModels(discovered);
+            const candidates = await getLiveMultimodalCandidateModels(effectiveApiKey, true);
+            setRecommendedLiveModels(candidates);
+            if (candidates.length > 0) {
+                const current = getCurrentTextModel();
+                const isCurrentValid = discovered.length === 0 || discovered.some(m => m.id === current);
+                const chosen = isCurrentValid && candidates.includes(current) ? current : candidates[0];
+                setActiveLiveModel(chosen);
+                setTextModel(chosen);
+                try {
+                    localStorage.setItem('mv_text_model', chosen);
+                } catch (_) {}
+            }
+        } catch (_) {
+        } finally {
+            setIsDiscoveringModels(false);
+        }
+    };
+
+    useEffect(() => {
+        void handleSyncLiveModels(false);
+    }, [effectiveApiKey]);
+
     const [isGenerating, setIsGenerating] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -169,8 +220,19 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     });
     
     const [audioFile, setAudioFile] = useState<File | null>(null);
+    const [mediaDuration, setMediaDuration] = useState<number>(0);
     const [generatorPreviewUrl, setGeneratorPreviewUrl] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        if (audioFile) {
+            getMediaDuration(audioFile).then(dur => {
+                if (dur > 0) setMediaDuration(dur);
+            }).catch(() => {});
+        } else {
+            setMediaDuration(0);
+        }
+    }, [audioFile]);
     // A delayed IndexedDB restore must never overwrite a file selected by the user
     // after this component mounted.
     const mediaSelectionVersion = useRef(0);
@@ -178,7 +240,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
     // The Max Generator view needs its own preview: the Timeline Editor player is not
     // mounted while the Generator view is active. Keep this object URL scoped to the file.
     useEffect(() => {
-        if (!audioFile || mediaSourceType !== 'upload' || !isVideoFile(audioFile)) {
+        if (!audioFile || mediaSourceType !== 'upload' || !isMediaFile(audioFile)) {
             setGeneratorPreviewUrl(null);
             return;
         }
@@ -559,7 +621,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
         setProgress(15);
         try {
             const mode = subtitleType === 'standard' ? 'ori' : subtitleType === 'bilingual' ? 'dual' : subtitleType === 'dual_trans' ? 'dual_trans' : subtitleType === 'triple' ? 'triple' : 'quad';
-            const apiKey = (apiKeySource === 'custom' ? apiKeys?.google : undefined) || apiKeys?.google || (localStorage.getItem('gemini_api_key') || undefined);
+            const apiKey = effectiveApiKey;
             const updatedSrt = await formatExistingSRTKeepTime(baseSrt, {
                 mode: mode as any,
                 targetLang: targetLanguage,
@@ -608,7 +670,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
 
         try {
             const mode = subtitleType === 'standard' ? 'ori' : subtitleType === 'bilingual' ? 'dual' : subtitleType === 'dual_trans' ? 'dual_trans' : subtitleType === 'triple' ? 'triple' : 'quad';
-            const apiKey = (apiKeySource === 'custom' ? apiKeys?.google : undefined) || apiKeys?.google || (localStorage.getItem('gemini_api_key') || undefined);
+            const apiKey = effectiveApiKey;
             
             const srt = await generateSRT({
                 audioFile: mediaSourceType === 'upload' ? audioFile : null,
@@ -621,7 +683,8 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                 onProgress: (p) => setProgress(Math.max(10, p)),
                 processingMode,
                 resumeTime,
-                contextInstruction
+                contextInstruction,
+                knownDurationSec: mediaDuration > 0 ? mediaDuration : (extractedDetails?.duration || undefined)
             });
             
             const endTime = Date.now();
@@ -907,6 +970,38 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                                         playsInline
                                                         preload="metadata"
                                                         className="w-full max-h-[42vh] rounded-lg bg-black object-contain"
+                                                    />
+                                                </div>
+                                            )}
+
+                                            {isAudioFile(audioFile) && generatorPreviewUrl && (
+                                                <div className="p-3 bg-black/40 border border-indigo-500/20 rounded-xl space-y-2">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="min-w-0">
+                                                            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                                                                <FileAudio className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                                                Audio Track Preview & Playback
+                                                            </div>
+                                                            <div className="text-[10px] text-white/50 truncate">{audioFile.name} ({(audioFile.size / (1024 * 1024)).toFixed(1)} MB)</div>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setAutoPlayYoutubeTrigger(Date.now());
+                                                                setActiveView('editor');
+                                                            }}
+                                                            className="shrink-0 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-[11px] font-bold text-white cursor-pointer flex items-center gap-1"
+                                                        >
+                                                            <Play className="w-3 h-3 fill-white" />
+                                                            <span>Open in Timeline</span>
+                                                        </button>
+                                                    </div>
+                                                    <audio
+                                                        key={generatorPreviewUrl}
+                                                        src={generatorPreviewUrl}
+                                                        controls
+                                                        preload="metadata"
+                                                        className="w-full h-10 rounded-lg bg-black/60"
                                                     />
                                                 </div>
                                             )}
@@ -1459,6 +1554,81 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                         {tinyFishCaptionSources.length > 0 && <div className="space-y-2">{tinyFishCaptionSources.map((source, index) => <a key={source.url + index} href={source.url} target="_blank" rel="noopener noreferrer" className="block rounded-xl border border-white/10 bg-black/30 p-3 hover:border-teal-500/30"><div className="text-xs font-semibold text-teal-100">{source.title}</div><div className="text-[10px] text-white/40 mt-0.5">{source.domain}</div>{source.snippet && <p className="text-[11px] text-white/65 mt-1">{source.snippet}</p>}</a>)}</div>}
                     </div>
 
+                    {/* API Key & Live Verified Model Status Indicator */}
+                    <div className={`mb-6 p-3.5 rounded-2xl border flex flex-col gap-2.5 text-xs ${effectiveApiKey ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-amber-500/10 border-amber-500/20 text-amber-300'}`}>
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                                <Key className={`w-4 h-4 shrink-0 ${effectiveApiKey ? 'text-emerald-400' : 'text-amber-400'}`} />
+                                <div className="truncate">
+                                    <span className="font-bold">{effectiveApiKey ? 'Gemini API Connected' : 'No Gemini API Key'}</span>
+                                    <span className="text-white/50 ml-1.5">{effectiveApiKey ? `(${getMaskedGeminiApiKey(effectiveApiKey)})` : '— required for speech & video transcription'}</span>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                                {effectiveApiKey && (
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleSyncLiveModels(true)}
+                                        disabled={isDiscoveringModels}
+                                        className="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/25 text-emerald-200 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                                        title="Query Google's v1beta/models API directly to detect the real models enabled on your API key"
+                                    >
+                                        <RefreshCw className={`w-3 h-3 ${isDiscoveringModels ? 'animate-spin' : ''}`} />
+                                        <span>{isDiscoveringModels ? 'Probing API...' : 'Detect Live Models'}</span>
+                                    </button>
+                                )}
+                                {onOpenKeyVault && (
+                                    <button
+                                        type="button"
+                                        onClick={onOpenKeyVault}
+                                        className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition-colors shrink-0 ${effectiveApiKey ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/30'}`}
+                                    >
+                                        {effectiveApiKey ? 'Change Key' : 'Enter API Key'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {effectiveApiKey && (
+                            <div className="pt-2 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]">
+                                <div className="flex items-center gap-1.5 text-white/70">
+                                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                    <span>
+                                        {liveModels.length > 0
+                                            ? `Verified ${liveModels.length} real models from Google API (v1beta/models) — 404 protection active`
+                                            : 'Auto-Fallback & Live Model Discovery active'}
+                                    </span>
+                                </div>
+                                {recommendedLiveModels.length > 0 && (
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-white/50 shrink-0">Active Model:</span>
+                                        <select
+                                            value={activeLiveModel}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                setActiveLiveModel(val);
+                                                setTextModel(val);
+                                                try {
+                                                    localStorage.setItem('mv_text_model', val);
+                                                } catch (_) {}
+                                            }}
+                                            className="bg-black/50 border border-emerald-500/30 text-emerald-200 rounded-lg px-2.5 py-1 text-[11px] font-mono outline-none focus:border-emerald-400"
+                                        >
+                                            {recommendedLiveModels.map(mId => {
+                                                const meta = liveModels.find(d => d.id === mId);
+                                                return (
+                                                    <option key={mId} value={mId} className="bg-[#111] text-white">
+                                                        {mId}{meta?.displayName && meta.displayName !== mId ? ` (${meta.displayName})` : ''}
+                                                    </option>
+                                                );
+                                            })}
+                                        </select>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
                     <button 
                         onClick={handleGenerate}
                         disabled={(mediaSourceType === 'upload' && !audioFile) || (mediaSourceType === 'youtube' && !youtubeUrl && !youtubeInput.trim()) || isGenerating}
@@ -1576,7 +1746,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                     setYoutubeUrl(url);
                                     setYoutubeInput(url);
                                 }}
-                                apiKey={apiKeySource === 'custom' ? apiKeys?.google : (localStorage.getItem('gemini_api_key') || undefined)}
+                                apiKey={effectiveApiKey}
                             />
                         ) : (
                             <SubtitleTimelineEditor
@@ -1601,7 +1771,7 @@ export const SubtitlesTab: React.FC<SubtitlesTabProps> = ({ file, apiKeys, apiKe
                                         setMediaSourceType('youtube');
                                     }
                                 }}
-                                apiKey={apiKeySource === 'custom' ? apiKeys?.google : (localStorage.getItem('gemini_api_key') || undefined)}
+                                apiKey={effectiveApiKey}
                             />
                         )}
                     </div>

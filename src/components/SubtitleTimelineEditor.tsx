@@ -294,7 +294,7 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         setIsGeneratingYtSubtitles(true);
         setSnapNotification("AI is inspecting YouTube video and generating subtitles...");
         try {
-            const effectiveApiKey = apiKey || localStorage.getItem('gemini_api_key') || undefined;
+            const effectiveApiKey = getEffectiveGeminiApiKey(apiKey);
             const srt = await generateYouTubeSRT(effectiveYoutubeUrl, {
                 apiKey: effectiveApiKey,
                 mode: 'ori',
@@ -984,6 +984,10 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     useEffect(() => {
         if (effectiveYoutubeUrl) {
             setMediaUrl(effectiveYoutubeUrl);
+            return;
+        }
+
+        if (effectiveAudioFile) {
             // Keep the original File URL when its MIME type is accurate. Some browsers and
             // Android pickers report video as application/octet-stream or audio/*; give those
             // cases a corrected MIME hint while preserving direct streaming capabilities.
@@ -1003,9 +1007,9 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             const url = URL.createObjectURL(mediaForPlayback);
             setMediaUrl(url);
             return () => URL.revokeObjectURL(url);
-        } else {
-            setMediaUrl(null);
         }
+
+        setMediaUrl(null);
     }, [effectiveAudioFile, effectiveYoutubeUrl]);
 
     // Maintain visual media object URL lifecycle: automatically creates URL when file is set or restored, and cleans up
@@ -1196,8 +1200,21 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     }, [effectiveYoutubeUrl, isPlaying, updateTime]);
 
     const handleMediaLoadedMetadata = () => {
-        if (mediaRef.current) {
-            setDuration(mediaRef.current.duration * 1000);
+        const mediaEl = mediaRef.current as HTMLMediaElement | null;
+        if (mediaEl) {
+            const rawDur = mediaEl.duration;
+            if (rawDur === Infinity) {
+                mediaEl.currentTime = 1e101;
+                mediaEl.ontimeupdate = () => {
+                    mediaEl.ontimeupdate = null;
+                    mediaEl.currentTime = 0;
+                    if (mediaEl.duration && !isNaN(mediaEl.duration) && isFinite(mediaEl.duration) && mediaEl.duration > 0) {
+                        setDuration(mediaEl.duration * 1000);
+                    }
+                };
+            } else if (rawDur > 0 && !isNaN(rawDur) && isFinite(rawDur)) {
+                setDuration(rawDur * 1000);
+            }
             
             // Restore playback position
             const mediaId = effectiveAudioFile?.name || effectiveYoutubeUrl || 'default';
@@ -2189,6 +2206,62 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
         setSnapNotification(`Set Mark Out: ${formatTimeWithMs(targetEnd)}`);
     };
 
+    // Mark Out & Ripple: Align subtitle end to current playhead AND shift all subsequent subtitles accordingly
+    const handleSetMarkOutAndRipple = (blockId: string) => {
+        const targetEnd = Math.round(currentTime);
+        let shiftedCount = 0;
+        let deltaMs = 0;
+
+        setBlocksAndNotify(prev => {
+            const sorted = [...prev].sort((a, b) => a.start - b.start);
+            const currentIdx = sorted.findIndex(b => b.id === blockId);
+            if (currentIdx === -1) return prev;
+
+            const currentBlock = sorted[currentIdx];
+            const oldEnd = currentBlock.end;
+            deltaMs = targetEnd - oldEnd;
+
+            // If delta is 0, nothing changes
+            if (deltaMs === 0) return prev;
+
+            const newStart = currentBlock.start >= targetEnd 
+                ? Math.max(0, targetEnd - 1500) 
+                : currentBlock.start;
+
+            const updatedCurrentBlock = {
+                ...currentBlock,
+                start: newStart,
+                end: targetEnd
+            };
+
+            const updated = sorted.map((block, idx) => {
+                if (idx < currentIdx) {
+                    return block;
+                }
+                if (idx === currentIdx) {
+                    return updatedCurrentBlock;
+                }
+                // Subsequent blocks (after current block): shift by deltaMs
+                shiftedCount++;
+                const newSubStart = Math.max(targetEnd, block.start + deltaMs);
+                const blockDuration = Math.max(100, block.end - block.start);
+                const newSubEnd = Math.max(newSubStart + 100, block.end + deltaMs);
+                return {
+                    ...block,
+                    start: newSubStart,
+                    end: Math.max(newSubStart + 100, newSubEnd)
+                };
+            }).sort((a, b) => a.start - b.start);
+
+            return updated;
+        });
+
+        seekTo(targetEnd, false);
+        const sDelta = (Math.abs(deltaMs) / 1000).toFixed(2);
+        const sign = deltaMs >= 0 ? `+${sDelta}s` : `-${sDelta}s`;
+        setSnapNotification(`Set Out (${formatTimeWithMs(targetEnd)}) & Shifted ${shiftedCount} Subtitle${shiftedCount !== 1 ? 's' : ''} After (${sign})`);
+    };
+
     // Sub Left (Previous Subtitle) & Sub Right (Next Subtitle) Navigation
     const handleSelectPrevSubtitle = useCallback(() => {
         if (blocksState.length === 0) return;
@@ -2247,7 +2320,11 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                 handleSetMarkIn(selectedId);
             } else if (e.key === ']' && selectedId) {
                 e.preventDefault();
-                handleSetMarkOut(selectedId);
+                if (e.shiftKey) {
+                    handleSetMarkOutAndRipple(selectedId);
+                } else {
+                    handleSetMarkOut(selectedId);
+                }
             } else if (selectedId && e.shiftKey && e.key === 'ArrowLeft') {
                 e.preventDefault();
                 handleNudge(e.altKey ? -500 : -100);
@@ -3413,6 +3490,17 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                              >
                                  <span>Out</span>
                                  <span className="text-amber-400/80 font-black">]</span>
+                             </button>
+
+                             {/* [out + move sub after] */}
+                             <button 
+                                 type="button"
+                                 onClick={() => handleSetMarkOutAndRipple(selectedBlock.id)}
+                                 className="flex items-center gap-0.5 px-2 py-1 bg-white/5 hover:bg-emerald-500/25 active:bg-emerald-500/40 text-emerald-300 hover:text-emerald-200 font-mono text-[10px] sm:text-[11px] font-bold transition-all shrink-0 cursor-pointer"
+                                 title="Mark Out & Move Sub After [Out»]: Align subtitle end to playhead AND shift all following subtitles by the same delta (Shift+])"
+                             >
+                                 <span>Out</span>
+                                 <span className="text-emerald-400 font-black">»</span>
                              </button>
 
                              {/* [subright] */}

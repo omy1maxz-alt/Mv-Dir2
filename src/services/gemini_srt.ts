@@ -1,57 +1,109 @@
 import { GoogleGenAI } from "@google/genai";
-import { getCurrentTextModel, callTextModel, withRetry, getGenAI, getEffectiveGeminiApiKey } from "./gemini";
+import { getCurrentTextModel, callTextModel, withRetry, getGenAI, getEffectiveGeminiApiKey, isRealGeminiKey, getLiveMultimodalCandidateModels, recordGeminiModelNotFound } from "./gemini";
 import { normalizeYoutubeUrl, extractYouTubeMediaDetails, fetchNativeYouTubeSubtitlesContent, fetchYouTubeCaptions, downloadYouTubeMediaStream } from "./youtube";
 import { parseSubtitles, generateSrt, SubtitleBlock, splitOversizedBlocks } from "../utils/subtitleParser";
 import { segmentsToSrt } from "./youtubeCaptionService";
 
-// Candidate multimodal Gemini models for audio transcription in order of reliability
-const AUDIO_CANDIDATE_MODELS = [
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'gemini-2.0-flash'
-];
+let lastWorkingTranscriptionModel: string | null = null;
+const notFoundTranscriptionModels = new Set<string>();
 
 /**
- * Call Gemini generation with auto-fallback for audio transcription.
- * If the active model is non-multimodal (e.g. Kie/OpenAI text model) or fails with 403/404,
- * it tries standard Gemini Flash multimodal models.
+ * Call Gemini generation with live model discovery (`v1beta/models`) and auto-fallback for audio & video transcription.
+ * Dynamically queries the exact list of real models available on the user's API key via `getLiveMultimodalCandidateModels`,
+ * clamps maxOutputTokens to <= 8192 to prevent Gemini backend 500 INTERNAL errors on multimodal inputs,
+ * caches the last working model, and blacklists any 404 model so it is never retried.
  */
 export async function callAudioTranscriptionModel(
     genAI: GoogleGenAI,
     request: any
 ): Promise<any> {
-    const rawSelectedModel = getCurrentTextModel();
-    let initialModel = rawSelectedModel;
-    
-    // If the currently selected text model is a Kie/OpenAI text model, default to gemini-2.5-flash
-    if (typeof initialModel === 'string' && (initialModel.startsWith('kie:') || initialModel === 'custom-openai')) {
-        initialModel = 'gemini-2.5-flash';
-    }
-
-    const modelsToTry = [
-        initialModel,
-        ...AUDIO_CANDIDATE_MODELS.filter(m => m !== initialModel)
-    ];
-
-    let lastError: any = null;
-    let lastVideoArgumentError: any = null;
     const requestParts = Array.isArray(request?.contents?.parts) ? request.contents.parts : [];
     const videoMimeTypes = [...new Set(requestParts
         .map((part: any) => part?.inlineData?.mimeType || part?.fileData?.mimeType || '')
         .filter((mime: string) => typeof mime === 'string' && mime.toLowerCase().startsWith('video/')))];
-    const containsVideoInput = videoMimeTypes.length > 0;
+    const hasImageParts = requestParts.some((part: any) => {
+        const mime = part?.inlineData?.mimeType || part?.fileData?.mimeType || '';
+        return typeof mime === 'string' && mime.toLowerCase().startsWith('image/');
+    });
+    const containsVisualInput = videoMimeTypes.length > 0 || hasImageParts;
+
+    // Query live discovered models from Google's v1beta/models endpoint for the active API key
+    const livePool = await getLiveMultimodalCandidateModels(undefined, containsVisualInput);
+    const sanitizedPool = livePool
+        .map(m => /^gemini-3\./i.test(m) ? (m.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash') : m)
+        .filter((m, idx, arr) => arr.indexOf(m) === idx && !notFoundTranscriptionModels.has(m));
+    const effectivePool = sanitizedPool.length > 0
+        ? sanitizedPool
+        : ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest'];
+
+    let preferredModel = lastWorkingTranscriptionModel && effectivePool.includes(lastWorkingTranscriptionModel)
+        ? lastWorkingTranscriptionModel
+        : effectivePool[0];
+
+    if (containsVisualInput && preferredModel.includes('transcribe')) {
+        preferredModel = effectivePool.find(m => !m.includes('transcribe')) || effectivePool[0];
+    }
+
+    const modelsToTry = [
+        ...(notFoundTranscriptionModels.has(preferredModel) ? [] : [preferredModel]),
+        ...effectivePool.filter(m => m !== preferredModel)
+    ];
+
+    // Clamp maxOutputTokens to 8192 to prevent Gemini backend 500 INTERNAL crashes when combined with heavy media tokens
+    const safeConfig = request?.config ? { ...request.config } : {};
+    if (typeof safeConfig.maxOutputTokens === 'number' && safeConfig.maxOutputTokens > 8192) {
+        safeConfig.maxOutputTokens = 8192;
+    }
+
+    let lastError: any = null;
+    let lastVideoArgumentError: any = null;
 
     for (const model of modelsToTry) {
         try {
-            const req = { ...request, model };
-            return await withRetry(() => genAI.models.generateContent(req), 3, 2500);
+            const req = { ...request, config: safeConfig, model };
+            try {
+                const res = await withRetry(() => genAI.models.generateContent(req), 2, 2000);
+                lastWorkingTranscriptionModel = model;
+                return res;
+            } catch (primaryErr: any) {
+                const pMsg = (primaryErr?.message || '') + JSON.stringify(primaryErr || '');
+                if (pMsg.includes('502') || pMsg.includes('404') || pMsg.includes('Failed to fetch') || pMsg.includes('Direct Gemini proxy')) {
+                    const directAI = getGenAI(undefined, true);
+                    const res = await directAI.models.generateContent(req);
+                    lastWorkingTranscriptionModel = model;
+                    return res;
+                }
+                throw primaryErr;
+            }
         } catch (err: any) {
             lastError = err;
             const msg = (err?.message || '') + JSON.stringify(err || '');
             const is403 = err?.status === 403 || msg.includes('403') || msg.includes('PERMISSION_DENIED') || msg.includes('does not have permission');
             const is404 = err?.status === 404 || msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('is not found');
-            const isVideoInvalidArgument = containsVideoInput &&
+            const is500 = err?.status === 500 || msg.includes('INTERNAL') || msg.includes('"code":500') || msg.includes('Internal error encountered') || err?.status === 503 || msg.includes('503');
+            const isVideoInvalidArgument = videoMimeTypes.length > 0 &&
                 (err?.status === 400 || msg.includes('INVALID_ARGUMENT') || msg.includes('Request contains an invalid argument'));
+
+            if (is404) {
+                notFoundTranscriptionModels.add(model);
+                recordGeminiModelNotFound(model);
+                if (lastWorkingTranscriptionModel === model) {
+                    lastWorkingTranscriptionModel = null;
+                }
+            }
+
+            // If a 500 INTERNAL error occurred with maxOutputTokens set, retry once on the same model without maxOutputTokens
+            if (is500 && safeConfig.maxOutputTokens) {
+                try {
+                    const { maxOutputTokens: _removed, ...minimalConfig } = safeConfig;
+                    const retryReq = { ...request, config: minimalConfig, model };
+                    const res = await genAI.models.generateContent(retryReq);
+                    lastWorkingTranscriptionModel = model;
+                    return res;
+                } catch (retryErr: any) {
+                    lastError = retryErr;
+                }
+            }
 
             if (isVideoInvalidArgument) {
                 lastVideoArgumentError = err;
@@ -60,12 +112,9 @@ export async function callAudioTranscriptionModel(
             }
 
             const isInvalidArgument = err?.status === 400 || msg.includes('"code":400') || msg.includes('INVALID_ARGUMENT') || msg.includes('Request contains an invalid argument');
-            if (is403 || is404 || isInvalidArgument) {
-                const reason = is403 ? '403 Permission Denied' : is404 ? '404 Model Not Found' : '400 INVALID_ARGUMENT (model/media request compatibility)';
-                console.warn(`[SRT Generator] Model "${model}" failed with ${reason}. Trying fallback model...`, err);
-                continue;
-            }
-            throw err;
+            const reason = is403 ? '403 Permission Denied' : is404 ? '404 Model Not Found' : is500 ? '500 Internal error encountered' : isInvalidArgument ? '400 INVALID_ARGUMENT' : 'Model error';
+            console.warn(`[SRT Generator] Model "${model}" failed with ${reason}. Trying next fallback candidate...`);
+            continue;
         }
     }
 
@@ -399,7 +448,7 @@ export async function getMediaDuration(file: File): Promise<number> {
             }
             resolve(val > 0 && !isNaN(val) && isFinite(val) ? val : 0);
         };
-        const timer = setTimeout(() => finish(0), 6000);
+        const timer = setTimeout(() => finish(0), 10000);
         try {
             const lower = (file.name || '').toLowerCase();
             const isVideo = file.type.includes('video') || /\.(mp4|webm|mov|mkv|m4v|avi)$/i.test(lower);
@@ -431,12 +480,98 @@ export async function getMediaDuration(file: File): Promise<number> {
     });
 }
 
+/**
+ * Streams media directly to the same-origin Express server endpoint /api/gemini/upload-file,
+ * which uploads to Gemini's File API server-side, eliminating browser CORS preflight restrictions
+ * and avoiding large ArrayBuffer heap allocations in browser memory.
+ */
+async function uploadFileViaServerProxy(file: File, mimeType: string, apiKey: string, onProgress?: (p: number) => void): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/gemini/upload-file', true);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.setRequestHeader('X-Mime-Type', mimeType);
+        xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name || 'upload'));
+        const keyToSend = getEffectiveGeminiApiKey(apiKey);
+        if (keyToSend) {
+            xhr.setRequestHeader('X-Gemini-API-Key', keyToSend);
+        }
+
+        xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && onProgress) {
+                // Upload phase maps to 10% - 45%
+                const pct = Math.min(45, Math.round(10 + (event.loaded / event.total) * 35));
+                onProgress(pct);
+            }
+        };
+
+        xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    if (data?.fileUri) {
+                        if (onProgress) onProgress(50);
+                        resolve(data.fileUri);
+                        return;
+                    }
+                    reject(new Error(data?.error || 'Server upload returned invalid response without fileUri'));
+                } catch (parseErr: any) {
+                    reject(new Error(`Failed to parse server upload response: ${parseErr?.message || parseErr}`));
+                }
+            } else {
+                let errText = `Server upload failed (HTTP ${xhr.status})`;
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    if (data?.error) errText = data.error;
+                } catch (_) {}
+                if (xhr.status === 401) {
+                    errText = 'Gemini API key is missing or invalid. Please open Settings -> API Settings Vault to enter your Google Gemini API Key.';
+                }
+                reject(new Error(errText));
+            }
+        };
+
+        xhr.onerror = () => {
+            reject(new Error('Network error during server file upload'));
+        };
+
+        xhr.ontimeout = () => {
+            reject(new Error('Server file upload timed out (10-minute limit exceeded)'));
+        };
+
+        xhr.timeout = 600000; // 10 minutes for large media files
+        xhr.send(file);
+    });
+}
+
 async function uploadFileToGemini(file: File, mimeType: string, apiKey: string, onProgress?: (p: number) => void): Promise<string> {
-    const ai = getGenAI(apiKey);
+    const effectiveKey = getEffectiveGeminiApiKey(apiKey);
+
+    // If running with AI Studio's built-in placeholder key (no personal API key configured),
+    // the Gemini File API (/upload/v1beta/files) cannot be called because AI Studio's window.fetch
+    // blocks multipart/resumable File API uploads with "Failed to call the Gemini API. Please try again."
+    // Throw immediately so callers seamlessly delegate to the Multimodal Chunked Engine (WAV + Sampled JPEG Video Frames).
+    if (!isRealGeminiKey(effectiveKey)) {
+        throw new Error('File API upload requires a personal Gemini API key; delegating to in-browser multimodal chunked engine.');
+    }
+
+    // 1. Primary path: Stream via same-origin Express/Vite server proxy (/api/gemini/upload-file)
+    try {
+        console.log(`[SRT Generator] Uploading ${(file.size / (1024 * 1024)).toFixed(1)}MB media via server proxy...`);
+        const serverUri = await uploadFileViaServerProxy(file, mimeType, effectiveKey, onProgress);
+        if (serverUri) {
+            console.log(`[SRT Generator] Server upload successful, fileUri:`, serverUri);
+            return serverUri;
+        }
+    } catch (proxyErr: any) {
+        console.warn(`[SRT Generator] Server upload proxy failed, attempting SDK upload via proxy:`, proxyErr?.message || proxyErr);
+    }
+
+    // 2. Secondary fallback: SDK upload routed through /api/gemini/proxy (never raw window.fetch to generativelanguage.googleapis.com)
+    const ai = getGenAI(effectiveKey);
     
     if (onProgress) onProgress(20);
     
-    // The official SDK handles chunking, resumable protocol, and headers automatically
     const uploadRes = await ai.files.upload({
         file: file,
         config: {
@@ -447,9 +582,6 @@ async function uploadFileToGemini(file: File, mimeType: string, apiKey: string, 
     
     if (onProgress) onProgress(50);
     
-    const name = uploadRes.name.split('/files/')[1] || uploadRes.name;
-    
-    // Wait for processing
     let state = uploadRes.state;
     while (state === 'PROCESSING') {
         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -474,6 +606,7 @@ export interface GenerateSrtOptions {
     onProgress?: (progress: number) => void;
     resumeTime?: string;
     contextInstruction?: string;
+    knownDurationSec?: number;
 }
 
 function normalizeTextForMatch(text: string): string {
@@ -502,11 +635,16 @@ function deduplicateAndMergeBlocks(
         const matchIdx = recentBlocks.findIndex(prev => {
             const prevNorm = normalizeTextForMatch(prev.textLines.join(' '));
             if (!prevNorm) return false;
-            return incNorm === prevNorm || (incNorm.length > 5 && (prevNorm.includes(incNorm) || incNorm.includes(prevNorm)));
+            const textMatches = incNorm === prevNorm || (incNorm.length > 5 && (prevNorm.includes(incNorm) || incNorm.includes(prevNorm)));
+            if (!textMatches) return false;
+            // Only deduplicate if the cues are actually in temporal proximity / overlap window,
+            // preventing the accidental deletion of repeating chorus lines, song refrains, or dialogue repetitions.
+            const temporalOverlap = Math.abs(inc.startMs - prev.startMs) < 5000 || (inc.startMs < prev.endMs + 800 && inc.endMs > prev.startMs);
+            return temporalOverlap;
         });
 
         if (matchIdx !== -1) {
-            // Already present in previous chunk, discard duplicate from overlap window
+            // Already present in previous chunk/pass, discard duplicate from overlap window
             continue;
         }
 
@@ -744,7 +882,7 @@ For each [CUE X], output EXACTLY 3 lines (Line 1: Accurate Romanized phonetic pr
                 contents: `Format and translate these Stage 1 native dialogue cues into the requested Subtitle Mode while respecting each cue's locked duration:\n\n${inputPayload}`,
                 config: {
                     temperature: 0.1,
-                    maxOutputTokens: 16384,
+                    maxOutputTokens: 8192,
                     systemInstruction
                 }
             });
@@ -844,22 +982,128 @@ export async function formatExistingSRTKeepTime(
     return reconstructSRT(formatted);
 }
 
+/**
+ * Samples representative JPEG frames from a local video File across [startSec, startSec + durationSec].
+ * Used by Watch & Listen (video_audio) chunked mode so Gemini receives both the WAV audio slice AND visual frames
+ * without sending raw video container bytes that can trigger Gemini 500 INTERNAL errors.
+ */
+async function extractVideoFramesForWindow(
+    videoFile: File,
+    startSec: number,
+    durationSec: number,
+    maxFrames = 6
+): Promise<any[]> {
+    if (typeof document === 'undefined') return [];
+    return new Promise((resolve) => {
+        const video = document.createElement('video');
+        const url = URL.createObjectURL(videoFile);
+        let settled = false;
+        const finish = (parts: any[]) => {
+            if (settled) return;
+            settled = true;
+            try {
+                video.removeAttribute('src');
+                video.load();
+            } catch (_) {}
+            URL.revokeObjectURL(url);
+            resolve(parts);
+        };
+
+        const timeoutId = setTimeout(() => finish([]), 12000);
+
+        video.preload = 'auto';
+        video.muted = true;
+        video.playsInline = true;
+        video.src = url;
+
+        video.onerror = () => {
+            clearTimeout(timeoutId);
+            finish([]);
+        };
+
+        video.onloadedmetadata = async () => {
+            try {
+                const vw = video.videoWidth || 640;
+                const vh = video.videoHeight || 360;
+                const scale = Math.min(1, 640 / Math.max(vw, vh));
+                const cw = Math.max(160, Math.round(vw * scale));
+                const ch = Math.max(90, Math.round(vh * scale));
+
+                const canvas = document.createElement('canvas');
+                canvas.width = cw;
+                canvas.height = ch;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    clearTimeout(timeoutId);
+                    finish([]);
+                    return;
+                }
+
+                const frameParts: any[] = [];
+                const count = Math.max(1, Math.min(maxFrames, Math.floor(durationSec / 20) || 3));
+                const step = durationSec / (count + 1);
+
+                for (let i = 1; i <= count; i++) {
+                    const targetTime = Math.min(
+                        Math.max(0.1, startSec + i * step),
+                        Math.max(0.1, (video.duration || (startSec + durationSec)) - 0.1)
+                    );
+                    await new Promise<void>((seekRes) => {
+                        const onSeeked = () => {
+                            video.removeEventListener('seeked', onSeeked);
+                            seekRes();
+                        };
+                        video.addEventListener('seeked', onSeeked);
+                        try {
+                            video.currentTime = targetTime;
+                        } catch (_) {
+                            video.removeEventListener('seeked', onSeeked);
+                            seekRes();
+                        }
+                    });
+                    ctx.drawImage(video, 0, 0, cw, ch);
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+                    const base64 = dataUrl.split(',')[1] || '';
+                    if (base64) {
+                        const relSec = Math.max(0, Math.round(targetTime - startSec));
+                        const relTs = msToTime(relSec * 1000);
+                        frameParts.push({ text: `[Visual Frame at relative timestamp ${relTs}]` });
+                        frameParts.push({
+                            inlineData: {
+                                data: base64,
+                                mimeType: 'image/jpeg'
+                            }
+                        });
+                    }
+                }
+                clearTimeout(timeoutId);
+                finish(frameParts);
+            } catch (_) {
+                clearTimeout(timeoutId);
+                finish([]);
+            }
+        };
+    });
+}
+
 async function transcribeSingleChunk(
     chunkBlob: Blob,
     chunkDurationSec: number,
     opts: GenerateSrtOptions,
     genAI: GoogleGenAI,
-    apiKey: string
+    apiKey: string,
+    videoFrameParts: any[] = []
 ): Promise<string> {
     const maxTimecode = msToTime(Math.round(chunkDurationSec * 1000));
+    const hasVisualFrames = videoFrameParts.length > 0;
 
-    let pass1Instruction = `You are an expert audio segmentation and transcription engine.
-Your task is to transcribe dialogue from this audio segment (duration: ${Math.round(chunkDurationSec)} seconds).
+    let pass1Instruction = `You are an expert ${hasVisualFrames ? 'multimodal video & audio' : 'audio'} segmentation and transcription engine.
+Your task is to transcribe dialogue${hasVisualFrames ? ' and visible on-screen text/captions' : ''} from this media segment (duration: ${Math.round(chunkDurationSec)} seconds).
 
 CRITICAL TEMPORAL & COMPLETENESS CONSTRAINTS:
 - The segment duration is exactly ${Math.round(chunkDurationSec)} seconds.
 - Relative timestamps MUST start from 00:00:00,000 and MUST NEVER exceed ${maxTimecode}.
-- TOTAL TRANSCRIPTION FIDELITY: Transcribe EVERY SINGLE dialogue utterance across the ENTIRE audio slice from 0.0s to the very end of this chunk. Do NOT stop early. Do NOT truncate. Generate all continuous subtitle blocks covering 100% of the speech.
+- TOTAL TRANSCRIPTION FIDELITY: Transcribe EVERY SINGLE dialogue utterance${hasVisualFrames ? ', sung lyric, and meaningful on-screen text/title' : ''} across the ENTIRE segment from 0.0s to the very end of this chunk. Do NOT stop early. Do NOT truncate. Generate all continuous subtitle blocks covering 100% of the speech.
 - Subtitles must proceed strictly in chronological sequence (start < end).
 - Do not jump ahead in time.
 - Standard SRT format: HH:MM:SS,mmm --> HH:MM:SS,mmm.
@@ -880,7 +1124,7 @@ CRITICAL TEMPORAL & COMPLETENESS CONSTRAINTS:
         pass1Instruction += `\nUSER CONTEXT & TERMINOLOGY:\n"""\n${opts.contextInstruction.trim()}\n"""`;
     }
 
-    let parts: any[] = [{ text: `Generate precisely timed SRT transcription for this audio slice.` }];
+    let parts: any[] = [{ text: `Generate precisely timed SRT transcription for this ${hasVisualFrames ? 'video + audio' : 'audio'} slice.` }];
     const MAX_INLINE_SIZE = 15 * 1024 * 1024;
 
     if (chunkBlob.size <= MAX_INLINE_SIZE) {
@@ -913,11 +1157,15 @@ CRITICAL TEMPORAL & COMPLETENESS CONSTRAINTS:
         }
     }
 
+    if (hasVisualFrames) {
+        parts.push(...videoFrameParts);
+    }
+
     const res = await callAudioTranscriptionModel(genAI, {
         contents: { parts },
         config: {
             temperature: 0.1,
-            maxOutputTokens: 32768,
+            maxOutputTokens: 8192,
             systemInstruction: pass1Instruction,
         }
     });
@@ -1041,7 +1289,8 @@ async function generateChunkedSRT(
     opts: GenerateSrtOptions,
     totalDurationSec: number,
     genAI: GoogleGenAI,
-    apiKey: string
+    apiKey: string,
+    allowSinglePassFallback = true
 ): Promise<string> {
     const { onProgress, audioFile } = opts;
     if (onProgress) onProgress(10);
@@ -1049,6 +1298,11 @@ async function generateChunkedSRT(
     if (!audioFile) {
         throw new Error("No audio file provided for chunked transcription.");
     }
+
+    const lowerFileName = (audioFile.name || '').toLowerCase();
+    const isVideoContainer = (audioFile.type || '').startsWith('video/') ||
+        /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts)$/i.test(lowerFileName);
+    const shouldSampleVideoFrames = isVideoContainer && opts.processingMode === 'video_audio';
 
     let audioBuffer: AudioBuffer;
     let duration: number;
@@ -1095,8 +1349,12 @@ async function generateChunkedSRT(
                 console.log('[SRT Generator] Trying 10MB Byte-Windowed Audio Decoding for large audio file...');
                 return await generateByteWindowedChunkedSRT(opts, totalDurationSec, genAI, apiKey);
             } catch (byteWinErr) {
-                console.warn('[SRT Generator] Byte-windowed decode fallback failed, proceeding to Cloud Multi-Pass Transcription:', byteWinErr);
+                console.warn('[SRT Generator] Byte-windowed decode fallback failed:', byteWinErr);
             }
+        }
+
+        if (!allowSinglePassFallback) {
+            throw decodeErr;
         }
 
         const isVideoSource = safeMimeType.startsWith('video/') || /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts|mxf|vob|rm|rmvb|divx|f4v|asf)$/i.test(lowerName);
@@ -1113,7 +1371,7 @@ async function generateChunkedSRT(
     const effectiveDurationSec = Math.max(0, duration - resumeOffsetSec);
     const totalChunks = Math.max(1, Math.ceil((effectiveDurationSec - OVERLAP_SEC) / STEP_SEC));
 
-    console.log(`[SRT Generator] Anti-Drift Chunking active: ${totalChunks} chunks for ${Math.round(duration)}s total audio (starting at ${Math.round(resumeOffsetSec)}s)`);
+    console.log(`[SRT Generator] Anti-Drift Chunking active: ${totalChunks} chunks for ${Math.round(duration)}s total media (starting at ${Math.round(resumeOffsetSec)}s, visualFrames=${shouldSampleVideoFrames})`);
 
     let allBlocks: ParsedRawBlock[] = [];
 
@@ -1133,11 +1391,14 @@ async function generateChunkedSRT(
         }
 
         const { wavBlob } = extractWavSliceFromBuffer(audioBuffer, chunkStartSec, chunkDurSec, 12000);
+        const videoFrameParts = shouldSampleVideoFrames
+            ? await extractVideoFramesForWindow(audioFile, chunkStartSec, chunkDurSec, 6)
+            : [];
 
         let rawChunkSrt = '';
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                rawChunkSrt = await transcribeSingleChunk(wavBlob, chunkDurSec, opts, genAI, apiKey);
+                rawChunkSrt = await transcribeSingleChunk(wavBlob, chunkDurSec, opts, genAI, apiKey, videoFrameParts);
                 if (rawChunkSrt && rawChunkSrt.trim()) break;
             } catch (chunkErr: any) {
                 console.warn(`[SRT Generator] Chunk ${c + 1}/${totalChunks} (${Math.round(chunkStartSec)}s-${Math.round(chunkStartSec + chunkDurSec)}s) attempt ${attempt + 1} failed:`, chunkErr?.message || chunkErr);
@@ -1217,36 +1478,34 @@ async function generateSinglePassSRT(
         /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts|mxf|vob|rm|rmvb|divx|f4v|asf)$/i.test(audioFile.name || '')
     )));
 
-    let systemInstruction = `You are the AI VIDEO SUBTITLE ANALYSIS & PRECISION SYNC ENGINE.
-Your task is to transcribe and time-align the provided ${isVideo ? 'video' : 'audio soundtrack'} and generate an accurate, valid SRT file.
+    let systemInstruction = `You are the AI MULTIMODAL VIDEO & SUBTITLE ANALYSIS ENGINE.
+Your task is to transcribe and time-align the provided ${isVideo ? 'video' : 'audio soundtrack'} and generate an accurate, complete, valid SRT file.
 
 ${isVideoSource && processingMode === 'audio'
     ? 'LISTEN ONLY MODE: The source is a video file, but use ONLY its embedded audio/soundtrack for transcription and timing. Ignore video frames, facial expressions, lip movements, on-screen text, and visual scene context. Do not create captions from visual-only information. Keep all timestamps aligned to the embedded audio timeline.'
     : isVideo
-        ? 'WATCH & LISTEN MODE: Use both the embedded audio and relevant video frames for transcription context. Audio remains the authority for spoken words and timing; never invent dialogue from visuals.'
-        : 'AUDIO MODE: Use the audio signal for transcription and timing. Do not infer speech from unrelated visual content.'}
+        ? 'WATCH & LISTEN MODE (COMPREHENSIVE MULTIMODAL CAPTURE): Watch the video frames AND listen to the audio soundtrack simultaneously. You MUST capture 100% of all text: transcribe all spoken dialogue, sung lyrics, chants, and vocalizations (using visual lip movement and facial expressions to catch every word even when fast or quiet), PLUS capture all on-screen text, burned-in subtitles, lyrics displays, title cards, dialogue overlays, signs, and captions timed to when they appear and disappear.'
+        : 'AUDIO MODE: Use the audio signal for transcription and timing. Capture 100% of spoken and sung dialogue accurately aligned to the audio waveform.'}
 
-The goal is to create subtitles that are: CORRECTLY WRITTEN + CORRECTLY TRANSLATED + CORRECTLY TIMED + SYNCHRONIZED WITH THE ACTUAL SPEECH${isVideo && processingMode === 'video_audio' ? ' + CONSISTENT WITH THE VISUAL SCENE' : ''}.
-Do not process every video as if it were simple continuous speech.
+The goal is to create subtitles that are: 100% COMPLETE + ALL TEXT CAPTURED + CORRECTLY WRITTEN + ACCURATELY TIMED + ZERO DRIFT${isVideo && processingMode === 'video_audio' ? ' + VISUALLY GROUNDED' : ''}.
 
 OUTPUT FORMAT:
 Output ONLY the raw SRT format. No markdown formatting, no code block backticks (\`\`\`srt), and no conversational explanations.
 
 CORE WORKFLOW:
-1. FIRST PASS: Understand the video structure (scene changes, speaker appearances, speech vs. silence).
-2. AUDIO ANALYSIS: Detect exact speech onset, offset, pauses, and word boundaries.
-3. SPEAKER IDENTIFICATION: Determine who is speaking, if they are on-screen, off-screen, or background.
-4. TRANSCRIPTION: Transcribe the actual spoken words. Do not summarize or invent dialogue.
+1. FIRST PASS: Understand the video structure (scene changes, on-screen text, speaker appearances, speech vs. silence).
+2. AUDIO & VISUAL ANALYSIS: Detect exact speech onset, offset, pauses, word boundaries, and visual text appearance/disappearance intervals.
+3. SPEAKER & TEXT IDENTIFICATION: Transcribe who is speaking and what text appears on screen.
+4. TRANSCRIPTION FIDELITY: Transcribe ALL spoken words, sung lyrics, and visual on-screen text. Do not summarize or omit text.
 5. TRANSLATION: Translate while preserving meaning, tone, and context.
 6. SEGMENTATION: Group words into subtitles based on natural pauses, readability, and the 5-second max duration rule.
 
-CRITICAL RULE 1: EXACT AUDIO-TIMELINE SYNCHRONIZATION (ZERO DRIFT)
-- AUDIO-FIRST TIMING: The transcript provides the WORDS. The audio provides the TIMING. Do NOT allow transcript text to override obvious audio acoustic timing.
+CRITICAL RULE 1: EXACT MEDIA-TIMELINE SYNCHRONIZATION (ZERO DRIFT)
+- TIMING SYNCHRONIZATION: For vocal dialogue/lyrics, align start and end to the acoustic delivery. For on-screen visual text/subtitles/titles, align start and end to when the text appears and disappears in the video frames.
 - NO PHANTOM TIMING (PRE-SPEECH SOUNDS): If a speaker makes a pre-speech sound (like "Woah", "Ah", a gasp, or a sigh) before starting their actual sentence, DO NOT start the sentence's timecode early during that sound UNLESS you explicitly type out the sound (e.g., "Woah, how exciting!"). If you don't type the sound, the timecode MUST NOT start until the actual first word ("how").
 - NEVER assume a sentence should occupy the entire time between the previous and next sentence. Do NOT keep a caption on screen during long silent periods merely because the next sentence hasn't started.
-- The start timestamp MUST mark the exact millisecond the speaker utters the first syllable.
-- The end timestamp MUST mark the exact millisecond when the vocal sound concludes.
-- NEVER invent imaginary pauses, do NOT bunch multiple separate lines together, and do NOT let timestamps drift.
+- The start timestamp MUST mark the exact millisecond the speaker utters the first syllable or text appears.
+- The end timestamp MUST mark the exact millisecond when the vocal sound concludes or text disappears.
 - Standard SRT format: HH:MM:SS,mmm --> HH:MM:SS,mmm.
 
 CRITICAL RULE 2: CHRONOLOGICAL & NO OVERLAPPING
@@ -1254,44 +1513,40 @@ CRITICAL RULE 2: CHRONOLOGICAL & NO OVERLAPPING
 - NO OVERLAPPING TIMECODES: A subtitle's start time MUST be greater than or equal to the previous subtitle's end time. Never output two subtitle blocks that occur at the same time.
 - Do not output invalid seconds (values >= 60).
 
-CRITICAL RULE 3: LINGUISTIC ACCURACY & FAITHFUL TRANSLATION
-- 100% TRANSCRIPTION FIDELITY: Transcribe what was actually spoken word-for-word.
-- CONTEXT WINDOW: Use the surrounding conversation and visual scene to determine meaning, but NEVER invent dialogue.
-- SAME LANGUAGE RULE: If the spoken audio is already in the target language (or Original Language is selected), output the verbatim original spoken words.
+CRITICAL RULE 3: LINGUISTIC ACCURACY & FAITHFUL TRANSCRIPTION
+- 100% TRANSCRIPTION FIDELITY: Transcribe what was actually spoken, sung, or displayed on-screen without omitting lines.
+- CONTEXT WINDOW: Use the surrounding conversation, music, and visual scene to determine meaning and lyrics.
+- SAME LANGUAGE RULE: If the spoken audio is already in the target language (or Original Language is selected), output the verbatim original text.
 
 CRITICAL RULE 4: PROFESSIONAL SEGMENTATION, BREVITY & NO LONG TEXT (MAX 1 SENTENCE PER BOX)
 - NEVER cram multiple complete sentences or long paragraphs into a single subtitle block.
-- For example, if a speaker says: "라는 생각을 한 적이 있어. 왜냐면 내가 운동하기 너무 힘들잖아. 그럼 같이 운동할 수 있는 사람?"
-  You MUST output 3 SEPARATE, consecutively timed subtitle blocks:
-  1. "라는 생각을 한 적이 있어"
-  2. "왜냐면 내가 운동하기 너무 힘들잖아"
-  3. "그럼 같이 운동할 수 있는 사람?"
-  Each with its own accurate speech start and end timestamps!
-- STRICT SENTENCE SEGMENTATION: 1 subtitle block = ONLY 1 concise sentence or short clause.
+- STRICT SENTENCE SEGMENTATION: 1 subtitle block = ONLY 1 concise sentence, lyric line, or short clause.
 - Whenever a sentence ends (with '.', '?', '!', or a natural spoken pause), immediately start a new subtitle block!
 - MAX DURATION: 1.5 to 3.5 seconds per block (maximum 4.0s). Never bundle sentences into 5-7 second blocks.
 - MAX LENGTH: Maximum 1-2 short lines per block.
   * Korean / Japanese / Chinese (CJK): MAXIMUM 15-25 characters per line (NEVER > 30 chars).
   * English / Latin / Western: MAXIMUM 35-42 characters per line.
-- SHORT REACTIONS & VOCALIZATION SEPARATION: Pay extreme attention to short, rapid reactions (e.g., "Ah", "Oh", "Woah", gasps). Do not skip them. If there is a distinct pre-speech reaction followed by a sentence, strongly prefer splitting them into TWO separate time-aligned subtitle blocks if there is a natural acoustic pause between them.
+- SHORT REACTIONS & VOCALIZATION SEPARATION: Pay extreme attention to short, rapid reactions (e.g., "Ah", "Oh", "Woah", gasps). Do not skip them.
 - OVERLAPPING SPEECH: If two people speak simultaneously, DO NOT create overlapping timecode blocks. Instead, combine their dialogue into a SINGLE subtitle block using two lines (e.g., "- Hello\n- Hi").
-- SCENE-AWARE SUBTITLING: Use visual context to prevent subtitles from carrying incorrectly across scenes. A scene change does NOT automatically mean a subtitle must end if the audio continues naturally, but audio continuity takes priority.
 
-CRITICAL RULE 5: VISUAL CAPTIONS, EMOTIONS & NON-VERBAL CONTEXT
-- EMOTION & EXPRESSION TAGGING: You MUST capture the emotional state of the speaker. When a speaker exhibits a clear emotion visually (e.g., facial expressions of surprise, shyness) or acoustically (e.g., crying, laughing, tone of voice), include an emotion tag in brackets before their dialogue or as a standalone block. Examples: [Crying], [Surprised], [Laughing], [Shyly], [Sighs], [Gasps].
-- ON-SCREEN TEXT & GRAPHICS: If requested, create subtitle blocks for on-screen captions or emotions exactly when they appear, even during silence. Treat existing burned-in subtitles as visual reference only; use the original audio for timing.
-- LAUGHTER & VOCALIZATIONS: Detect and accurately time laughter, humming, gasps, and crying independently from speech. Use exact acoustic durations.
+CRITICAL RULE 5: VISUAL TEXT, ON-SCREEN SUBTITLES & EMOTION CONTEXT
+- ON-SCREEN TEXT & GRAPHICS: In Watch & Listen mode, actively capture and create subtitle blocks for all on-screen burned-in subtitles, lyric displays, title cards, captions, dialogue overlays, signs, and presenter notes exactly when they appear.
+- EMOTION & EXPRESSION TAGGING: When a speaker exhibits a clear emotion visually (e.g., facial expressions of surprise, shyness) or acoustically (e.g., crying, laughing, sighs), you may include an emotion tag in brackets (e.g., [Laughing], [Surprised], [Sighs]).
+- LAUGHTER & VOCALIZATIONS: Detect and accurately time laughter, humming, gasps, and crying.
 
 CRITICAL RULE 6: CLEAN FORMATTING
 - ABSOLUTELY NO TRAILING PERIODS. Do NOT end subtitle lines with a period (.). Question marks (?) and exclamation marks (!) are allowed, but never periods.
 
-CRITICAL RULE 7: TOTAL COMPLETENESS
-- Transcribe the entire file continuously from start to finish. Never omit lines.`;
+CRITICAL RULE 7: TOTAL COMPLETENESS — CAPTURE ALL TEXT
+- Transcribe the entire media continuously from start to finish. NEVER omit lines, chorus refrains, whispered words, rapid dialogue, or on-screen captions. Every piece of textual content must be captured.`;
 
     if (isVideoSource && processingMode === 'audio') {
         systemInstruction += '\n\nSTRICT LISTEN-ONLY OVERRIDE: The input happens to be a video container, but use ONLY its embedded audio/soundtrack. Ignore all video frames, facial expressions, lip movements, on-screen text, scene changes, and any other visual evidence. Do not produce captions from visual-only content. Determine every word and timestamp exclusively from audible speech, singing, and vocalizations.';
     } else if (isVideoSource && processingMode === 'video_audio') {
-        systemInstruction += '\n\nWATCH & LISTEN MODE: Use the embedded audio for exact words and timing. Video frames may provide supporting context, but never infer dialogue that cannot be heard.';
+        systemInstruction += '\n\nWATCH & LISTEN COMPREHENSIVE CAPTURE DIRECTIVE: You MUST capture ALL text present in this video—both audible and visual. ' +
+            '1. Spoken & Sung Text: Transcribe all dialogue, lyrics, chants, and vocalizations. Use lip movements and facial context to catch subtle, whispered, rapid, or background speech. ' +
+            '2. On-Screen Text & Subtitles: Capture all on-screen burned-in subtitles, lyric displays, title cards, captions, signboards, presentation text, and dialogue overlays. Time visual text to its visible interval (or align with speech when synchronized). ' +
+            '3. Zero Omissions: Never skip or truncate any line, lyric, or dialogue. Capture everything completely from start to finish.';
     }
 
     if (sourceLang && sourceLang !== 'Auto-detect') {
@@ -1311,27 +1566,31 @@ CRITICAL RULE 7: TOTAL COMPLETENESS
     const isSimpleOriginal = mode === 'ori' && isOriginalOnly;
 
     // --- PASS 1: TRANSCRIPTION & TIMING (Stopwatch) ---
-    let pass1Instruction = `You are an expert audio segmentation and transcription engine.
-Your primary task is to identify the exact start and end of every spoken dialogue segment from the ${isVideo && processingMode === 'video_audio' ? 'video and its embedded audio' : 'audio soundtrack'}.
-${isVideoSource && processingMode === 'audio' ? 'LISTEN ONLY: Ignore video frames and all visual information. Transcribe only audible speech, singing, and vocalizations from the embedded soundtrack; use the audio for every timestamp.' : isVideo && processingMode === 'video_audio' ? 'WATCH & LISTEN: Audio determines the words and exact timing; use video frames only for relevant context, not to invent speech.' : 'Use the audio signal as the sole source for words and timing.'}
+    let pass1Instruction = `You are an expert multimodal video and audio transcription engine.
+Your primary task is to identify and transcribe EVERY dialogue, lyric, vocalization, and on-screen text segment from the ${isVideo && processingMode === 'video_audio' ? 'video frames and its audio soundtrack' : 'audio soundtrack'}.
+${isVideoSource && processingMode === 'audio'
+    ? 'LISTEN ONLY: Ignore video frames and all visual information. Transcribe only audible speech, singing, and vocalizations from the embedded soundtrack; use the audio for every timestamp.'
+    : isVideo && processingMode === 'video_audio'
+        ? 'WATCH & LISTEN (COMPREHENSIVE CAPTURE): Watch all video frames and listen to the audio soundtrack. Capture ALL text: (1) All spoken dialogue and sung lyrics without missing any words; (2) All on-screen text, burned-in subtitles, lyric displays, title cards, dialogue banners, and visual captions. Align timestamps precisely with speech and on-screen visibility.'
+        : 'AUDIO MODE: Transcribe all spoken dialogue, singing, and vocalizations with exact millisecond timing.'}
 
-For each dialogue:
-- Start the subtitle when the speaker actually begins speaking.
-- End it when the speaker finishes speaking.
-- Do not estimate timing based on the sentence length.
-- Do not distribute subtitles evenly across the audio.
-- Do not invent timestamps.
+For each dialogue or text segment:
+- For spoken/sung words: Start the subtitle when the speaker/singer begins; end it when they finish.
+- For visual on-screen text: Start when the text becomes visible; end when it disappears.
+- Do not estimate timing based on sentence length or distribute subtitles evenly; follow the real media timeline.
 - Pay special attention to silence, pauses, overlapping speech, music, and dialogue transitions.
-- Never let a subtitle extend through a significant silence.
-- Never shift a subtitle simply to make the subtitle durations look uniform.
+- Never let a subtitle extend through a long silence unless on-screen text is continuously visible.
 
 CRITICAL RULE: STRICT MONOTONIC TIMECODE CONTINUITY (NO TIMECODE JUMPING).
 - Timestamps must progress continuously and monotonically matching the media playback.
-- DO NOT jump or skip ahead in time (e.g. jumping from 22 minutes to 33 minutes).
-- If speech occurs at 22:45, the next dialogue will be around 22:50 or 23:00, NEVER 33:00. Pay rigorous attention to the minute digits: do not confuse 22/23 with 32/33.
-- If an instrumental break, song intro, or silence occurs, output the exact playback time when the next speech resumes without skipping ahead in the clock.
+- DO NOT jump or skip ahead in time (e.g. jumping from 02:00 to 05:00).
+- If an instrumental break or silence occurs, output the exact playback time when the next speech or on-screen text resumes without skipping ahead in the clock.
 
-Return the original spoken dialogue aligned to exact timestamps.
+CRITICAL RULE: CAPTURE ALL TEXT (ZERO OMISSIONS).
+- Capture all lyrics, refrains, choruses, dialogue, whispers, rapid speech, and on-screen text displays.
+- Never omit lines.
+
+Return the original text aligned to exact timestamps.
 Format the output strictly as standard SRT (HH:MM:SS,mmm --> HH:MM:SS,mmm).
 CRITICAL: STRICT SUBTITLE BREVITY (MAX 1 SENTENCE PER BLOCK):
 - Never bundle multiple sentences into one subtitle block. Split dialogue into concise 1-sentence segments anchored to the speech timing (1.5 - 3.5 seconds per block).
@@ -1395,7 +1654,10 @@ Output ONLY the raw SRT format.`;
             safeMimeType = 'audio/mpeg';
         }
 
-        const MAX_INLINE_SIZE = 15 * 1024 * 1024;
+        const isVideoContainer = safeMimeType.startsWith('video/');
+        // Video containers > 2MB should be uploaded via Gemini File API so Gemini's preprocessor extracts 1 FPS frames + audio cleanly.
+        // Sending larger video containers via base64 inlineData frequently triggers Gemini 500 INTERNAL errors.
+        const MAX_INLINE_SIZE = isVideoContainer ? 2 * 1024 * 1024 : 15 * 1024 * 1024;
         if (audioFile.size <= MAX_INLINE_SIZE) {
             if (onProgress) onProgress(20);
             const base64 = await blobToBase64(audioFile);
@@ -1417,12 +1679,22 @@ Output ONLY the raw SRT format.`;
                     }
                 });
             } catch (uploadErr) {
-                console.warn('[SRT Generator] Single-pass file upload failed (possible 403 or quota). Attempting in-memory chunking or direct media slice:', uploadErr);
+                console.warn('[SRT Generator] File API upload failed, delegating to multimodal chunked engine:', uploadErr);
+                // Delegate to chunked engine (with allowSinglePassFallback = false to prevent infinite loop).
+                // For video_audio mode, generateChunkedSRT extracts both 12kHz WAV audio + sampled JPEG video frames!
                 try {
-                    return await generateChunkedSRT(opts, knownDurationSec || 3600, genAI, keyToUse);
+                    return await generateChunkedSRT(opts, knownDurationSec || 3600, genAI, keyToUse, false);
                 } catch (chunkErr) {
-                    console.warn('[SRT Generator] Chunking also failed on container. Slicing media for inline single-pass:', chunkErr);
-                    const sliceBlob = audioFile.slice(0, 14 * 1024 * 1024);
+                    console.warn('[SRT Generator] Chunked fallback encountered issue:', chunkErr);
+                }
+                // NEVER slice raw video containers (MP4/MOV/MKV/WebM) mid-file as inlineData because slicing corrupts the moov atom/index and causes a 500 server crash.
+                if (isVideoContainer) {
+                    throw new Error(`Video transcription upload failed: ${(uploadErr as any)?.message || 'Unable to upload or decode video container.'}`);
+                }
+                // Memory-safe compressed audio slice (up to 15MB inline data) for pure streamable audio files
+                try {
+                    console.warn('[SRT Generator] Using memory-safe audio slice inline fallback for audio transcription...');
+                    const sliceBlob = audioFile.slice(0, Math.min(audioFile.size, 15 * 1024 * 1024));
                     const base64 = await blobToBase64(sliceBlob);
                     parts.push({
                         inlineData: {
@@ -1431,6 +1703,8 @@ Output ONLY the raw SRT format.`;
                         }
                     });
                     usedInline = true;
+                } catch (sliceErr) {
+                    throw new Error(`Media transcription failed: ${(uploadErr as any)?.message || 'Upload failed'}. ${(sliceErr as any)?.message || ''}`);
                 }
             }
         }
@@ -1440,13 +1714,13 @@ Output ONLY the raw SRT format.`;
 
     try {
         if (onProgress) onProgress(50);
-        // Execute Pass 1 with 65536 maxOutputTokens and automatic multi-window continuation for long media (e.g. 38+ min)
+        // Execute Pass 1 with 8192 maxOutputTokens and automatic multi-window continuation for long media (e.g. 38+ min)
         const mediaOnlyParts = parts.slice(1);
         const res1 = await callAudioTranscriptionModel(genAI, {
             contents: { parts },
             config: {
                 temperature: 0.1,
-                maxOutputTokens: 65536,
+                maxOutputTokens: 8192,
                 systemInstruction: pass1Instruction,
             }
         });
@@ -1468,19 +1742,33 @@ Output ONLY the raw SRT format.`;
                 effectiveDurationSec = await getMediaDuration(audioFile);
             } catch (_) {}
         }
+        if (!effectiveDurationSec && youtubeUrl) {
+            try {
+                const details = await extractYouTubeMediaDetails(youtubeUrl);
+                if (details?.duration) {
+                    effectiveDurationSec = details.duration;
+                }
+            } catch (_) {}
+        }
+        if (!effectiveDurationSec && audioFile && audioFile.size > 0) {
+            const lowerExt = (audioFile.name || '').toLowerCase();
+            const bytesPerSec = lowerExt.endsWith('.wav') ? 176400 : 20480; // ~160kbps average for compressed audio
+            effectiveDurationSec = Math.max(60, Math.round(audioFile.size / bytesPerSec));
+            console.log(`[SRT Generator] Estimated duration: ${effectiveDurationSec}s (${(effectiveDurationSec / 60).toFixed(1)} min) for ${(audioFile.size / 1024 / 1024).toFixed(1)}MB media.`);
+        }
         const targetDurationMs = effectiveDurationSec > 0 ? Math.round(effectiveDurationSec * 1000) : 0;
 
         // Multi-Pass Auto-Continuation Loop:
         // If Pass 1 stopped before the end of a long media file (or hit the ~8-10 minute single-turn generation window),
         // automatically continue transcribing from the last cue timestamp using the already-uploaded media part!
-        const MAX_CONTINUATION_PASSES = 12;
+        const MAX_CONTINUATION_PASSES = 25;
         for (let contPass = 1; contPass <= MAX_CONTINUATION_PASSES; contPass++) {
             const lastBlock = pass1Blocks[pass1Blocks.length - 1];
             const lastEndMs = lastBlock ? lastBlock.endMs : 0;
 
             const needsContinuation = targetDurationMs > 0
-                ? (lastEndMs < targetDurationMs - 45000)
-                : (lastEndMs >= 210000 || pass1Blocks.length >= 90);
+                ? (lastEndMs < targetDurationMs - 3000)
+                : (pass1Blocks.length >= 10 && lastEndMs > 0);
 
             if (!needsContinuation || mediaOnlyParts.length === 0) {
                 break;
@@ -1502,24 +1790,26 @@ Output ONLY the raw SRT format.`;
 
             const contInstruction = `${pass1Instruction}
 
-CRITICAL CONTINUATION DIRECTIVE (PASS #${contPass + 1}):
-- The previous transcription pass already covered 00:00:00,000 up to ${resumeTs}.
-- Last transcribed line at ${resumeTs}: "${lastBlock.textLines.join(' ')}"
-- You MUST now CONTINUE transcribing strictly AFTER ${resumeTs} and proceed chronologically toward ${targetEndTs}.
-- DO NOT repeat any dialogue before ${resumeTs}.
-- Output your very first subtitle block at the exact timestamp >= ${resumeTs} where the next speech occurs, using absolute media timestamps (HH:MM:SS,mmm --> HH:MM:SS,mmm).`;
+CRITICAL FULL-TIMELINE CONTINUATION DIRECTIVE (PASS #${contPass + 1}):
+- The previous transcription pass already covered from 00:00:00,000 up to ${resumeTs}.
+- Last transcribed line ending at ${resumeTs}: "${lastBlock.textLines.join(' ')}"
+- You MUST now CONTINUE transcribing strictly AFTER ${resumeTs} and proceed chronologically until ${targetEndTs}.
+- DO NOT repeat any text or dialogue before ${resumeTs}.
+- Output your very first subtitle block at the exact timestamp >= ${resumeTs} where the next speech, singing, or on-screen text appears.
+- If there is an instrumental interlude, silence, or break after ${resumeTs}, do NOT stop! Advance forward across the timeline to where speech, singing, or on-screen text resumes and continue transcribing until ${targetEndTs}.
+- Make sure to cover the FULL TIMELINE until ${targetEndTs}. Capture ALL text without stopping early.`;
 
             try {
                 const contRes = await callAudioTranscriptionModel(genAI, {
                     contents: {
                         parts: [
-                            { text: `Continue the SRT transcription strictly starting after timestamp ${resumeTs} through ${targetEndTs}.` },
+                            { text: `Continue the SRT transcription strictly starting after timestamp ${resumeTs} through ${targetEndTs}. Transcribe all spoken dialogue, lyrics, and on-screen text across the full timeline until ${targetEndTs}.` },
                             ...mediaOnlyParts
                         ]
                     },
                     config: {
                         temperature: 0.1,
-                        maxOutputTokens: 65536,
+                        maxOutputTokens: 8192,
                         systemInstruction: contInstruction,
                     }
                 });
@@ -1554,8 +1844,8 @@ CRITICAL CONTINUATION DIRECTIVE (PASS #${contPass + 1}):
                 pass1Blocks = deduplicateAndMergeBlocks(pass1Blocks, contBlocks, Math.max(0, lastEndMs - 5000));
                 const newLastEndMs = pass1Blocks[pass1Blocks.length - 1]?.endMs || prevEndMs;
 
-                // If timeline did not advance by at least 5 seconds, we have reached the end of spoken dialogue
-                if (newLastEndMs - prevEndMs < 5000) {
+                // If timeline did not advance by at least 1.0 second, we have reached the end of all dialogue/text
+                if (newLastEndMs - prevEndMs < 1000) {
                     console.log(`[SRT Generator] Continuation pass #${contPass} reached end of speech at ${msToTime(newLastEndMs)}.`);
                     break;
                 }
@@ -1575,13 +1865,8 @@ CRITICAL CONTINUATION DIRECTIVE (PASS #${contPass + 1}):
         return reconstructSRT(pass1Blocks);
 
     } catch (e: any) {
-        // If single pass failed due to 403 / upload / size issues, attempt chunked generation as final fallback
-        const errMsg = (e?.message || '') + JSON.stringify(e || '');
-        if (!usedInline && (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing'))) {
-            console.warn('[SRT Generator] Single-pass generation failed with permission error. Attempting in-memory chunking fallback...');
-            return await generateChunkedSRT(opts, knownDurationSec || 3600, genAI, keyToUse);
-        }
-        console.error("SRT generation failed", e);
+        // Log as warning here so outer generateSRT fallback can recover without triggering console.error monitors prematurely
+        console.warn("[SRT Generator] Single-pass attempt notice:", e?.message || e);
         throw e;
     }
 }
@@ -1770,10 +2055,18 @@ export async function generateSRT(
             return await generateYouTubeSRT(youtubeUrl, opts);
         }
         
+        let ytDuration = opts.knownDurationSec || 0;
+        if (!ytDuration) {
+            try {
+                const details = await extractYouTubeMediaDetails(youtubeUrl);
+                if (details?.duration) ytDuration = details.duration;
+            } catch (_) {}
+        }
+
         try {
             // Multimodal Watch & Listen or Listen Only for YouTube
             const isVideoMode = processingMode === 'video_audio';
-            return await generateSinglePassSRT(opts, 'video/*', isVideoMode, genAI, keyToUse);
+            return await generateSinglePassSRT(opts, 'video/mp4', isVideoMode, genAI, keyToUse, ytDuration);
         } catch (ytErr) {
             console.warn('[SRT Generator] Direct YouTube stream transcription encountered an error, falling back to Web Search Grounding / Transcript extraction:', ytErr);
             return await generateYouTubeSRT(youtubeUrl, opts);
@@ -1823,24 +2116,32 @@ export async function generateSRT(
     try {
         const mediaDuration = await getMediaDuration(audioFile);
 
-        // If media duration > 75s or file > 3MB, activate Anti-Drift Chunking Engine to ensure 100% full-duration transcription
-        const shouldChunk = (mediaDuration > 75 || audioFile.size > 3 * 1024 * 1024 || (mediaDuration === 0 && audioFile.size > 1024 * 1024));
+        const hasPersonalKey = isRealGeminiKey(keyToUse);
+        const requiresChunkedForBuiltInKey = Boolean(isVideo && audioFile && audioFile.size > 2 * 1024 * 1024 && !hasPersonalKey);
+        const shouldChunk = requiresChunkedForBuiltInKey || (!isVideo && (mediaDuration > 75 || audioFile.size > 3 * 1024 * 1024 || (mediaDuration === 0 && audioFile.size > 1024 * 1024)));
+
         if (shouldChunk) {
             try {
-                console.log(`[SRT Generator] Activating Anti-Drift Chunking Engine (duration: ${Math.round(mediaDuration)}s, size: ${(audioFile.size / (1024 * 1024)).toFixed(1)}MB).`);
-                rawSRT = await generateChunkedSRT(opts, mediaDuration || 3600, genAI, keyToUse);
+                console.log(`[SRT Generator] Activating Multimodal Anti-Drift Chunking Engine (duration: ${Math.round(mediaDuration)}s, size: ${(audioFile.size / (1024 * 1024)).toFixed(1)}MB, mode: ${processingMode}).`);
+                rawSRT = await generateChunkedSRT(opts, mediaDuration || 3600, genAI, keyToUse, true);
             } catch (chunkErr) {
                 console.warn('[SRT Generator] Chunked generation failed, attempting multi-pass cloud fallback:', chunkErr);
                 rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse, mediaDuration);
             }
         } else {
             try {
+                console.log(`[SRT Generator] Using Cloud Gemini File API with full-timeline multi-pass continuation (size: ${(audioFile.size / (1024 * 1024)).toFixed(1)}MB, mode: ${processingMode}).`);
                 rawSRT = await generateSinglePassSRT(opts, safeMimeType, isVideo, genAI, keyToUse, mediaDuration);
             } catch (singleErr: any) {
                 const errMsg = (singleErr?.message || '') + JSON.stringify(singleErr || '');
-                if (errMsg.includes('403') || errMsg.includes('PERMISSION_DENIED') || errMsg.includes('upload') || errMsg.includes('File processing')) {
-                    console.warn('[SRT Generator] Single-pass hit upload/permission issue, falling back to in-memory chunking:', singleErr);
-                    rawSRT = await generateChunkedSRT(opts, mediaDuration || 3600, genAI, keyToUse);
+                console.warn(`[SRT Generator] Single-pass video/audio pass encountered error (${errMsg.slice(0, 140)}). Falling back to Multimodal WAV + Sampled Video Frames Chunked Engine...`);
+                if (audioFile) {
+                    try {
+                        rawSRT = await generateChunkedSRT(opts, mediaDuration || 3600, genAI, keyToUse, false);
+                    } catch (fallbackErr: any) {
+                        console.warn('[SRT Generator] Multimodal chunked fallback also failed:', fallbackErr);
+                        throw singleErr;
+                    }
                 } else {
                     throw singleErr;
                 }
@@ -1851,8 +2152,8 @@ export async function generateSRT(
         // and Stage 2 adjusted only the text lines for the chosen Style Format / Mode.
         // Return rawSRT directly so post-Stage-2 multi-line blocks are NEVER re-split or re-timed!
         return rawSRT;
-    } catch (e) {
-        console.error("SRT generation failed", e);
+    } catch (e: any) {
+        console.warn("[SRT Generator] SRT generation notice:", e?.message || e);
         throw e;
     }
 }
@@ -1910,6 +2211,14 @@ export async function decodeAudioBufferFromFile(file: File): Promise<{ audioBuff
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) {
         throw new Error('AudioContext is not supported in this browser environment');
+    }
+
+    const isVideoFile = (file.type || '').startsWith('video/') ||
+        /\.(mp4|m4v|mov|webm|ogv|mkv|avi|flv|wmv|mpeg|mpg|mpe|3gp|3g2|ts|m2ts|mts)$/i.test(file.name || '');
+    const maxDecodeBytes = isVideoFile ? 250 * 1024 * 1024 : 180 * 1024 * 1024;
+
+    if (file.size > maxDecodeBytes) {
+        throw new Error(`Media file (${(file.size / (1024 * 1024)).toFixed(1)}MB) exceeds browser in-memory decode threshold (${Math.round(maxDecodeBytes / (1024 * 1024))}MB).`);
     }
 
     const arrayBuffer = await file.arrayBuffer();

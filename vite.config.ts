@@ -5,9 +5,20 @@ import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import fs from 'fs';
 import { handleYouTubeAndBrowserApiMiddleware } from './src/server/youtubeAndBrowserHandlers';
+import { handleGeminiUploadMiddleware } from './src/server/geminiUploadHandler';
 
 function setupCustomMiddlewares(middlewares: any) {
-  // 1. Unified YouTube Extraction, Captions, Stream Proxy & Smart Web Browser Proxy
+  // 1. Streaming Proxy for Gemini File API (Uploads >20MB)
+  middlewares.use(async (req: any, res: any, next: any) => {
+    try {
+      const handled = await handleGeminiUploadMiddleware(req, res);
+      if (!handled && next) next();
+    } catch (e) {
+      if (next) next(e);
+    }
+  });
+
+  // 2. Unified YouTube Extraction, Captions, Stream Proxy & Smart Web Browser Proxy
   middlewares.use((req: any, res: any, next: any) => {
     void handleYouTubeAndBrowserApiMiddleware(req, res, next);
   });
@@ -138,7 +149,7 @@ export default defineConfig(({ mode }) => {
         hmr: false,
         ws: false,
         watch: {
-          ignored: ['**/agent_bridge.json']
+          ignored: ['**/agent_bridge.json', '**/android/**', '**/build_apk_work/**', '**/dist/**', '**/build/**', '**/export/**']
         },
       },
       plugins: [
@@ -258,10 +269,6 @@ export default defineConfig(({ mode }) => {
           }
         }
       ],
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
-      },
       build: {
         outDir: 'dist',
         emptyOutDir: true,
@@ -275,12 +282,17 @@ export default defineConfig(({ mode }) => {
         dedupe: ['react', 'react-dom']
       },
       optimizeDeps: {
+        entries: ['index.html'],
         include: [
           'react',
           'react-dom',
           'react-dom/client',
           'react/jsx-runtime',
-          'react/jsx-dev-runtime'
+          'react/jsx-dev-runtime',
+          '@emotion/is-prop-valid',
+          'lucide-react',
+          'motion/react',
+          'idb-keyval'
         ]
       }
     };

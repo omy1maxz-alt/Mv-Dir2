@@ -6,6 +6,7 @@ import {
   handleYouTubeAndBrowserApiMiddleware,
   StreamFormatItem,
 } from './src/server/youtubeAndBrowserHandlers';
+import { handleGeminiUploadMiddleware } from './src/server/geminiUploadHandler';
 
 export type { StreamFormatItem };
 
@@ -53,6 +54,13 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(cors());
+
+// Mount Gemini Direct Proxy & Streaming File Upload Handler BEFORE express.json()
+// so raw binary streams (/api/gemini/upload-file) and proxy payloads (/api/gemini/proxy/*) are never consumed early.
+app.use((req: Request, res: Response, next) => {
+  void handleGeminiUploadMiddleware(req, res, next);
+});
+
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use('/export', express.static(path.join(__dirname, 'export')));

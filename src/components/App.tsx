@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ArtStylePresetsModal } from '@/components/ArtStylePresetsModal';
 import { YouTubeImportModal } from '@/components/YouTubeImportModal';
 import { ProjectData, DirectorPlan, Scene, LogEntry, ApiKeys, AspectRatio, CharacterProfile, ReferenceImage, ExportedProject, ApiKeySource, AppSettings, InstructionPreset, ArtStylePreset } from '@/types';
-import { createDirectorPlan, continueDirectorPlan, generateSceneImage, enhanceAndSanitizePrompt, enhanceMotionPrompt, extractCharacterDNA, generateCharacterDNAFromText, autoStyleCharacterDNA, setTextModel as setTextModelInService, setImageModel as setImageModelInService, getCurrentImageModel, setCustomOpenAISettings, setKieSettings, changeReferenceBackground } from '@/services/gemini';
+import { createDirectorPlan, continueDirectorPlan, generateSceneImage, enhanceAndSanitizePrompt, enhanceMotionPrompt, extractCharacterDNA, generateCharacterDNAFromText, autoStyleCharacterDNA, setTextModel as setTextModelInService, setImageModel as setImageModelInService, getCurrentImageModel, setCustomOpenAISettings, setKieSettings, changeReferenceBackground, getEffectiveGeminiApiKey, cleanGeminiApiKey, resolveValidGeminiModel } from '@/services/gemini';
 import { generateSunoCover, checkSunoTaskStatus, generateSunoCoverArt } from '@/services/kie';
 import { saveProjectToDB, loadProjectFromDB, savePlanToDB, loadPlanFromDB, clearDB } from '@/services/db';
 import { exportAllChatData, importChatData } from '@/services/studioChatStorage';
@@ -564,29 +564,62 @@ export const App: React.FC = () => {
         const savedPlan = await loadPlanFromDB();
         if (savedPlan) setDirectorPlan(sanitizePlan(savedPlan));
 
+        let resolvedGoogleKey = '';
+        let initialKeys: ApiKeys = { google: '', huggingface: '' };
         const storedKeys = localStorage.getItem('mv_api_keys');
         if (storedKeys) {
           try {
             const parsedKeys = JSON.parse(storedKeys);
             if (parsedKeys && typeof parsedKeys === 'object') {
-              setApiKeys(parsedKeys);
-              apiKeysRef.current = parsedKeys;
-              setCustomOpenAISettings(parsedKeys.openaiBaseUrl, parsedKeys.openaiApiKey, parsedKeys.openaiModel);
-              setKieSettings(parsedKeys.kie, parsedKeys.kieCustomModel);
+              initialKeys = { ...initialKeys, ...parsedKeys };
+              if (parsedKeys.google) {
+                resolvedGoogleKey = cleanGeminiApiKey(parsedKeys.google);
+              }
             }
           } catch (kErr) {
             console.warn('Failed to parse stored API keys:', kErr);
           }
         }
-        const storedSource = localStorage.getItem('mv_api_key_source') as ApiKeySource;
-        if (storedSource && ['builtin', 'custom'].includes(storedSource)) {
-          setApiKeySource(storedSource);
-          apiKeySourceRef.current = storedSource;
+        // Fall back to direct keys if vault google key was empty
+        if (!resolvedGoogleKey) {
+          resolvedGoogleKey = cleanGeminiApiKey(
+            localStorage.getItem('gemini_api_key') ||
+            localStorage.getItem('google_api_key') ||
+            localStorage.getItem('mv_gemini_api_key')
+          );
         }
+        if (resolvedGoogleKey) {
+          initialKeys.google = resolvedGoogleKey;
+          try {
+            localStorage.setItem('gemini_api_key', resolvedGoogleKey);
+            localStorage.setItem('google_api_key', resolvedGoogleKey);
+          } catch (_) {}
+        }
+
+        setApiKeys(initialKeys);
+        apiKeysRef.current = initialKeys;
+        setCustomOpenAISettings(initialKeys.openaiBaseUrl, initialKeys.openaiApiKey, initialKeys.openaiModel);
+        setKieSettings(initialKeys.kie, initialKeys.kieCustomModel);
+
+        const storedSource = localStorage.getItem('mv_api_key_source') as ApiKeySource;
+        const effectiveSource: ApiKeySource = resolvedGoogleKey ? (storedSource || 'custom') : (storedSource || 'builtin');
+        setApiKeySource(effectiveSource);
+        apiKeySourceRef.current = effectiveSource;
         const storedTextModel = localStorage.getItem('mv_text_model');
         if (storedTextModel) {
           setTextModel(storedTextModel);
           setTextModelInService(storedTextModel);
+        }
+        if (resolvedGoogleKey) {
+          void resolveValidGeminiModel(storedTextModel || 'gemini-3.8-flash', resolvedGoogleKey, false).then(verifiedModel => {
+            if (verifiedModel && verifiedModel !== storedTextModel) {
+              setTextModel(verifiedModel);
+              setTextModelInService(verifiedModel);
+              try {
+                localStorage.setItem('mv_text_model', verifiedModel);
+              } catch (_) {}
+            }
+          });
         }
         
         let storedImageModel = localStorage.getItem('mv_image_model');
@@ -735,21 +768,33 @@ export const App: React.FC = () => {
   };
 
   const handleSaveKeys = (keys: ApiKeys, source: ApiKeySource, model: string, imgModel: string) => {
-    setApiKeys(keys);
-    setApiKeySource(source);
+    const cleanedGoogle = cleanGeminiApiKey(keys.google);
+    const updatedKeys: ApiKeys = { ...keys, google: cleanedGoogle };
+    const effectiveSource: ApiKeySource = cleanedGoogle ? 'custom' : source;
+
+    setApiKeys(updatedKeys);
+    setApiKeySource(effectiveSource);
     setTextModel(model);
     setImageModel(imgModel);
     setTextModelInService(model);
     setImageModelInService(imgModel);
-    apiKeysRef.current = keys;
-    setCustomOpenAISettings(keys.openaiBaseUrl, keys.openaiApiKey, keys.openaiModel);
-    setKieSettings(keys.kie, keys.kieCustomModel);
-    apiKeySourceRef.current = source;
-    localStorage.setItem('mv_api_keys', JSON.stringify(keys));
-    localStorage.setItem('mv_api_key_source', source);
-    localStorage.setItem('mv_text_model', model);
-    localStorage.setItem('mv_image_model', imgModel);
-    addLog("API settings updated.", 'success');
+    apiKeysRef.current = updatedKeys;
+    setCustomOpenAISettings(updatedKeys.openaiBaseUrl, updatedKeys.openaiApiKey, updatedKeys.openaiModel);
+    setKieSettings(updatedKeys.kie, updatedKeys.kieCustomModel);
+    apiKeySourceRef.current = effectiveSource;
+
+    try {
+      localStorage.setItem('mv_api_keys', JSON.stringify(updatedKeys));
+      localStorage.setItem('mv_api_key_source', effectiveSource);
+      if (cleanedGoogle) {
+        localStorage.setItem('gemini_api_key', cleanedGoogle);
+        localStorage.setItem('google_api_key', cleanedGoogle);
+        localStorage.setItem('mv_gemini_api_key', cleanedGoogle);
+      }
+      localStorage.setItem('mv_text_model', model);
+      localStorage.setItem('mv_image_model', imgModel);
+    } catch (_) {}
+    addLog("API settings updated and keys synchronized.", 'success');
   };
 
   const handleSelectImageModel = (model: string) => {
@@ -2005,6 +2050,7 @@ export const App: React.FC = () => {
             <SubtitlesTab 
               apiKeys={apiKeys} 
               apiKeySource={apiKeySource} 
+              onOpenKeyVault={() => setShowKeyVault(true)}
               onMediaSwap={() => {
                   // Max Generator media is a subtitle source, not the app-wide Soundtrack.
                   // Keep the existing global soundtrack/project playlist untouched and stop

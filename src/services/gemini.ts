@@ -326,38 +326,429 @@ RULES:
             text: data.choices[0]?.message?.content || ""
         };
     } else {
-        return genAI.models.generateContent(request);
+        const resolvedModel = await resolveValidGeminiModel(request?.model || currentTextModel);
+        try {
+            return await genAI.models.generateContent({ ...request, model: resolvedModel });
+        } catch (err: any) {
+            const msg = (err?.message || '') + JSON.stringify(err || '');
+            const is404 = err?.status === 404 || msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('is not found') || msg.includes('Failed to call the Gemini API');
+            if (is404) {
+                recordGeminiModelNotFound(resolvedModel);
+                const fallbackCandidates = await getLiveMultimodalCandidateModels(undefined, true);
+                for (const altModel of fallbackCandidates) {
+                    if (altModel === resolvedModel) continue;
+                    try {
+                        const res = await genAI.models.generateContent({ ...request, model: altModel });
+                        currentTextModel = altModel;
+                        return res;
+                    } catch (altErr: any) {
+                        const altMsg = (altErr?.message || '') + JSON.stringify(altErr || '');
+                        if (altErr?.status === 404 || altMsg.includes('404') || altMsg.includes('NOT_FOUND')) {
+                            recordGeminiModelNotFound(altModel);
+                        }
+                    }
+                }
+            }
+            throw err;
+        }
     }
 }
 
 
+export const cleanGeminiApiKey = (raw?: any): string => {
+    if (!raw || typeof raw !== 'string') return '';
+    let cleaned = raw.trim();
+    // Strip accidental leading/trailing single or double quotes
+    if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+        cleaned = cleaned.slice(1, -1).trim();
+    }
+    // Remove accidental backticks or whitespace
+    cleaned = cleaned.replace(/^`+|`+$/g, '').trim();
+    return cleaned;
+};
+
 export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
-    if (explicitKey && typeof explicitKey === 'string' && explicitKey.trim()) {
-        return explicitKey.trim();
+    const cleanedExplicit = cleanGeminiApiKey(explicitKey);
+    if (cleanedExplicit) {
+        return cleanedExplicit;
     }
     try {
         if (typeof window !== 'undefined' && window.localStorage) {
+            // 1. Check mv_api_keys JSON vault
             const vaultKeys = localStorage.getItem('mv_api_keys');
             if (vaultKeys) {
-                const parsed = JSON.parse(vaultKeys);
-                if (parsed?.google && typeof parsed.google === 'string' && parsed.google.trim()) {
-                    return parsed.google.trim();
-                }
+                try {
+                    const parsed = JSON.parse(vaultKeys);
+                    const candidate = cleanGeminiApiKey(
+                        parsed?.google || 
+                        parsed?.gemini || 
+                        parsed?.apiKey || 
+                        parsed?.googleApiKey || 
+                        parsed?.geminiApiKey
+                    );
+                    if (candidate) {
+                        return candidate;
+                    }
+                } catch (_) {}
             }
-            const directKey = localStorage.getItem('gemini_api_key');
-            if (directKey && typeof directKey === 'string' && directKey.trim()) {
-                return directKey.trim();
+
+            // 2. Check direct standalone localStorage keys (commonly used across tabs & remixed apps)
+            const commonKeys = [
+                'gemini_api_key',
+                'google_api_key',
+                'mv_gemini_api_key',
+                'GEMINI_API_KEY',
+                'GOOGLE_API_KEY',
+                'api_key',
+                'ai_sub_api_key'
+            ];
+
+            for (const key of commonKeys) {
+                const directVal = cleanGeminiApiKey(localStorage.getItem(key));
+                if (directVal) {
+                    // Sync back to primary keys so all modules find it uniformly
+                    try {
+                        localStorage.setItem('gemini_api_key', directVal);
+                        localStorage.setItem('google_api_key', directVal);
+                    } catch (_) {}
+                    return directVal;
+                }
             }
         }
     } catch (_) {}
     // @ts-ignore
-    return (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '';
+    const envKey = cleanGeminiApiKey((typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '');
+    return envKey;
 };
 
-export const getGenAI = (apiKey?: string) => {
+export const getMaskedGeminiApiKey = (explicitKey?: string): string => {
+    const key = getEffectiveGeminiApiKey(explicitKey);
+    if (!key) return '';
+    if (key.length <= 8) return '••••••••';
+    return `${key.slice(0, 4)}...${key.slice(-4)}`;
+};
+
+const AISTUDIO_PLACEHOLDER_KEY = 'AIzaSyCnx3oHaOAtIcttEtJDlfq7YxBGeoTu0Co';
+
+export const isRealGeminiKey = (key?: string): boolean => {
+  if (!key || typeof key !== 'string') return false;
+  const trimmed = cleanGeminiApiKey(key);
+  return trimmed.length >= 25 && trimmed !== AISTUDIO_PLACEHOLDER_KEY && !trimmed.includes('PLACEHOLDER');
+};
+
+export const getGenAI = (apiKey?: string, forceDirect = false) => {
   const keyToUse = getEffectiveGeminiApiKey(apiKey);
+  if (!forceDirect && typeof window !== 'undefined' && window.location?.origin && isRealGeminiKey(keyToUse)) {
+    return new GoogleGenAI({
+      apiKey: keyToUse,
+      httpOptions: {
+        baseUrl: `${window.location.origin}/api/gemini/proxy`,
+        headers: {
+          'x-gemini-api-key': keyToUse,
+        },
+      },
+    });
+  }
   return new GoogleGenAI({ apiKey: keyToUse });
 };
+
+// --- Live Gemini Model Discovery & Real-Time Verification Engine ---
+
+export interface DiscoveredGeminiModel {
+    id: string;
+    displayName: string;
+    description: string;
+    inputTokenLimit: number;
+    outputTokenLimit: number;
+    supportedGenerationMethods: string[];
+}
+
+const LIVE_MODELS_CACHE_KEY = 'mv_live_gemini_models_v1';
+const LIVE_MODELS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const memoryModelCache = new Map<string, { timestamp: number; models: DiscoveredGeminiModel[] }>();
+const inFlightDiscovery = new Map<string, Promise<DiscoveredGeminiModel[]>>();
+const sessionNotFoundModels = new Set<string>();
+
+export const recordGeminiModelNotFound = (modelId: string) => {
+    if (!modelId) return;
+    const cleanId = modelId.replace(/^models\//, '').trim();
+    sessionNotFoundModels.add(cleanId);
+};
+
+export const isGeminiModelMarkedNotFound = (modelId: string): boolean => {
+    if (!modelId) return false;
+    return sessionNotFoundModels.has(modelId.replace(/^models\//, '').trim());
+};
+
+/**
+ * Queries Google's official `GET https://generativelanguage.googleapis.com/v1beta/models` endpoint
+ * using the active API key to discover the exact list of real models available on that key right now.
+ */
+export async function discoverAvailableGeminiModels(
+    explicitKey?: string,
+    forceRefresh = false
+): Promise<DiscoveredGeminiModel[]> {
+    const keyToUse = getEffectiveGeminiApiKey(explicitKey);
+    if (!keyToUse || !isRealGeminiKey(keyToUse)) return [];
+
+    const keyFp = keyToUse.length > 10 ? `${keyToUse.slice(0, 5)}_${keyToUse.slice(-4)}` : 'default';
+
+    if (!forceRefresh) {
+        const mem = memoryModelCache.get(keyFp);
+        if (mem && Date.now() - mem.timestamp < LIVE_MODELS_CACHE_TTL_MS && mem.models.length > 0) {
+            return mem.models;
+        }
+        try {
+            if (typeof window !== 'undefined' && window.localStorage) {
+                const rawCache = localStorage.getItem(`${LIVE_MODELS_CACHE_KEY}_${keyFp}`);
+                if (rawCache) {
+                    const parsed = JSON.parse(rawCache);
+                    if (
+                        parsed &&
+                        typeof parsed.timestamp === 'number' &&
+                        Date.now() - parsed.timestamp < LIVE_MODELS_CACHE_TTL_MS &&
+                        Array.isArray(parsed.models) &&
+                        parsed.models.length > 0
+                    ) {
+                        memoryModelCache.set(keyFp, parsed);
+                        return parsed.models;
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
+    const existingPromise = inFlightDiscovery.get(keyFp);
+    if (existingPromise && !forceRefresh) {
+        return existingPromise;
+    }
+
+    const discoveryPromise = (async (): Promise<DiscoveredGeminiModel[]> => {
+        try {
+            let res: Response | null = null;
+            if (typeof window !== 'undefined' && window.location?.origin) {
+                try {
+                    const proxyRes = await fetch(`${window.location.origin}/api/gemini/proxy/v1beta/models?pageSize=100`, {
+                        method: 'GET',
+                        headers: { 'x-gemini-api-key': keyToUse, 'x-goog-api-key': keyToUse }
+                    });
+                    if (proxyRes.ok) {
+                        res = proxyRes;
+                    }
+                } catch (_) {}
+            }
+            if (!res) {
+                try {
+                    res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100', {
+                        method: 'GET',
+                        headers: { 'x-goog-api-key': keyToUse }
+                    });
+                } catch (_) {
+                    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=100&key=${encodeURIComponent(keyToUse)}`);
+                }
+            }
+
+            if (!res || !res.ok) {
+                return [];
+            }
+
+            const data = await res.json();
+            const rawModels = Array.isArray(data?.models) ? data.models : [];
+            const discovered: DiscoveredGeminiModel[] = rawModels
+                .map((m: any) => {
+                    const id = String(m?.name || '').replace(/^models\//, '').trim();
+                    const methods = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+                    return {
+                        id,
+                        displayName: String(m?.displayName || id),
+                        description: String(m?.description || ''),
+                        inputTokenLimit: Number(m?.inputTokenLimit) || 1048576,
+                        outputTokenLimit: Number(m?.outputTokenLimit) || 8192,
+                        supportedGenerationMethods: methods
+                    };
+                })
+                .filter((m: DiscoveredGeminiModel) => Boolean(m.id) && m.supportedGenerationMethods.includes('generateContent'));
+
+            if (discovered.length > 0) {
+                const entry = { timestamp: Date.now(), models: discovered };
+                memoryModelCache.set(keyFp, entry);
+                try {
+                    if (typeof window !== 'undefined' && window.localStorage) {
+                        localStorage.setItem(`${LIVE_MODELS_CACHE_KEY}_${keyFp}`, JSON.stringify(entry));
+                    }
+                } catch (_) {}
+            }
+            return discovered;
+        } catch (err) {
+            console.warn('[Gemini Live Model Discovery] Notice while probing v1beta/models:', err);
+            return [];
+        } finally {
+            inFlightDiscovery.delete(keyFp);
+        }
+    })();
+
+    inFlightDiscovery.set(keyFp, discoveryPromise);
+    return discoveryPromise;
+}
+
+/**
+ * Scores a live discovered Gemini model for multimodal (audio/video/text) generation.
+ */
+function scoreLiveModelForMultimodal(model: DiscoveredGeminiModel, requiresVisual = false): number {
+    const id = model.id.toLowerCase();
+    if (sessionNotFoundModels.has(model.id)) return -9999;
+
+    // Exclude non-text/non-multimodal output models
+    if (
+        id.includes('embedding') ||
+        id.includes('tts') ||
+        id.includes('imagen') ||
+        id.includes('veo') ||
+        id.includes('lyria') ||
+        id.includes('aqa') ||
+        id.includes('gemma') ||
+        id.includes('learnlm') ||
+        id.includes('computer-use') ||
+        id.includes('robotics') ||
+        id.includes('nano-banana') ||
+        id.endsWith('-image') ||
+        id.includes('-image-') ||
+        id.endsWith('-live') ||
+        id.includes('-live-') ||
+        id.includes('thinking')
+    ) {
+        return -9999;
+    }
+
+    if (requiresVisual && id.includes('transcribe')) {
+        return -9999;
+    }
+
+    // Extract version number if present (e.g., gemini-3.8-flash -> 3.8, gemini-2.5-flash -> 2.5)
+    const verMatch = id.match(/gemini-(\d+(?:\.\d+)?)/);
+    const ver = verMatch ? parseFloat(verMatch[1]) : 2.5;
+
+    // Deprioritize legacy 1.0 / 1.5 / 2.0 models
+    if (ver <= 2.0 && id !== 'gemini-flash-latest') {
+        return -500 + ver * 10;
+    }
+
+    let score = ver * 100;
+
+    if (!requiresVisual && id.includes('transcribe')) {
+        score += 560;
+    } else if (id === 'gemini-flash-latest') {
+        score += 520;
+    } else if (id.includes('flash') && !id.includes('lite') && !id.includes('8b')) {
+        score += 500;
+        // Prefer stable release over dated/preview snapshot
+        if (id.includes('preview') || id.includes('exp') || /\d{2}-\d{2}/.test(id)) {
+            score -= 40;
+        }
+    } else if (id.includes('flash-lite')) {
+        score += 380;
+        if (id.includes('preview') || id.includes('exp')) {
+            score -= 30;
+        }
+    } else if (id.includes('pro') || id.includes('argon')) {
+        score += 260;
+        if (id.includes('preview') || id.includes('exp')) {
+            score -= 30;
+        }
+    }
+
+    // Bonus for large multimodal context window (>= 1M tokens)
+    if (model.inputTokenLimit >= 1000000) {
+        score += 25;
+    }
+
+    return score;
+}
+
+/**
+ * Returns an ordered list of verified live multimodal Gemini models for the user's API key.
+ * If Google's `v1beta/models` endpoint returned the live catalog for this key, ONLY models that
+ * actually exist on the key are returned—completely preventing 404 Model Not Found errors.
+ */
+export async function getLiveMultimodalCandidateModels(
+    explicitKey?: string,
+    requiresVisual = false
+): Promise<string[]> {
+    const discovered = await discoverAvailableGeminiModels(explicitKey);
+
+    if (discovered.length > 0) {
+        const ranked = discovered
+            .map(m => ({ id: m.id, score: scoreLiveModelForMultimodal(m, requiresVisual) }))
+            .filter(item => item.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map(item => item.id);
+
+        if (ranked.length > 0) {
+            // If the user's selected model is in the live ranked list, prioritize it first
+            const userSelected = (currentTextModel || '').replace(/^models\//, '').trim();
+            if (userSelected && ranked.includes(userSelected) && !sessionNotFoundModels.has(userSelected)) {
+                return [userSelected, ...ranked.filter(m => m !== userSelected)];
+            }
+            return ranked;
+        }
+    }
+
+    // Fallback static pool of verified real multimodal Gemini models (when running inside AI Studio iframe or without v1beta/models list access)
+    const fallbackPool = requiresVisual
+        ? ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest']
+        : ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest'];
+
+    return fallbackPool.filter(m => !sessionNotFoundModels.has(m));
+}
+
+/**
+ * Validates a requested Gemini model ID against the live discovered models for the user's API key.
+ * If the requested model does not exist on the user's API key, automatically returns the best verified live model.
+ */
+export async function resolveValidGeminiModel(
+    requestedModel?: string,
+    explicitKey?: string,
+    requiresVisual = false
+): Promise<string> {
+    const cleanReq = (requestedModel || currentTextModel || '').replace(/^models\//, '').trim();
+
+    // Non-native providers pass through untouched
+    if (
+        cleanReq.startsWith('kie:') ||
+        cleanReq.startsWith('cloudflare-text:') ||
+        cleanReq === 'aihorde-text' ||
+        cleanReq === 'custom-openai'
+    ) {
+        return cleanReq;
+    }
+
+    const liveCandidates = await getLiveMultimodalCandidateModels(explicitKey, requiresVisual);
+    if (liveCandidates.length === 0) {
+        return cleanReq || 'gemini-flash-latest';
+    }
+
+    const discovered = await discoverAvailableGeminiModels(explicitKey);
+    if (discovered.length > 0) {
+        const existsInLiveList = discovered.some(m => m.id === cleanReq) && !sessionNotFoundModels.has(cleanReq);
+        if (existsInLiveList) {
+            return cleanReq;
+        }
+        const bestLive = liveCandidates[0];
+        if (cleanReq && cleanReq !== bestLive) {
+            console.info(`[Gemini Live Model Discovery] Model "${cleanReq}" is not available on this API key. Auto-selecting verified live model "${bestLive}".`);
+        }
+        return bestLive;
+    }
+
+    // Map fictional/aliased 3.x UI model names to real Gemini 2.5 models when live discovery is unavailable
+    if (/^gemini-3\./i.test(cleanReq)) {
+        return cleanReq.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+    }
+    if (cleanReq && !sessionNotFoundModels.has(cleanReq)) {
+        return cleanReq;
+    }
+    return liveCandidates[0] || 'gemini-2.5-flash';
+}
 
 export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, baseDelay = 2000): Promise<T> => {
     let retries = 0;
@@ -374,11 +765,14 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
 
             const isRateLimit = error?.status === 429 || errorMessage.includes('429') || errorMessage.includes('RESOURCE_EXHAUSTED');
             const isPermissionDenied = error?.status === 403 || errorMessage.includes('403') || errorMessage.includes('PERMISSION_DENIED');
+            const isServerError = error?.status === 500 || error?.status === 502 || error?.status === 503 || error?.status === 504 ||
+                errorMessage.includes('INTERNAL') || errorMessage.includes('500') || errorMessage.includes('Internal error') ||
+                errorMessage.includes('Service Unavailable') || errorMessage.includes('503');
             
-            if ((isRateLimit || isPermissionDenied) && retries < maxRetries) {
+            if ((isRateLimit || isPermissionDenied || isServerError) && retries < maxRetries) {
                 retries++;
                 const delay = baseDelay * Math.pow(2, retries - 1) + Math.random() * 1000;
-                console.warn(`${isRateLimit ? 'Rate limit' : 'Permission Denied'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${retries} of ${maxRetries})`);
+                console.warn(`${isRateLimit ? 'Rate limit (429)' : isPermissionDenied ? 'Permission Denied (403)' : 'Internal/Server Error (500/503)'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${retries} of ${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             } else if (isRateLimit) {
                 throw new Error("API Rate Limit (429) hit too many times. Please wait a moment and try again, or check your API key quota.");
@@ -4077,28 +4471,16 @@ export const translateSingleLine = async (text: string, targetLang: string = 'En
         const genAI = new GoogleGenAI({ apiKey: keyToUse });
         const prompt = `Translate this subtitle line directly to ${targetLang}. Return ONLY the translation, no commentary, no markdown, no quotes, no trailing period:\n\n${text.trim()}`;
 
-        let response;
-        try {
-            response = await callTextModel(genAI, {
-                model: 'gemini-2.5-flash',
-                contents: { parts: [{ text: prompt }] },
-                config: {
-                    temperature: 0.1,
-                    maxOutputTokens: 150,
-                    thinkingConfig: { thinkingBudget: 0 }
-                }
-            });
-        } catch (errFast) {
-            response = await callTextModel(genAI, {
-                model: currentTextModel,
-                contents: { parts: [{ text: prompt }] },
-                config: {
-                    temperature: 0.1,
-                    maxOutputTokens: 150,
-                    thinkingConfig: { thinkingBudget: 0 }
-                }
-            });
-        }
+        const fastModel = await resolveValidGeminiModel(currentTextModel, keyToUse, false);
+        const response = await callTextModel(genAI, {
+            model: fastModel,
+            contents: { parts: [{ text: prompt }] },
+            config: {
+                temperature: 0.1,
+                maxOutputTokens: 150,
+                thinkingConfig: { thinkingBudget: 0 }
+            }
+        });
 
         return (response?.text || '').trim().replace(/\.$/, '');
     } catch (e) {
@@ -4109,7 +4491,7 @@ export const translateSingleLine = async (text: string, targetLang: string = 'En
 
 export const syncSubtitleTranslations = async (currentText: string, apiKey?: string, direction?: 'line1' | 'line2'): Promise<string> => {
     try {
-        const keyToUse = apiKey || localStorage.getItem('gemini_api_key');
+        const keyToUse = getEffectiveGeminiApiKey(apiKey);
         if (!keyToUse) throw new Error("API key missing");
 
         const targetLang = localStorage.getItem('ai_sub_tgt_lang') || 'English';
@@ -4146,30 +4528,16 @@ Rules:
 1. Output ONLY the updated subtitle string matching the required line structure.
 2. No explanations, no markdown, no quotes, no trailing periods at line ends.`;
 
-        // Ultra-fast translation execution using gemini-2.5-flash with zero thinking delay
-        let response;
-        try {
-            response = await callTextModel(genAI, {
-                model: 'gemini-2.5-flash',
-                contents: { parts: [{ text: prompt }] },
-                config: {
-                    temperature: 0.1,
-                    maxOutputTokens: 250,
-                    thinkingConfig: { thinkingBudget: 0 }
-                }
-            });
-        } catch (errFast: any) {
-            console.warn("Fast 2.5-flash translation sync failed, falling back to currentTextModel:", errFast?.message);
-            response = await withRetry(() => callTextModel(genAI, {
-                model: currentTextModel,
-                contents: { parts: [{ text: prompt }] },
-                config: {
-                    temperature: 0.1,
-                    maxOutputTokens: 250,
-                    thinkingConfig: { thinkingBudget: 0 }
-                }
-            }));
-        }
+        const fastModel = await resolveValidGeminiModel(currentTextModel, keyToUse, false);
+        const response = await withRetry(() => callTextModel(genAI, {
+            model: fastModel,
+            contents: { parts: [{ text: prompt }] },
+            config: {
+                temperature: 0.1,
+                maxOutputTokens: 250,
+                thinkingConfig: { thinkingBudget: 0 }
+            }
+        }));
         
         let out = response.text?.trim() || currentText;
         return out.split('\n').map(line => line.replace(/\.$/, '').trim()).join('\n');
@@ -4433,46 +4801,24 @@ Instructions:
 6. ABSOLUTELY NO TRAILING PERIODS. Do NOT end the text with a period (.).
 `;
 
-        const currentModel = getCurrentTextModel();
-        const preferredModel = (currentModel.includes('3.7') || currentModel.includes('3.8')) ? currentModel : 'gemini-2.5-flash';
+        const preferredModel = await resolveValidGeminiModel(getCurrentTextModel(), keyToUse, true);
 
-        let response: any;
-        try {
-            response = await withRetry(() => callTextModel(genAI, {
-                model: preferredModel,
-                contents: [
-                    { 
-                        fileData: { fileUri, mimeType: 'video/mp4' },
-                        videoMetadata: {
-                            startOffset: `${startTimeSeconds.toFixed(2)}s`,
-                            endOffset: `${endTimeSeconds.toFixed(2)}s`
-                        }
-                    },
-                    prompt
-                ],
-                config: {
-                    temperature: 0.2,
-                } as any
-            }));
-        } catch (callErr) {
-            console.warn(`Vision video fix with ${preferredModel} failed, trying fallback to gemini-2.5-flash:`, callErr);
-            response = await withRetry(() => callTextModel(genAI, {
-                model: 'gemini-2.5-flash',
-                contents: [
-                    { 
-                        fileData: { fileUri, mimeType: 'video/mp4' },
-                        videoMetadata: {
-                            startOffset: `${startTimeSeconds.toFixed(2)}s`,
-                            endOffset: `${endTimeSeconds.toFixed(2)}s`
-                        }
-                    },
-                    prompt
-                ],
-                config: {
-                    temperature: 0.2,
-                } as any
-            }));
-        }
+        const response = await withRetry(() => callTextModel(genAI, {
+            model: preferredModel,
+            contents: [
+                { 
+                    fileData: { fileUri, mimeType: 'video/mp4' },
+                    videoMetadata: {
+                        startOffset: `${startTimeSeconds.toFixed(2)}s`,
+                        endOffset: `${endTimeSeconds.toFixed(2)}s`
+                    }
+                },
+                prompt
+            ],
+            config: {
+                temperature: 0.2,
+            } as any
+        }));
         
         let out = response.text?.trim() || currentText;
         return out.replace(/\.$/, '').trim();
@@ -4490,7 +4836,7 @@ export const fixSubtitleWithAudio = async (
     apiKey?: string
 ): Promise<string> => {
     try {
-        const keyToUse = apiKey || localStorage.getItem('gemini_api_key');
+        const keyToUse = getEffectiveGeminiApiKey(apiKey);
         if (!keyToUse) throw new Error("API key missing");
 
         const genAI = new GoogleGenAI({ apiKey: keyToUse });
@@ -4513,46 +4859,24 @@ Instructions:
 5. ABSOLUTELY NO TRAILING PERIODS. Do NOT end the text with a period (.).
 `;
 
-        const currentModel = getCurrentTextModel();
-        const preferredModel = (currentModel.includes('3.7') || currentModel.includes('3.8')) ? currentModel : 'gemini-2.5-flash';
+        const preferredModel = await resolveValidGeminiModel(getCurrentTextModel(), keyToUse, false);
 
-        let response: any;
-        try {
-            response = await withRetry(() => callTextModel(genAI, {
-                model: preferredModel,
-                contents: [
-                    { 
-                        fileData: { fileUri, mimeType: 'video/mp4' },
-                        videoMetadata: {
-                            startOffset: `${startTimeSeconds.toFixed(2)}s`,
-                            endOffset: `${endTimeSeconds.toFixed(2)}s`
-                        }
-                    },
-                    prompt
-                ],
-                config: {
-                    temperature: 0.2
-                } as any
-            }));
-        } catch (callErr) {
-            console.warn(`Audio fix with ${preferredModel} failed, trying fallback to gemini-2.5-flash:`, callErr);
-            response = await withRetry(() => callTextModel(genAI, {
-                model: 'gemini-2.5-flash',
-                contents: [
-                    { 
-                        fileData: { fileUri, mimeType: 'video/mp4' },
-                        videoMetadata: {
-                            startOffset: `${startTimeSeconds.toFixed(2)}s`,
-                            endOffset: `${endTimeSeconds.toFixed(2)}s`
-                        }
-                    },
-                    prompt
-                ],
-                config: {
-                    temperature: 0.2
-                } as any
-            }));
-        }
+        const response = await withRetry(() => callTextModel(genAI, {
+            model: preferredModel,
+            contents: [
+                { 
+                    fileData: { fileUri, mimeType: 'video/mp4' },
+                    videoMetadata: {
+                        startOffset: `${startTimeSeconds.toFixed(2)}s`,
+                        endOffset: `${endTimeSeconds.toFixed(2)}s`
+                    }
+                },
+                prompt
+            ],
+            config: {
+                temperature: 0.2
+            } as any
+        }));
         
         let out = response.text?.trim() || currentText;
         return out.replace(/\.$/, '').trim();
