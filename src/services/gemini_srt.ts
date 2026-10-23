@@ -6,6 +6,32 @@ import { segmentsToSrt } from "./youtubeCaptionService";
 
 let lastWorkingTranscriptionModel: string | null = null;
 const notFoundTranscriptionModels = new Set<string>();
+let lastTranscriptionKeyFingerprint = '';
+
+function apiKeyFingerprint(key: string): string {
+    return key.length > 10 ? `${key.slice(0, 5)}_${key.slice(-4)}` : 'default';
+}
+
+/** Convert chunk-relative timecodes to canonical media-timeline cue objects. */
+export function shiftSubtitleBlocks(
+    blocks: ParsedRawBlock[],
+    offsetMs: number,
+    chunkDurationMs?: number
+): ParsedRawBlock[] {
+    return blocks
+        .filter(block => block.startMs >= 0 && block.startMs <= (chunkDurationMs == null ? Number.MAX_SAFE_INTEGER : chunkDurationMs + 20000))
+        .map(block => {
+            const startMs = Math.max(0, block.startMs + offsetMs);
+            const endMs = Math.max(startMs + 400, block.endMs + offsetMs);
+            return {
+                startMs,
+                endMs,
+                startTs: msToTime(startMs),
+                endTs: msToTime(endMs),
+                textLines: [...block.textLines]
+            };
+        });
+}
 
 /**
  * Call Gemini generation with live model discovery (`v1beta/models`) and auto-fallback for audio & video transcription.
@@ -27,19 +53,36 @@ export async function callAudioTranscriptionModel(
     });
     const containsVisualInput = videoMimeTypes.length > 0 || hasImageParts;
 
-    // Bind model discovery to the same active key used by the request.
-    const activeKey = getEffectiveGeminiApiKey();
-    const livePool = await getLiveMultimodalCandidateModels(activeKey, containsVisualInput);
-    const sanitizedPool = livePool
-        .map(m => /^gemini-3\./i.test(m) ? (m.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash') : m)
-        .filter((m, idx, arr) => arr.indexOf(m) === idx && !notFoundTranscriptionModels.has(m));
-    const effectivePool = sanitizedPool.length > 0
-        ? sanitizedPool
-        : ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest'];
+    // Use the explicit request key where available so discovery and generation don't
+    // accidentally use different saved/default credentials.
+    const clientKey = typeof (genAI as any)?.apiKey === 'string' ? (genAI as any).apiKey : '';
+    const activeKey = getEffectiveGeminiApiKey(clientKey);
+    const keyFingerprint = apiKeyFingerprint(activeKey);
+    if (keyFingerprint !== lastTranscriptionKeyFingerprint) {
+        lastTranscriptionKeyFingerprint = keyFingerprint;
+        lastWorkingTranscriptionModel = null;
+        notFoundTranscriptionModels.clear();
+    }
 
-    let preferredModel = lastWorkingTranscriptionModel && effectivePool.includes(lastWorkingTranscriptionModel)
+    // Google's live catalogue is authoritative for this key. Never rewrite its model IDs.
+    const livePool = await getLiveMultimodalCandidateModels(activeKey, containsVisualInput);
+    const verifiedPool = livePool
+        .map(m => m.replace(/^models\//, '').trim())
+        .filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx && !notFoundTranscriptionModels.has(m));
+    const requestModel = typeof request?.model === 'string'
+        ? request.model.replace(/^models\//, '').trim()
+        : '';
+    const staticFallbackPool = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest']
+        .filter(m => !notFoundTranscriptionModels.has(m));
+    const modelPool = verifiedPool.length > 0
+        ? verifiedPool
+        : [requestModel, getCurrentTextModel(), ...staticFallbackPool]
+            .map(m => String(m || '').replace(/^models\//, '').trim())
+            .filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx && !notFoundTranscriptionModels.has(m));
+
+    let preferredModel = lastWorkingTranscriptionModel && modelPool.includes(lastWorkingTranscriptionModel)
         ? lastWorkingTranscriptionModel
-        : effectivePool[0];
+        : (modelPool.includes(requestModel) ? requestModel : modelPool[0]);
 
     if (containsVisualInput && preferredModel.includes('transcribe')) {
         preferredModel = effectivePool.find(m => !m.includes('transcribe')) || effectivePool[0];
@@ -47,7 +90,7 @@ export async function callAudioTranscriptionModel(
 
     const modelsToTry = [
         ...(notFoundTranscriptionModels.has(preferredModel) ? [] : [preferredModel]),
-        ...effectivePool.filter(m => m !== preferredModel)
+        ...modelPool.filter(m => m !== preferredModel)
     ];
 
     // Clamp maxOutputTokens to 8192 to prevent Gemini backend 500 INTERNAL crashes when combined with heavy media tokens
@@ -59,12 +102,17 @@ export async function callAudioTranscriptionModel(
     let lastError: any = null;
     let lastVideoArgumentError: any = null;
 
+    if (modelsToTry.length === 0) {
+        throw new Error('No usable Gemini transcription model is available for this API key. Verify the key and enable the Generative Language API, then use Captions → Detect Live Models.');
+    }
+
     for (const model of modelsToTry) {
         try {
             const req = { ...request, config: safeConfig, model };
             try {
                 const res = await withRetry(() => genAI.models.generateContent(req), 2, 2000);
                 lastWorkingTranscriptionModel = model;
+                console.info(`[SRT Generator] Successful transcription request model: ${model}`);
                 return res;
             } catch (primaryErr: any) {
                 const pMsg = (primaryErr?.message || '') + JSON.stringify(primaryErr || '');
@@ -72,6 +120,7 @@ export async function callAudioTranscriptionModel(
                     const proxyAI = getGenAI(activeKey, true);
                     const res = await proxyAI.models.generateContent(req);
                     lastWorkingTranscriptionModel = model;
+                    console.info(`[SRT Generator] Successful transcription request model (proxy): ${model}`);
                     return res;
                 }
                 if (pMsg.includes('Quota') || pMsg.includes('429') || pMsg.includes('RESOURCE_EXHAUSTED')) throw primaryErr;
@@ -1256,17 +1305,11 @@ async function generateByteWindowedChunkedSRT(
 
             const chunkBlocks = parseRawBlocks(rawChunkSrt);
             const globalChunkStartMs = Math.round((accumulatedTimeOffsetSec + subStartSec) * 1000);
-            const shiftedBlocks: ParsedRawBlock[] = chunkBlocks.map(b => {
-                const startMs = b.startMs + globalChunkStartMs;
-                const endMs = b.endMs + globalChunkStartMs;
-                return {
-                    startMs,
-                    endMs,
-                    startTs: msToTime(startMs),
-                    endTs: msToTime(endMs),
-                    textLines: b.textLines
-                };
-            });
+            const shiftedBlocks = shiftSubtitleBlocks(
+                chunkBlocks,
+                globalChunkStartMs,
+                Math.round(subDurSec * 1000)
+            );
 
             allBlocks = deduplicateAndMergeBlocks(allBlocks, shiftedBlocks, globalChunkStartMs);
         }
@@ -1421,25 +1464,14 @@ async function generateChunkedSRT(
         if (chunkBlocks.length === 0) continue;
 
         const chunkStartMs = Math.round(chunkStartSec * 1000);
-        const chunkMaxRelMs = Math.round((chunkDurSec + 20) * 1000);
 
-        // Detect if Gemini returned already-absolute timestamps (e.g., around chunkStartMs) instead of 0-based relative timestamps
-        const firstStartMs = chunkBlocks[0].startMs;
-        const isAlreadyAbsolute = chunkStartSec >= 120 && firstStartMs >= (chunkStartMs - 15000);
-
-        const shiftedBlocks: ParsedRawBlock[] = chunkBlocks
-            .filter(b => isAlreadyAbsolute || b.startMs <= chunkMaxRelMs)
-            .map(b => {
-                const startMs = isAlreadyAbsolute ? b.startMs : b.startMs + chunkStartMs;
-                const endMs = isAlreadyAbsolute ? b.endMs : b.endMs + chunkStartMs;
-                return {
-                    startMs,
-                    endMs,
-                    startTs: msToTime(startMs),
-                    endTs: msToTime(endMs),
-                    textLines: b.textLines
-                };
-            });
+        // Each WAV slice starts at relative time zero; always offset every cue by the
+        // known slice start. Inferring absolute-vs-relative time from one cue caused drift.
+        const shiftedBlocks = shiftSubtitleBlocks(
+            chunkBlocks,
+            chunkStartMs,
+            Math.round(chunkDurSec * 1000)
+        );
 
         allBlocks = deduplicateAndMergeBlocks(allBlocks, shiftedBlocks, chunkStartMs);
     }
