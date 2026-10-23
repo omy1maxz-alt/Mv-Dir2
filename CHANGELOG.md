@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Fixed
+- **Mature fashion/glamour prompt preservation**: Removed app-level prompt substitutions that turned non-explicit adult fashion, sensual styling, and revealing wardrobe descriptions into unrelated conservative clothing or generic aesthetic language.
+- **Provider-policy boundary**: Prompt enhancement now preserves user intent for clearly adult, non-explicit glamour requests without attempting to evade provider-side safeguards.
+- **Regression test**: Added `npm run test:prompt-sanitizer` to verify fashion/glamour wording is preserved while unrelated graphic-content cleanup remains active.
+
+## [Unreleased]
+
 ### Added
 - **Live Gemini Model Discovery & Real-Time `v1beta/models` Verification Engine (`gemini.ts`, `gemini_srt.ts`, `SubtitlesTab.tsx`, `ApiKeyVault.tsx`, `App.tsx`)**:
   - **Runtime Google API Catalog Probing (`discoverAvailableGeminiModels`)**: Instead of relying on static or hardcoded model lists that can become outdated or differ by region/account, the app now queries Google's official `GET https://generativelanguage.googleapis.com/v1beta/models` endpoint directly with the user's active API key and caches the verified `generateContent` models (with 30-minute TTL and 1-click **"Detect Live Models"** refresh).
