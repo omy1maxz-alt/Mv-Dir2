@@ -45,6 +45,9 @@ jobs:
       - name: Verify Gemini Key Rotation Regression
         run: npm run test:gemini-key-rotation
 
+      - name: Verify No Automatic KIE Fallback
+        run: npm run test:no-auto-kie-fallback
+
       - name: Build Web App
         run: npm run build
 

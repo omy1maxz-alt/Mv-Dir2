@@ -830,7 +830,7 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
                 errorMessage.includes('INTERNAL') || errorMessage.includes('500') || errorMessage.includes('Internal error') ||
                 errorMessage.includes('Service Unavailable') || errorMessage.includes('503');
             
-            if ((isRateLimit || isPermissionDenied || isServerError) && retries < maxRetries) {
+            if (((isRateLimit && !isQuotaExceeded) || isServerError) && retries < maxRetries) {
                 retries++;
                 const retryMatch = errorMessage.match(/retry in (\d+(?:\.\d+)?)s/i);
                 const suggestedMs = retryMatch ? Math.min(Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500, 15000) : 0;
@@ -2465,44 +2465,7 @@ export const generateSceneImage = async (
 
         const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
-            // Option 1: If user has a KIE AI key configured and reference images exist, auto-route to KIE Nano Banana 2.1
-            const kieKey = customKieApiKey || (typeof window !== 'undefined' ? (() => {
-                try {
-                    const stored = localStorage.getItem('mv_api_keys');
-                    if (stored) {
-                        const parsed = JSON.parse(stored);
-                        if (parsed.kie) return parsed.kie;
-                    }
-                    return localStorage.getItem('kie_api_key') || '';
-                } catch { return ''; }
-            })() : '');
-
-            if (kieKey && relevantReferences && relevantReferences.length > 0) {
-                addLog('Google Gemini rate limit / daily quota reached. Auto-routing to KIE Nano Banana 2.1 with your character references...', 'warning');
-                try {
-                    const orderedKieReferences = sortReferencesForIdentity(relevantReferences, projectData);
-                    const kieReferences = orderedKieReferences.slice(0, 14);
-                    const referenceMap = kieReferences.map((ref, index) =>
-                        `Image ${index + 1} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
-                    ).join('\n');
-                    const kiePrompt = kieReferences.length
-                        ? `${fullPrompt}\n\n**Reference Image Index Map (same order as the uploaded KIE image_input list)**\n${referenceMap}\n\n**Face-preservation priority:** Do not average, blend, or substitute character faces. Each named character must use the face from its matching CHARACTER FACE / IDENTITY reference.`
-                        : fullPrompt;
-                    return await generateKieImage({
-                        prompt: kiePrompt,
-                        model: 'kie:google/nano-banana-2-1',
-                        aspectRatio: aspectRatio as string,
-                        apiKey: kieKey,
-                        referenceImages: kieReferences.map(ref => ({
-                            data: ref.data,
-                            description: describeReferenceForImagePrompt(ref, projectData)
-                        })),
-                        addLog
-                    });
-                } catch (kieErr: any) {
-                    console.warn('[Gemini Quota Auto-Routing] KIE Nano Banana fallback also encountered an error:', kieErr);
-                }
-            }
+            // No automatic provider switch here. KIE remains available when explicitly selected.
 
             const allowFreeFallback = typeof window !== 'undefined' && (
                 localStorage.getItem('mv_allow_free_image_fallback') === 'true' ||
@@ -2900,36 +2863,7 @@ Your task is to generate a new scene based EXACTLY on the text description provi
 
         const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
-            const kieKey = customKieApiKey || (typeof window !== 'undefined' ? (() => {
-                try {
-                    const stored = localStorage.getItem('mv_api_keys');
-                    if (stored) {
-                        const parsed = JSON.parse(stored);
-                        if (parsed.kie) return parsed.kie;
-                    }
-                    return localStorage.getItem('kie_api_key') || '';
-                } catch { return ''; }
-            })() : '');
-
-            if (kieKey && orderedVisualReferences && orderedVisualReferences.length > 0) {
-                addLog('Google Gemini rate limit / daily quota reached. Auto-routing to KIE Nano Banana 2.1 with your references...', 'warning');
-                try {
-                    const kieRefs = orderedVisualReferences.slice(0, 14);
-                    return await generateKieImage({
-                        prompt: activePrompt || prompt,
-                        model: 'kie:google/nano-banana-2-1',
-                        aspectRatio: aspectRatio as string,
-                        apiKey: kieKey,
-                        referenceImages: kieRefs.map(ref => ({
-                            data: ref.data,
-                            description: ref.description || 'Reference image'
-                        })),
-                        addLog
-                    });
-                } catch (kieErr: any) {
-                    console.warn('[Gemini Single Image Quota] KIE Nano Banana fallback also encountered an error:', kieErr);
-                }
-            }
+            // No automatic provider switch here. KIE remains available when explicitly selected.
 
             const allowFreeFallback = typeof window !== 'undefined' && (
                 localStorage.getItem('mv_allow_free_image_fallback') === 'true' ||
