@@ -726,6 +726,29 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
     const playerContainerRef = useRef<HTMLDivElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [videoHeightMode, setVideoHeightMode] = useState<'normal' | 'large'>('normal');
+    const [isPlayerOverlayVisible, setIsPlayerOverlayVisible] = useState(true);
+    const playerOverlayHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const revealPlayerOverlay = useCallback(() => {
+        setIsPlayerOverlayVisible(true);
+        if (playerOverlayHideTimerRef.current) {
+            clearTimeout(playerOverlayHideTimerRef.current);
+        }
+        playerOverlayHideTimerRef.current = setTimeout(() => {
+            setIsPlayerOverlayVisible(false);
+            playerOverlayHideTimerRef.current = null;
+        }, 2500);
+    }, []);
+
+    useEffect(() => {
+        revealPlayerOverlay();
+        return () => {
+            if (playerOverlayHideTimerRef.current) {
+                clearTimeout(playerOverlayHideTimerRef.current);
+                playerOverlayHideTimerRef.current = null;
+            }
+        };
+    }, [revealPlayerOverlay]);
 
     const sendCommandToYouTube = useCallback((func: string, args: any[] = []) => {
         if (youtubeIframeRef.current && youtubeIframeRef.current.contentWindow) {
@@ -2829,6 +2852,10 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
             {/* Editor Top Section (Media) */}
             <div 
                 ref={playerContainerRef} 
+                onPointerEnter={revealPlayerOverlay}
+                onPointerMove={revealPlayerOverlay}
+                onPointerDown={revealPlayerOverlay}
+                onTouchStart={revealPlayerOverlay}
                 onDoubleClick={toggleFullscreen} 
                 className={`bg-black relative flex flex-col items-center justify-center overflow-hidden group transition-all duration-200 ${
                     videoHeightMode === 'large' 
@@ -2900,7 +2927,9 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                         )}
 
                         {/* Visual overlay indicator pill with sound adjustment */}
-                        <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl pointer-events-auto flex-wrap max-w-[95%]">
+                        <div className={`absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl flex-wrap max-w-[95%] transition-opacity duration-300 ${isPlayerOverlayVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                            aria-hidden={!isPlayerOverlayVisible}
+                            style={{ pointerEvents: isPlayerOverlayVisible ? 'auto' : 'none' }}>
                             {visualMediaFile.type?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg|avif|bmp)$/i.test(visualMediaFile.name) ? (
                                 <ImageIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                             ) : (
@@ -3009,7 +3038,9 @@ export const SubtitleTimelineEditor: React.FC<SubtitleTimelineEditorProps> = ({
                                 </div>
                             )}
                             {/* Video overlay indicator pill with sound adjustment */}
-                            <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl pointer-events-auto flex-wrap max-w-[95%]">
+                            <div className={`absolute top-2 left-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-black/80 backdrop-blur-md border border-white/20 rounded-lg text-[11px] text-white/90 shadow-xl flex-wrap max-w-[95%] transition-opacity duration-300 ${isPlayerOverlayVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                            aria-hidden={!isPlayerOverlayVisible}
+                            style={{ pointerEvents: isPlayerOverlayVisible ? 'auto' : 'none' }}>
                                 <Film className="w-3.5 h-3.5 text-purple-400 shrink-0" />
                                 <span className="font-semibold max-w-[140px] sm:max-w-[200px] truncate">{effectiveAudioFile.name}</span>
                                 <span className="text-[10px] bg-purple-500/25 text-purple-300 px-1.5 py-0.5 rounded font-bold">Video + Audio</span>

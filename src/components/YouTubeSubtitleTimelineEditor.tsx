@@ -953,6 +953,29 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
     const playerContainerRef = useRef<HTMLDivElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [videoHeightMode, setVideoHeightMode] = useState<'normal' | 'large'>('normal');
+    const [isPlayerOverlayVisible, setIsPlayerOverlayVisible] = useState(true);
+    const playerOverlayHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const revealPlayerOverlay = useCallback(() => {
+        setIsPlayerOverlayVisible(true);
+        if (playerOverlayHideTimerRef.current) {
+            clearTimeout(playerOverlayHideTimerRef.current);
+        }
+        playerOverlayHideTimerRef.current = setTimeout(() => {
+            setIsPlayerOverlayVisible(false);
+            playerOverlayHideTimerRef.current = null;
+        }, 2500);
+    }, []);
+
+    useEffect(() => {
+        revealPlayerOverlay();
+        return () => {
+            if (playerOverlayHideTimerRef.current) {
+                clearTimeout(playerOverlayHideTimerRef.current);
+                playerOverlayHideTimerRef.current = null;
+            }
+        };
+    }, [revealPlayerOverlay]);
 
     // Echo Guard: Prevents delayed async YouTube iframe progress events from overriding user drag
     const isSeekingOrDragging = useCallback(() => {
@@ -2121,6 +2144,10 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
             {/* Top Section: YouTube Player */}
             <div 
                 ref={playerContainerRef} 
+                onPointerEnter={revealPlayerOverlay}
+                onPointerMove={revealPlayerOverlay}
+                onPointerDown={revealPlayerOverlay}
+                onTouchStart={revealPlayerOverlay}
                 onDoubleClick={toggleFullscreen} 
                 className={`bg-black relative flex flex-col items-center justify-center overflow-hidden group transition-all duration-200 ${
                     videoHeightMode === 'large' 
@@ -2133,7 +2160,11 @@ export const YouTubeSubtitleTimelineEditor: React.FC<YouTubeSubtitleTimelineEdit
                         <div id={ytContainerId} className="w-full h-full min-h-[160px]" />
 
                         {/* Top-Right Direct Pop-Out Button */}
-                        <div className="absolute top-2 right-2 flex items-center gap-1.5 z-20 pointer-events-auto">
+                        <div
+                            className={`absolute top-2 right-2 flex items-center gap-1.5 z-20 transition-opacity duration-300 ${isPlayerOverlayVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                            aria-hidden={!isPlayerOverlayVisible}
+                            style={{ pointerEvents: isPlayerOverlayVisible ? 'auto' : 'none' }}
+                        >
                             <button
                                 type="button"
                                 onClick={() => window.open(effectiveYoutubeUrl, '_blank')}
