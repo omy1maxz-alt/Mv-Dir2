@@ -85,7 +85,7 @@ export async function callAudioTranscriptionModel(
         : (modelPool.includes(requestModel) ? requestModel : modelPool[0]);
 
     if (containsVisualInput && preferredModel.includes('transcribe')) {
-        preferredModel = effectivePool.find(m => !m.includes('transcribe')) || effectivePool[0];
+        preferredModel = modelPool.find(m => !m.includes('transcribe')) || modelPool[0];
     }
 
     const modelsToTry = [
