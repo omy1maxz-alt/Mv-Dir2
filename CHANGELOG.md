@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Fixed
+- **Frontend credential exposure**: Removed Vite compile-time substitutions for `process.env.API_KEY`, `process.env.GEMINI_API_KEY`, and `process.env.KIE_API_KEY`. Runtime server secrets must stay on the server; client-supplied provider keys remain user-controlled settings.
+- **Veo generation reliability and URL secrecy**: Added a 10-minute polling deadline to stop stalled video jobs from waiting forever, and stopped appending the API key to the returned video URI.
+
+## [Unreleased]
+
 ### Added
 - **Live Gemini Model Discovery & Real-Time `v1beta/models` Verification Engine (`gemini.ts`, `gemini_srt.ts`, `SubtitlesTab.tsx`, `ApiKeyVault.tsx`, `App.tsx`)**:
   - **Runtime Google API Catalog Probing (`discoverAvailableGeminiModels`)**: Instead of relying on static or hardcoded model lists that can become outdated or differ by region/account, the app now queries Google's official `GET https://generativelanguage.googleapis.com/v1beta/models` endpoint directly with the user's active API key and caches the verified `generateContent` models (with 30-minute TTL and 1-click **"Detect Live Models"** refresh).
