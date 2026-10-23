@@ -8,7 +8,7 @@ import { generateImageCloudflare, generateImageAIHorde, generateTextCloudflare, 
 // --- Core Setup --- 
 
 let currentTextModel = 'gemini-3.7-flash';
-let currentImageModel = 'gemini-3.1-flash-image';
+let currentImageModel = 'gemini-2.5-flash-image';
 
 export const setTextModel = (model: string) => {
     currentTextModel = model;
@@ -143,7 +143,7 @@ export async function callTextModel(genAI: GoogleGenAI, request: any): Promise<a
             } catch {
                 return '';
             }
-        })() : '') || (process.env.KIE_API_KEY || '');
+        })() : '') || ((typeof process !== 'undefined' && process.env?.KIE_API_KEY) || '');
 
         if (!keyToUse) {
             throw new Error(`KIE Chat Model "${modelId}" is selected, but no KIE API Key was provided. Please open Settings -> API Settings and enter your Kie AI API Key.`);
@@ -326,11 +326,61 @@ RULES:
             text: data.choices[0]?.message?.content || ""
         };
     } else {
-        const resolvedModel = await resolveValidGeminiModel(request?.model || currentTextModel);
+        const reqModelStr = String(request?.model || currentTextModel || '').replace(/^models\//, '').trim();
+        const isImageRequest =
+            (Array.isArray(request?.config?.responseModalities) && request.config.responseModalities.includes('IMAGE')) ||
+            reqModelStr.includes('-image') ||
+            reqModelStr.includes('imagen') ||
+            reqModelStr.includes('nano-banana');
+
+        if (isImageRequest) {
+            // Never pass image generation models through resolveValidGeminiModel (which is for text/audio models and filters out -image models).
+            // Map UI aliases to the real Google AI Studio image model gemini-2.5-flash-image.
+            const imageModelToUse = (
+                reqModelStr === 'gemini-3.1-flash-image' ||
+                reqModelStr === 'gemini-nano-banana-2.1' ||
+                reqModelStr === 'gemini-3.1-flash-lite-image' ||
+                reqModelStr === 'gemini-3-pro-image' ||
+                !reqModelStr
+            ) ? 'gemini-2.5-flash-image' : reqModelStr;
+
+            try {
+                return await genAI.models.generateContent({ ...request, model: imageModelToUse });
+            } catch (imgErr: any) {
+                const imgMsg = String(imgErr?.message || '') + JSON.stringify(imgErr || '');
+                const activeKey = getEffectiveGeminiApiKey();
+                // If AI Studio's iframe window.fetch intercepted the browser request (throwing "Failed to call the Gemini API"
+                // or overriding the user's custom key with an exhausted built-in session), retry via the same-origin proxy with the user's key.
+                if (
+                    isRealGeminiKey(activeKey) &&
+                    (imgMsg.includes('Failed to call the Gemini API') || imgErr?.status === 429 || imgMsg.includes('429') || imgMsg.includes('Quota') || imgMsg.includes('RESOURCE_EXHAUSTED'))
+                ) {
+                    try {
+                        const proxyAI = getGenAI(activeKey, true);
+                        return await proxyAI.models.generateContent({ ...request, model: imageModelToUse });
+                    } catch (_) {
+                        // Fall through to original error or alias fallback
+                    }
+                }
+                if ((imgErr?.status === 404 || imgMsg.includes('404') || imgMsg.includes('NOT_FOUND')) && imageModelToUse !== 'gemini-2.5-flash-image') {
+                    return await genAI.models.generateContent({ ...request, model: 'gemini-2.5-flash-image' });
+                }
+                throw imgErr;
+            }
+        }
+
+        const resolvedModel = await resolveValidGeminiModel(reqModelStr);
         try {
             return await genAI.models.generateContent({ ...request, model: resolvedModel });
         } catch (err: any) {
             const msg = (err?.message || '') + JSON.stringify(err || '');
+            const activeKey = getEffectiveGeminiApiKey();
+            if (isRealGeminiKey(activeKey) && (msg.includes('Failed to call the Gemini API') || err?.status === 429 || msg.includes('Quota'))) {
+                try {
+                    const proxyAI = getGenAI(activeKey, true);
+                    return await proxyAI.models.generateContent({ ...request, model: resolvedModel });
+                } catch (_) {}
+            }
             const is404 = err?.status === 404 || msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found') || msg.includes('is not found') || msg.includes('Failed to call the Gemini API');
             if (is404) {
                 recordGeminiModelNotFound(resolvedModel);
@@ -367,14 +417,22 @@ export const cleanGeminiApiKey = (raw?: any): string => {
     return cleaned;
 };
 
+export const AISTUDIO_PLACEHOLDER_KEY = 'AIzaSyCnx3oHaOAtIcttEtJDlfq7YxBGeoTu0Co';
+
+export const isRealGeminiKey = (key?: string): boolean => {
+  if (!key || typeof key !== 'string') return false;
+  const trimmed = cleanGeminiApiKey(key);
+  return trimmed.length >= 25 && trimmed !== AISTUDIO_PLACEHOLDER_KEY && !trimmed.includes('PLACEHOLDER');
+};
+
 export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
     const cleanedExplicit = cleanGeminiApiKey(explicitKey);
-    if (cleanedExplicit) {
+    if (cleanedExplicit && isRealGeminiKey(cleanedExplicit)) {
         return cleanedExplicit;
     }
     try {
         if (typeof window !== 'undefined' && window.localStorage) {
-            // 1. Check mv_api_keys JSON vault
+            // 1. Check mv_api_keys JSON vault (primary store)
             const vaultKeys = localStorage.getItem('mv_api_keys');
             if (vaultKeys) {
                 try {
@@ -386,13 +444,13 @@ export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
                         parsed?.googleApiKey || 
                         parsed?.geminiApiKey
                     );
-                    if (candidate) {
+                    if (candidate && isRealGeminiKey(candidate)) {
                         return candidate;
                     }
                 } catch (_) {}
             }
 
-            // 2. Check direct standalone localStorage keys (commonly used across tabs & remixed apps)
+            // 2. Check direct standalone localStorage keys
             const commonKeys = [
                 'gemini_api_key',
                 'google_api_key',
@@ -405,7 +463,11 @@ export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
 
             for (const key of commonKeys) {
                 const directVal = cleanGeminiApiKey(localStorage.getItem(key));
-                if (directVal) {
+                if (directVal === AISTUDIO_PLACEHOLDER_KEY) {
+                    try { localStorage.removeItem(key); } catch (_) {}
+                    continue;
+                }
+                if (directVal && isRealGeminiKey(directVal)) {
                     // Sync back to primary keys so all modules find it uniformly
                     try {
                         localStorage.setItem('gemini_api_key', directVal);
@@ -416,6 +478,7 @@ export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
             }
         }
     } catch (_) {}
+    if (cleanedExplicit) return cleanedExplicit;
     // @ts-ignore
     const envKey = cleanGeminiApiKey((typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '');
     return envKey;
@@ -424,21 +487,14 @@ export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
 export const getMaskedGeminiApiKey = (explicitKey?: string): string => {
     const key = getEffectiveGeminiApiKey(explicitKey);
     if (!key) return '';
+    if (!isRealGeminiKey(key)) return 'Built-in Preview Key';
     if (key.length <= 8) return '••••••••';
     return `${key.slice(0, 4)}...${key.slice(-4)}`;
 };
 
-const AISTUDIO_PLACEHOLDER_KEY = 'AIzaSyCnx3oHaOAtIcttEtJDlfq7YxBGeoTu0Co';
-
-export const isRealGeminiKey = (key?: string): boolean => {
-  if (!key || typeof key !== 'string') return false;
-  const trimmed = cleanGeminiApiKey(key);
-  return trimmed.length >= 25 && trimmed !== AISTUDIO_PLACEHOLDER_KEY && !trimmed.includes('PLACEHOLDER');
-};
-
-export const getGenAI = (apiKey?: string, forceDirect = false) => {
+export const getGenAI = (apiKey?: string, useServerProxy = false) => {
   const keyToUse = getEffectiveGeminiApiKey(apiKey);
-  if (!forceDirect && typeof window !== 'undefined' && window.location?.origin && isRealGeminiKey(keyToUse)) {
+  if (useServerProxy && typeof window !== 'undefined' && window.location?.origin && isRealGeminiKey(keyToUse)) {
     return new GoogleGenAI({
       apiKey: keyToUse,
       httpOptions: {
@@ -722,6 +778,19 @@ export async function resolveValidGeminiModel(
         return cleanReq;
     }
 
+    // Image generation models must never be rewritten into text-only models
+    if (cleanReq.includes('-image') || cleanReq.includes('imagen') || cleanReq.includes('nano-banana')) {
+        if (
+            cleanReq === 'gemini-3.1-flash-image' ||
+            cleanReq === 'gemini-nano-banana-2.1' ||
+            cleanReq === 'gemini-3.1-flash-lite-image' ||
+            cleanReq === 'gemini-3-pro-image'
+        ) {
+            return 'gemini-2.5-flash-image';
+        }
+        return cleanReq;
+    }
+
     const liveCandidates = await getLiveMultimodalCandidateModels(explicitKey, requiresVisual);
     if (liveCandidates.length === 0) {
         return cleanReq || 'gemini-flash-latest';
@@ -758,12 +827,7 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
         } catch (error: any) {
             const errorMessage = error?.message || '';
             const isQuotaExceeded = errorMessage.includes('Quota exceeded') || errorMessage.includes('exceeded your current quota');
-            
-            if (isQuotaExceeded) {
-                throw new Error("API Quota Exceeded. The API key has reached its limit. If you are using the built-in key, please open the Settings menu and enter your own Gemini API key. If you are already using your own key, you may need to wait for your quota to reset or enable billing in Google AI Studio.");
-            }
-
-            const isRateLimit = error?.status === 429 || errorMessage.includes('429') || errorMessage.includes('RESOURCE_EXHAUSTED');
+            const isRateLimit = isQuotaExceeded || error?.status === 429 || errorMessage.includes('429') || errorMessage.includes('RESOURCE_EXHAUSTED');
             const isPermissionDenied = error?.status === 403 || errorMessage.includes('403') || errorMessage.includes('PERMISSION_DENIED');
             const isServerError = error?.status === 500 || error?.status === 502 || error?.status === 503 || error?.status === 504 ||
                 errorMessage.includes('INTERNAL') || errorMessage.includes('500') || errorMessage.includes('Internal error') ||
@@ -771,13 +835,17 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
             
             if ((isRateLimit || isPermissionDenied || isServerError) && retries < maxRetries) {
                 retries++;
-                const delay = baseDelay * Math.pow(2, retries - 1) + Math.random() * 1000;
-                console.warn(`${isRateLimit ? 'Rate limit (429)' : isPermissionDenied ? 'Permission Denied (403)' : 'Internal/Server Error (500/503)'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${retries} of ${maxRetries})`);
+                const retryMatch = errorMessage.match(/retry in (\d+(?:\.\d+)?)s/i);
+                const suggestedMs = retryMatch ? Math.min(Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500, 15000) : 0;
+                const delay = Math.max(suggestedMs, baseDelay * Math.pow(2, retries - 1) + Math.random() * 1000);
+                console.warn(`${isRateLimit ? 'Rate limit / Quota (429)' : isPermissionDenied ? 'Permission Denied (403)' : 'Internal/Server Error (500/503)'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${retries} of ${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
+            } else if (isQuotaExceeded) {
+                throw new Error("API Quota Exceeded. The API key has reached its per-minute or daily limit. Please wait a moment and try again, or switch API keys in Settings.");
             } else if (isRateLimit) {
                 throw new Error("API Rate Limit (429) hit too many times. Please wait a moment and try again, or check your API key quota.");
             } else if (isPermissionDenied) {
-                throw new Error("Permission Denied (403). Your API key may be invalid, or it may not have access to the requested model. Image generation models often require setting up a paid tier in Google AI Studio.");
+                throw new Error("Permission Denied (403). Your API key may be invalid, or it may not have access to the requested model.");
             } else {
                 throw error;
             }
@@ -2400,8 +2468,63 @@ export const generateSceneImage = async (
 
         const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
+            // Option 1: If user has a KIE AI key configured and reference images exist, auto-route to KIE Nano Banana 2.1
+            const kieKey = customKieApiKey || (typeof window !== 'undefined' ? (() => {
+                try {
+                    const stored = localStorage.getItem('mv_api_keys');
+                    if (stored) {
+                        const parsed = JSON.parse(stored);
+                        if (parsed.kie) return parsed.kie;
+                    }
+                    return localStorage.getItem('kie_api_key') || '';
+                } catch { return ''; }
+            })() : '');
+
+            if (kieKey && relevantReferences && relevantReferences.length > 0) {
+                addLog('Google Gemini rate limit / daily quota reached. Auto-routing to KIE Nano Banana 2.1 with your character references...', 'warning');
+                try {
+                    const orderedKieReferences = sortReferencesForIdentity(relevantReferences, projectData);
+                    const kieReferences = orderedKieReferences.slice(0, 14);
+                    const referenceMap = kieReferences.map((ref, index) =>
+                        `Image ${index + 1} — ${describeReferenceForImagePrompt(ref, projectData)} ${ref.description ? `Context: ${ref.description}` : ''}`
+                    ).join('\n');
+                    const kiePrompt = kieReferences.length
+                        ? `${fullPrompt}\n\n**Reference Image Index Map (same order as the uploaded KIE image_input list)**\n${referenceMap}\n\n**Face-preservation priority:** Do not average, blend, or substitute character faces. Each named character must use the face from its matching CHARACTER FACE / IDENTITY reference.`
+                        : fullPrompt;
+                    return await generateKieImage({
+                        prompt: kiePrompt,
+                        model: 'kie:google/nano-banana-2-1',
+                        aspectRatio: aspectRatio as string,
+                        apiKey: kieKey,
+                        referenceImages: kieReferences.map(ref => ({
+                            data: ref.data,
+                            description: describeReferenceForImagePrompt(ref, projectData)
+                        })),
+                        addLog
+                    });
+                } catch (kieErr: any) {
+                    console.warn('[Gemini Quota Auto-Routing] KIE Nano Banana fallback also encountered an error:', kieErr);
+                }
+            }
+
+            const allowFreeFallback = typeof window !== 'undefined' && (
+                localStorage.getItem('mv_allow_free_image_fallback') === 'true' ||
+                localStorage.getItem('mv_allow_prompt_fallback_on_quota') === 'true'
+            );
+
+            if (referenceParts.length > 0 && !allowFreeFallback) {
+                throw new Error(
+                    `Google Gemini Image Rate Limit / Daily Quota Reached for ${currentImageModel} (${errorMessage}). ` +
+                    `Wait 60 seconds if you hit the per-minute RPM limit, or if your Free Tier daily image quota is used up: ` +
+                    `1) Enter another Google Gemini API key in Settings -> API Settings, ` +
+                    `2) Switch Image Model to "KIE Nano Banana 2.1" (uses your Kie API key with character reference support), ` +
+                    `3) Enable "Auto-fallback to Pollinations" in API Settings, or ` +
+                    `4) Switch Image Model to "Pollinations" (Free, no API key required).`
+                );
+            }
+
             if (referenceParts.length > 0) {
-                throw new Error(`Image generation failed for ${currentImageModel} (${error.message || 'authentication/quota error'}). MV Director did not switch to a prompt-only fallback because that would drop the selected reference images and could change the face. Fix the provider credentials/quota or select another reference-capable model.`);
+                addLog('Google Gemini image quota reached. Using Pollinations fallback with prompt-described character details...', 'warning');
             }
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
@@ -2808,8 +2931,55 @@ Your task is to generate a new scene based EXACTLY on the text description provi
 
         const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
+            const kieKey = customKieApiKey || (typeof window !== 'undefined' ? (() => {
+                try {
+                    const stored = localStorage.getItem('mv_api_keys');
+                    if (stored) {
+                        const parsed = JSON.parse(stored);
+                        if (parsed.kie) return parsed.kie;
+                    }
+                    return localStorage.getItem('kie_api_key') || '';
+                } catch { return ''; }
+            })() : '');
+
+            if (kieKey && orderedVisualReferences && orderedVisualReferences.length > 0) {
+                addLog('Google Gemini rate limit / daily quota reached. Auto-routing to KIE Nano Banana 2.1 with your references...', 'warning');
+                try {
+                    const kieRefs = orderedVisualReferences.slice(0, 14);
+                    return await generateKieImage({
+                        prompt: activePrompt || prompt,
+                        model: 'kie:google/nano-banana-2-1',
+                        aspectRatio: aspectRatio as string,
+                        apiKey: kieKey,
+                        referenceImages: kieRefs.map(ref => ({
+                            data: ref.data,
+                            description: ref.description || 'Reference image'
+                        })),
+                        addLog
+                    });
+                } catch (kieErr: any) {
+                    console.warn('[Gemini Single Image Quota] KIE Nano Banana fallback also encountered an error:', kieErr);
+                }
+            }
+
+            const allowFreeFallback = typeof window !== 'undefined' && (
+                localStorage.getItem('mv_allow_free_image_fallback') === 'true' ||
+                localStorage.getItem('mv_allow_prompt_fallback_on_quota') === 'true'
+            );
+
+            if (orderedVisualReferences.length > 0 && !allowFreeFallback) {
+                throw new Error(
+                    `Google Gemini Image Rate Limit / Daily Quota Reached for ${currentImageModel} (${errorMessage}). ` +
+                    `Wait 60 seconds if you hit the per-minute RPM limit, or if your Free Tier daily image quota is used up: ` +
+                    `1) Enter another Google Gemini API key in Settings -> API Settings, ` +
+                    `2) Switch Image Model to "KIE Nano Banana 2.1" (uses your Kie API key with reference preservation), ` +
+                    `3) Enable "Auto-fallback to Pollinations" in API Settings, or ` +
+                    `4) Switch Image Model to "Pollinations" (Free, no API key required).`
+                );
+            }
+
             if (orderedVisualReferences.length > 0) {
-                throw new Error(`Image generation failed for ${currentImageModel} (${errorMessage || 'authentication/quota error'}). MV Director did not switch to prompt-only fallback because that could change the selected person's face. Fix provider credentials/quota or choose another reference-capable model.`);
+                addLog('Google Gemini image quota reached. Using Pollinations fallback...', 'warning');
             }
             return await fallbackToPollinations(activePrompt || prompt, aspectRatio, addLog);
         }

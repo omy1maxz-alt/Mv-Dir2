@@ -133,6 +133,13 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [allowFreeFallback, setAllowFreeFallback] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mv_allow_free_image_fallback') === 'true';
+    } catch (_) {
+      return false;
+    }
+  });
 
   const cloudflareCatalogErrorMessage = (status: number, data: any) => {
     const remoteMessage = String(data?.error || '').trim();
@@ -395,6 +402,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
         localStorage.setItem('google_api_key', cleanedGoogle);
         localStorage.setItem('mv_gemini_api_key', cleanedGoogle);
       }
+      localStorage.setItem('mv_allow_free_image_fallback', allowFreeFallback ? 'true' : 'false');
     } catch (_) {}
     onSave(updatedKeys, effectiveSource, textModel, imageModel);
     onClose();
@@ -560,7 +568,7 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                   className="w-full bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-indigo-500 transition-colors font-mono"
                 />
                 <div className="text-[10px] text-white/40">
-                  Used directly for Scene Direction, Multimodal Subtitles & Transcription, Storyboard prompts, and Vision analysis.
+                  Used directly for Scene Direction, Multimodal Subtitles & Transcription, Storyboard Image Generation (gemini-2.5-flash-image), and Vision analysis (Free Tier daily quota & Paid Tier supported).
                 </div>
               </div>
               
@@ -806,11 +814,11 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
               value={imageModel}
               onChange={setImageModel}
               accent="emerald"
-              groups={[{"label":"Google Gemini Direct (Native @google/genai / AI Studio)","options":[{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Flagship — 4K / Multi-Reference / Consistent Characters)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Official Default — Fast & Multimodal)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro — 4K / Deep Reasoning)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct Alias)"},{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Legacy Direct GCP)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Direct GCP / Vertex AI Dedicated Photorealistic Image Model)"}]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{...cloudflareImageGroup},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
+              groups={[{"label":"Google Gemini Direct (Free Tier Daily Quota & Paid Tier)","options":[{"value":"gemini-2.5-flash-image","label":"Gemini 2.5 Flash Image (Recommended • Free Tier Daily Quota & Multi-Reference)"},{"value":"gemini-3.1-flash-image","label":"Gemini 3.1 Flash Image (AI Studio Direct • Maps to 2.5 Flash Image)"},{"value":"gemini-nano-banana-2.1","label":"Gemini Nano Banana 2.1 (Google Direct Alias)"},{"value":"gemini-3.1-flash-lite-image","label":"Gemini 3.1 Flash-Lite Image (Google Direct Alias)"},{"value":"gemini-3-pro-image","label":"Gemini 3 Pro Image (Nano Banana Pro)"},{"value":"imagen-3.0-generate-002","label":"Imagen 3.0 (Dedicated Photorealistic Image Model)"}]},{"label":"KIE AI — Google Nano Banana (Uses Kie AI API Key)","options":[{"value":"kie:google/nano-banana-2-1","label":"KIE Nano Banana 2.1 (Gemini 3.1 Flash Image — 4K / Multi-Reference)"},{"value":"kie:google/nano-banana-2","label":"KIE Nano Banana 2 (Gemini 3.1 Flash Image — High Quality)"},{"value":"kie:google/nano-banana-pro","label":"KIE Nano Banana Pro (Gemini 3.0 Pro Image — 4K / Production)"},{"value":"kie:google/nano-banana","label":"KIE Nano Banana (Gemini 2.5 Flash Image — Fast)"},{"value":"kie:google/nano-banana-2-lite","label":"KIE Nano Banana 2 Lite (Gemini 3.1 Flash-Lite Image)"},{"value":"kie:google/nano-banana-edit","label":"KIE Nano Banana Edit (Prompt Image Editing)"}]},{"label":"KIE AI — OpenAI & xAI Image (Uses Kie AI API Key)","options":[{"value":"kie:gpt-image-2-5","label":"KIE GPT Image 2.5 (OpenAI Multimodal / Image Generation & Editing)"},{"value":"kie:grok-imagine-image-2","label":"KIE Grok Imagine Image 2.0 (xAI Generation & Editing)"}]},{...cloudflareImageGroup},{"label":"AI Horde (Decentralized Volunteer GPUs • Crowdsourced Free)","options":[{"value":"aihorde","label":"AI Horde (Crowdsourced Volunteer Cluster • Free / 0-Key or Priority Kudos)"}]},{"label":"Free Public Providers (No API Key Required)","options":[{"value":"pollinations","label":"Pollinations (Free Public API, No Key)"}]}]}
             />
             <div className="text-[10px] text-white/40">
               {imageModel.startsWith('kie:') 
-                ? "Powered by Kie.ai Image API. Uses your Kie AI API key to generate images without GCP billing."
+                ? "Powered by Kie.ai Image API. Uses your Kie AI API key to generate images with full multi-reference character support."
                 : imageModel === 'cloudflare:@cf/runwayml/stable-diffusion-v1-5-img2img'
                 ? "Cloudflare Runway Stable Diffusion 1.5 Img2Img. Cloudflare lists $0.00 per step. Requires exactly one selected reference image; multiple references are rejected instead of silently discarded."
                 : imageModel.startsWith('cloudflare:')
@@ -818,8 +826,26 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
                 : imageModel === 'aihorde'
                 ? "Powered by AI Horde crowdsourced volunteer GPUs. 100% free with anonymous key or priority with user key."
                 : imageModel.startsWith('gemini-') || imageModel.startsWith('imagen-')
-                ? "Direct Google Gemini API. Requires a valid Google Gemini API Key."
+                ? "Direct Google Gemini API (gemini-2.5-flash-image). Supports Free Tier daily quota and multi-reference character consistency directly from your browser."
                 : "Select the model used for generating scene images."}
+            </div>
+
+            <div className="pt-2">
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-white/80 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={allowFreeFallback}
+                  onChange={(e) => {
+                    setAllowFreeFallback(e.target.checked);
+                    try { localStorage.setItem('mv_allow_free_image_fallback', e.target.checked ? 'true' : 'false'); } catch (_) {}
+                  }}
+                  className="rounded border-white/20 bg-black/40 text-indigo-500 focus:ring-0"
+                />
+                <span>Auto-fallback to Pollinations (Free) if Gemini image quota is exhausted</span>
+              </label>
+              <div className="text-[10px] text-white/40 ml-5 mt-0.5">
+                Keeps storyboard scene generation running smoothly even when your Google API key reaches Free Tier image quota limits.
+              </div>
             </div>
           </div>
         </div>

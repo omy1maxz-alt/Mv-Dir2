@@ -1,3 +1,34 @@
+### 231. Fix `gemini-2.5-flash-image` Regression Caused by `resolveValidGeminiModel` Rewriting Image Models to Text Models (`gemini.ts`, `gemini_srt.ts`, `ApiKeyVault.tsx`, `App.tsx`) (23 Oct 2026)
+- **User Request & Reported Issues:**
+  - *"i pull edit from github,but the app won't start"*
+  - *"got this error but i use new api key: Failed: Image generation failed for gemini-2.5-flash-image (API Quota Exceeded. The API key has reached its limit"*
+  - *"but before you edit ,it works normally,i can generate images with 2.5 flash,and please note free user has daily quota too,so if you said it's only for paid user you're missinformation,you should always use internet for confirmation"*
+- **Root Cause Analysis (Verified via Codebase Inspection & Web Search):**
+  1. **True Fact Check on Free Tier Image Quota**:
+     - Google AI Studio Free Tier **does** include daily quota (and ~15 RPM) for `gemini-2.5-flash-image` via `generateContent`. Our previous diagnosis claiming Free Tier had 0 quota was incorrect.
+  2. **Regression Bug #1: `callTextModel` Rewrote Image Models (`gemini-2.5-flash-image`) into Text-Only Models (`gemini-2.5-flash` / `gemini-2.5-pro`)**:
+     - Both `generateSceneImage` (line 2333) and `generateSingleImage` (line 2747) call `callTextModel(genAI, { model: currentImageModel, contents, config: { responseModalities: ["IMAGE"] } })`.
+     - In Entry 230, we added `const resolvedModel = await resolveValidGeminiModel(request?.model || currentTextModel)` at the top of `callTextModel`.
+     - Inside `scoreLiveModelForMultimodal`, all `-image` and `nano-banana` models were explicitly penalized with a score of `-9999` (`if (id.includes('image') || id.includes('nano-banana')) return -9999;`), and `resolveValidGeminiModel` also contained a regex replacing `gemini-3.1-flash-image` with `gemini-2.5-flash` (stripping `-image`!).
+     - Consequently, whenever `generateSceneImage` requested `gemini-2.5-flash-image` (or `gemini-3.1-flash-image`), `callTextModel` silently replaced the model with a text-only model (`gemini-2.5-flash` or `gemini-2.5-pro`) while still passing `responseModalities: ["IMAGE"]`!
+     - Sending `responseModalities: ["IMAGE"]` to a text-only model causes Google's API to immediately reject the request with `429 Quota exceeded (limit: 0)` for image output modality, while the `catch` block in `generateSceneImage` still printed `Image generation failed for ${currentImageModel}` (`gemini-2.5-flash-image`)!
+  3. **Regression Bug #2: `getGenAI()` Forced All Requests Through `/api/gemini/proxy` (Shared Cloud Run Server IP)**:
+     - Changing `getGenAI` to route all browser calls through `/api/gemini/proxy` caused requests to originate from the shared Cloud Run container IP in `asia-southeast1` instead of the user's browser IP.
+  4. **Regression Bug #3: `withRetry` Aborted Immediately on the First 429 Without Retrying**:
+     - In `withRetry`, `if (isQuotaExceeded) throw new Error(...)` was placed *before* `if ((isRateLimit || ...) && retries < maxRetries)`. Because Google's standard 429 per-minute rate limit error message contains `"You exceeded your current quota"`, `withRetry` threw on attempt 0 instead of backing off and retrying.
+- **Architectural Solution & Fixes Applied:**
+  1. **Isolated Image Generation Requests in `callTextModel` & `resolveValidGeminiModel` (`src/services/gemini.ts`)**:
+     - Added an explicit `isImageRequest` check in `callTextModel` (detecting `responseModalities: ["IMAGE"]` or `-image`/`imagen`/`nano-banana` models) so image requests **never** pass through `resolveValidGeminiModel`.
+     - Normalized UI aliases (`gemini-3.1-flash-image`, `gemini-nano-banana-2.1`, `gemini-3.1-flash-lite-image`, `gemini-3-pro-image`) to `'gemini-2.5-flash-image'` and set default `currentImageModel = 'gemini-2.5-flash-image'`.
+     - Added an early guard inside `resolveValidGeminiModel` so any `-image` model passed to it returns `'gemini-2.5-flash-image'` untouched.
+  2. **Restored Direct Browser SDK Calls in `getGenAI` (`src/services/gemini.ts`, `src/services/gemini_srt.ts`)**:
+     - Restored `getGenAI(apiKey?: string, useServerProxy = false)` to default to `false` (direct browser `new GoogleGenAI({ apiKey: keyToUse })`, matching the behavior before our edits).
+     - Reserved `useServerProxy = true` strictly for `ai.files.upload` in `gemini_srt.ts` or as a retry fallback if browser fetch fails.
+  3. **Fixed 429 Exponential Backoff in `withRetry` (`src/services/gemini.ts`)**:
+     - Unified `isQuotaExceeded` and `isRateLimit` in `withRetry` so transient 429 rate limits retry up to `maxRetries` times (honoring Google's `retry in Xs` header/message) before throwing.
+  4. **Removed Inaccurate Billing Claims (`ApiKeyVault.tsx`, `gemini.ts`)**:
+     - Removed the false "Free Tier has 0 image quota / Requires Billing" notices and restored `Gemini 2.5 Flash Image (Recommended • Free Tier Daily Quota & Multi-Reference)` as the primary direct option.
+
 ### 230. Live Gemini Model Discovery Engine via `GET /v1beta/models` (`gemini.ts`, `gemini_srt.ts`, `SubtitlesTab.tsx`, `ApiKeyVault.tsx`, `App.tsx`) (23 Oct 2026)
 - **User Request & Core Problem:**
   - `[SRT Generator] Model "gemini-2.5-flash" failed with 404 Model Not Found. Trying next fallback candidate...`

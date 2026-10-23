@@ -67,9 +67,9 @@ export async function callAudioTranscriptionModel(
                 return res;
             } catch (primaryErr: any) {
                 const pMsg = (primaryErr?.message || '') + JSON.stringify(primaryErr || '');
-                if (pMsg.includes('502') || pMsg.includes('404') || pMsg.includes('Failed to fetch') || pMsg.includes('Direct Gemini proxy')) {
-                    const directAI = getGenAI(undefined, true);
-                    const res = await directAI.models.generateContent(req);
+                if (pMsg.includes('Failed to call the Gemini API') || pMsg.includes('502') || pMsg.includes('404') || pMsg.includes('Failed to fetch') || pMsg.includes('Direct Gemini proxy') || pMsg.includes('Quota')) {
+                    const proxyAI = getGenAI(undefined, true);
+                    const res = await proxyAI.models.generateContent(req);
                     lastWorkingTranscriptionModel = model;
                     return res;
                 }
@@ -568,7 +568,7 @@ async function uploadFileToGemini(file: File, mimeType: string, apiKey: string, 
     }
 
     // 2. Secondary fallback: SDK upload routed through /api/gemini/proxy (never raw window.fetch to generativelanguage.googleapis.com)
-    const ai = getGenAI(effectiveKey);
+    const ai = getGenAI(effectiveKey, true);
     
     if (onProgress) onProgress(20);
     

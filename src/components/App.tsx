@@ -238,8 +238,8 @@ export const App: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [apiKeys, setApiKeys] = useState<ApiKeys>({ google: '', huggingface: '' });
   const [apiKeySource, setApiKeySource] = useState<ApiKeySource>('builtin');
-  const [textModel, setTextModel] = useState<string>('gemini-3.7-flash');
-  const [imageModel, setImageModel] = useState<string>('gemini-3.1-flash-image');
+  const [textModel, setTextModel] = useState<string>('gemini-2.5-flash');
+  const [imageModel, setImageModel] = useState<string>('gemini-2.5-flash-image');
   const [isDirecting, setIsDirecting] = useState(false);
   const [directorError, setDirectorError] = useState<string | null>(null);
   const [isBatchGenerating, setIsBatchGenerating] = useState(false);
@@ -623,13 +623,16 @@ export const App: React.FC = () => {
         }
         
         let storedImageModel = localStorage.getItem('mv_image_model');
-        if (storedImageModel === 'gemini-2.5-flash') {
+        if (storedImageModel === 'gemini-2.5-flash' || storedImageModel === 'gemini-3.1-flash-image') {
           storedImageModel = 'gemini-2.5-flash-image';
           try { localStorage.setItem('mv_image_model', storedImageModel); } catch {}
         }
         if (storedImageModel) {
           setImageModel(storedImageModel);
           setImageModelInService(storedImageModel);
+        } else {
+          setImageModel('gemini-2.5-flash-image');
+          setImageModelInService('gemini-2.5-flash-image');
         }
         try {
           const lHistory = localStorage.getItem(LYRICS_HISTORY_KEY);
@@ -1124,7 +1127,7 @@ export const App: React.FC = () => {
     if (!directorPlan) return;
     const isUsingKieImg = imageModel.startsWith('kie:') || imageModel.startsWith('google/nano-banana');
     const isUsingFreeOrExternal = imageModel === 'pollinations' || imageModel === 'aihorde' || imageModel.startsWith('cloudflare:');
-    const key = apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined;
+    const key = getEffectiveGeminiApiKey(apiKeysRef.current.google) || (apiKeySourceRef.current === 'custom' ? apiKeysRef.current.google : undefined);
     if (apiKeySourceRef.current === 'custom' && !key && !isUsingKieImg && !isUsingFreeOrExternal) {
         setShowKeyVault(true);
         addLog("Your own API Key is required for this action. Please add it in the Vault.", 'warning');

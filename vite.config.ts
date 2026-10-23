@@ -146,11 +146,17 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        allowedHosts: true,
         hmr: false,
         ws: false,
         watch: {
           ignored: ['**/agent_bridge.json', '**/android/**', '**/build_apk_work/**', '**/dist/**', '**/build/**', '**/export/**']
         },
+      },
+      preview: {
+        port: process.env.PORT ? parseInt(process.env.PORT, 10) : 3000,
+        host: '0.0.0.0',
+        allowedHosts: true,
       },
       plugins: [
         tailwindcss(),
@@ -269,6 +275,11 @@ export default defineConfig(({ mode }) => {
           }
         }
       ],
+      define: {
+        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
+        'process.env.KIE_API_KEY': JSON.stringify(env.KIE_API_KEY || ''),
+      },
       build: {
         outDir: 'dist',
         emptyOutDir: true,
