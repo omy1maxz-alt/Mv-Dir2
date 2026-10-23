@@ -746,11 +746,9 @@ export async function getLiveMultimodalCandidateModels(
         }
     }
 
-    // Fallback static pool of verified real multimodal Gemini models (when running inside AI Studio iframe or without v1beta/models list access)
-    const fallbackPool = requiresVisual
-        ? ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest']
-        : ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest'];
-
+    // Discovery may be blocked in embedded browsers. These are unverified last-resort candidates;
+    // never keep using a model explicitly rejected by this key during the current session.
+    const fallbackPool = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-flash-latest'];
     return fallbackPool.filter(m => !sessionNotFoundModels.has(m));
 }
 
@@ -806,14 +804,11 @@ export async function resolveValidGeminiModel(
         return bestLive;
     }
 
-    // Map fictional/aliased 3.x UI model names to real Gemini 2.5 models when live discovery is unavailable
-    if (/^gemini-3\./i.test(cleanReq)) {
-        return cleanReq.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-    }
+    // When discovery is unavailable, preserve the selected ID instead of silently rewriting it.
     if (cleanReq && !sessionNotFoundModels.has(cleanReq)) {
         return cleanReq;
     }
-    return liveCandidates[0] || 'gemini-2.5-flash';
+    return liveCandidates[0] || cleanReq || 'gemini-flash-latest';
 }
 
 export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, baseDelay = 2000): Promise<T> => {

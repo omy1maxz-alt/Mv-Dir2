@@ -12,7 +12,8 @@
     "lint": "tsc --noEmit",
     "test:prompt-sanitizer": "tsx tests/prompt-sanitizer-regression.ts",
     "test:gemini-key-rotation": "tsx tests/gemini-key-rotation-regression.ts",
-    "test:no-auto-kie-fallback": "tsx tests/no-auto-kie-fallback-regression.ts"
+    "test:no-auto-kie-fallback": "tsx tests/no-auto-kie-fallback-regression.ts",
+    "test:caption-timing-model": "tsx tests/caption-timing-model-regression.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",
