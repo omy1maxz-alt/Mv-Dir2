@@ -27,8 +27,9 @@ export async function callAudioTranscriptionModel(
     });
     const containsVisualInput = videoMimeTypes.length > 0 || hasImageParts;
 
-    // Query live discovered models from Google's v1beta/models endpoint for the active API key
-    const livePool = await getLiveMultimodalCandidateModels(undefined, containsVisualInput);
+    // Bind model discovery to the same active key used by the request.
+    const activeKey = getEffectiveGeminiApiKey();
+    const livePool = await getLiveMultimodalCandidateModels(activeKey, containsVisualInput);
     const sanitizedPool = livePool
         .map(m => /^gemini-3\./i.test(m) ? (m.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash') : m)
         .filter((m, idx, arr) => arr.indexOf(m) === idx && !notFoundTranscriptionModels.has(m));
@@ -67,12 +68,13 @@ export async function callAudioTranscriptionModel(
                 return res;
             } catch (primaryErr: any) {
                 const pMsg = (primaryErr?.message || '') + JSON.stringify(primaryErr || '');
-                if (pMsg.includes('Failed to call the Gemini API') || pMsg.includes('502') || pMsg.includes('404') || pMsg.includes('Failed to fetch') || pMsg.includes('Direct Gemini proxy') || pMsg.includes('Quota')) {
-                    const proxyAI = getGenAI(undefined, true);
+                if (pMsg.includes('Failed to call the Gemini API') || pMsg.includes('502') || pMsg.includes('404') || pMsg.includes('Failed to fetch') || pMsg.includes('Direct Gemini proxy')) {
+                    const proxyAI = getGenAI(activeKey, true);
                     const res = await proxyAI.models.generateContent(req);
                     lastWorkingTranscriptionModel = model;
                     return res;
                 }
+                if (pMsg.includes('Quota') || pMsg.includes('429') || pMsg.includes('RESOURCE_EXHAUSTED')) throw primaryErr;
                 throw primaryErr;
             }
         } catch (err: any) {
@@ -83,6 +85,8 @@ export async function callAudioTranscriptionModel(
             const is500 = err?.status === 500 || msg.includes('INTERNAL') || msg.includes('"code":500') || msg.includes('Internal error encountered') || err?.status === 503 || msg.includes('503');
             const isVideoInvalidArgument = videoMimeTypes.length > 0 &&
                 (err?.status === 400 || msg.includes('INVALID_ARGUMENT') || msg.includes('Request contains an invalid argument'));
+            const isQuotaOrRateLimit = err?.status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED');
+            if (isQuotaOrRateLimit) throw err;
 
             if (is404) {
                 notFoundTranscriptionModels.add(model);
