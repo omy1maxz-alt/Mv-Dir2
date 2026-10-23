@@ -48,6 +48,9 @@ jobs:
       - name: Verify No Automatic KIE Fallback
         run: npm run test:no-auto-kie-fallback
 
+      - name: Verify Caption Model and Timing Regression
+        run: npm run test:caption-timing-model
+
       - name: Build Web App
         run: npm run build
 
