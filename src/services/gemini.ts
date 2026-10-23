@@ -419,6 +419,32 @@ export const cleanGeminiApiKey = (raw?: any): string => {
 
 export const AISTUDIO_PLACEHOLDER_KEY = 'AIzaSyCnx3oHaOAtIcttEtJDlfq7YxBGeoTu0Co';
 
+// Model discovery caches are cleared whenever the current API key changes.
+const LIVE_MODELS_CACHE_KEY = 'mv_live_gemini_models_v1';
+const LIVE_MODELS_CACHE_TTL_MS = 30 * 60 * 1000;
+const memoryModelCache = new Map<string, { timestamp: number; models: DiscoveredGeminiModel[] }>();
+const inFlightDiscovery = new Map<string, Promise<DiscoveredGeminiModel[]>>();
+const sessionNotFoundModels = new Set<string>();
+let selectedGeminiApiKey = '';
+
+export const setActiveGeminiApiKey = (raw?: string): string => {
+    selectedGeminiApiKey = cleanGeminiApiKey(raw);
+    memoryModelCache.clear();
+    inFlightDiscovery.clear();
+    sessionNotFoundModels.clear();
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            const keysToRemove: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const storageKey = localStorage.key(i);
+                if (storageKey?.startsWith(`${LIVE_MODELS_CACHE_KEY}_`)) keysToRemove.push(storageKey);
+            }
+            keysToRemove.forEach(storageKey => localStorage.removeItem(storageKey));
+        } catch (_) {}
+    }
+    return selectedGeminiApiKey;
+};
+
 export const isRealGeminiKey = (key?: string): boolean => {
   if (!key || typeof key !== 'string') return false;
   const trimmed = cleanGeminiApiKey(key);
@@ -426,62 +452,37 @@ export const isRealGeminiKey = (key?: string): boolean => {
 };
 
 export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
+    // Explicit call/current Settings key always wins over persisted values.
     const cleanedExplicit = cleanGeminiApiKey(explicitKey);
-    if (cleanedExplicit && isRealGeminiKey(cleanedExplicit)) {
-        return cleanedExplicit;
-    }
+    if (cleanedExplicit && isRealGeminiKey(cleanedExplicit)) return cleanedExplicit;
+    if (selectedGeminiApiKey && isRealGeminiKey(selectedGeminiApiKey)) return selectedGeminiApiKey;
     try {
         if (typeof window !== 'undefined' && window.localStorage) {
-            // 1. Check mv_api_keys JSON vault (primary store)
-            const vaultKeys = localStorage.getItem('mv_api_keys');
-            if (vaultKeys) {
-                try {
-                    const parsed = JSON.parse(vaultKeys);
-                    const candidate = cleanGeminiApiKey(
-                        parsed?.google || 
-                        parsed?.gemini || 
-                        parsed?.apiKey || 
-                        parsed?.googleApiKey || 
-                        parsed?.geminiApiKey
-                    );
-                    if (candidate && isRealGeminiKey(candidate)) {
-                        return candidate;
-                    }
-                } catch (_) {}
-            }
-
-            // 2. Check direct standalone localStorage keys
-            const commonKeys = [
-                'gemini_api_key',
-                'google_api_key',
-                'mv_gemini_api_key',
-                'GEMINI_API_KEY',
-                'GOOGLE_API_KEY',
-                'api_key',
-                'ai_sub_api_key'
-            ];
-
-            for (const key of commonKeys) {
+            for (const key of ['gemini_api_key', 'google_api_key', 'mv_gemini_api_key']) {
                 const directVal = cleanGeminiApiKey(localStorage.getItem(key));
                 if (directVal === AISTUDIO_PLACEHOLDER_KEY) {
                     try { localStorage.removeItem(key); } catch (_) {}
                     continue;
                 }
-                if (directVal && isRealGeminiKey(directVal)) {
-                    // Sync back to primary keys so all modules find it uniformly
-                    try {
-                        localStorage.setItem('gemini_api_key', directVal);
-                        localStorage.setItem('google_api_key', directVal);
-                    } catch (_) {}
-                    return directVal;
-                }
+                if (directVal && isRealGeminiKey(directVal)) return directVal;
+            }
+            const vaultKeys = localStorage.getItem('mv_api_keys');
+            if (vaultKeys) {
+                try {
+                    const parsed = JSON.parse(vaultKeys);
+                    const candidate = cleanGeminiApiKey(parsed?.google || parsed?.gemini || parsed?.apiKey || parsed?.googleApiKey || parsed?.geminiApiKey);
+                    if (candidate && isRealGeminiKey(candidate)) return candidate;
+                } catch (_) {}
+            }
+            for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'api_key', 'ai_sub_api_key']) {
+                const directVal = cleanGeminiApiKey(localStorage.getItem(key));
+                if (directVal && isRealGeminiKey(directVal)) return directVal;
             }
         }
     } catch (_) {}
     if (cleanedExplicit) return cleanedExplicit;
     // @ts-ignore
-    const envKey = cleanGeminiApiKey((typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '');
-    return envKey;
+    return cleanGeminiApiKey((typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '');
 };
 
 export const getMaskedGeminiApiKey = (explicitKey?: string): string => {
@@ -519,11 +520,7 @@ export interface DiscoveredGeminiModel {
     supportedGenerationMethods: string[];
 }
 
-const LIVE_MODELS_CACHE_KEY = 'mv_live_gemini_models_v1';
-const LIVE_MODELS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const memoryModelCache = new Map<string, { timestamp: number; models: DiscoveredGeminiModel[] }>();
-const inFlightDiscovery = new Map<string, Promise<DiscoveredGeminiModel[]>>();
-const sessionNotFoundModels = new Set<string>();
+// Cache state is declared with active-key rotation handling above.
 
 export const recordGeminiModelNotFound = (modelId: string) => {
     if (!modelId) return;
@@ -826,7 +823,7 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
             return await operation();
         } catch (error: any) {
             const errorMessage = error?.message || '';
-            const isQuotaExceeded = errorMessage.includes('Quota exceeded') || errorMessage.includes('exceeded your current quota');
+            const isQuotaExceeded = /quota (?:has been )?exceeded|exceeded your current quota|daily quota|per.day quota/i.test(errorMessage);
             const isRateLimit = isQuotaExceeded || error?.status === 429 || errorMessage.includes('429') || errorMessage.includes('RESOURCE_EXHAUSTED');
             const isPermissionDenied = error?.status === 403 || errorMessage.includes('403') || errorMessage.includes('PERMISSION_DENIED');
             const isServerError = error?.status === 500 || error?.status === 502 || error?.status === 503 || error?.status === 504 ||
@@ -841,9 +838,9 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
                 console.warn(`${isRateLimit ? 'Rate limit / Quota (429)' : isPermissionDenied ? 'Permission Denied (403)' : 'Internal/Server Error (500/503)'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${retries} of ${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             } else if (isQuotaExceeded) {
-                throw new Error("API Quota Exceeded. The API key has reached its per-minute or daily limit. Please wait a moment and try again, or switch API keys in Settings.");
+                throw new Error("Gemini reported a quota limit for this request. Check the quota metric and Google Cloud project attached to the active API key; changing models will not help if that project's shared quota is exhausted.");
             } else if (isRateLimit) {
-                throw new Error("API Rate Limit (429) hit too many times. Please wait a moment and try again, or check your API key quota.");
+                throw new Error("Gemini returned HTTP 429 (rate limit or quota). The response did not clearly identify daily quota exhaustion; retry after the indicated interval and verify the active key and project if it persists.");
             } else if (isPermissionDenied) {
                 throw new Error("Permission Denied (403). Your API key may be invalid, or it may not have access to the requested model.");
             } else {
@@ -980,12 +977,12 @@ export const normalizeDirectorScenes = (parsed: any): any[] => {
 };
 
 export const analyzeFramesWithGemini = async (base64Images: string[], apiKey?: string) => {
-    const keyToUse = apiKey;
+    const keyToUse = getEffectiveGeminiApiKey(apiKey);
     if (!keyToUse) {
         throw new Error('No API key available.');
     }
     
-    const genAI = new GoogleGenAI({ apiKey: keyToUse });
+    const genAI = getGenAI(keyToUse);
     
     try {
         const parts = [
@@ -1013,12 +1010,12 @@ export const analyzeFramesWithGemini = async (base64Images: string[], apiKey?: s
 };
 
 export const analyzeVideoAgentic = async (youtubeUrl: string, apiKey?: string) => {
-    const keyToUse = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    const keyToUse = getEffectiveGeminiApiKey(apiKey);
     if (!keyToUse) {
         throw new Error('No API key available.');
     }
     
-    const genAI = new GoogleGenAI({ apiKey: keyToUse });
+    const genAI = getGenAI(keyToUse);
     
     try {
         const parts = [
@@ -1388,7 +1385,7 @@ const buildSystemPrompt = (projectData: ProjectData, selectedImageModel: string 
 6.  **Character Consistency:** If characters are defined, ONLY incorporate them into a scene if they are explicitly mentioned or strictly logically required by the user's input (lyrics or technical instructions). DO NOT arbitrarily insert characters into the storyboard if they are not part of the starter prompt. For characters that *are* included: if a character's profile is missing details like hairstyle, outfit, makeup, or styling, you MUST invent highly detailed, fashionable, and cohesive options for them and include them directly in the 'imagePrompt' for each scene they appear in. CRITICAL: If a character's description includes a reference tag (e.g., "REF_1", "Based on REF_2"), DO NOT describe their facial features or identity in the prompt, and DO NOT write the REF tag in the prompt either. The image generation engine already knows which reference image belongs to which character. Describing their face or adding tags in text will cause the AI to generate a new, random character. Only describe their styling (hair, makeup, clothing), action, emotion, and the environment. ALWAYS use the character's full name in the prompt.
 7.  **ANTI-REPETITION & UNLIMITED VARIATION (CRITICAL):** Do NOT fall into repetitive patterns. Unless explicitly requested to hold a scene, every new scene must introduce entirely new elements: a new location, setting, time of day, lighting condition, camera angle, wardrobe/styling, and distinct action/emotion. Ensure absolute and unlimited variation across the storyboard to prevent visual fatigue.
 8.  **Multi-Perspective Review Protocol (Internal):** Before finalizing the scene array, you must internally convene a panel of expert personas (Continuity Director, Composition Critic, and Prompt Engineer). Have them silently review your draft scenes to catch continuity errors, repetitive camera angles, and weak prompt descriptions. Synthesize their feedback and output ONLY the final, flawless JSON storyboard.
-9.  **Safety & Sanitization:** Ensure all generated prompts are safe and free of content that would violate typical AI safety policies. Rephrase any potentially problematic user input into a safe equivalent. If the user provides a creative context/manifesto, use it to understand their intent and avoid misinterpreting artistic expression as harmful content.
+9.  **Safety & Sanitization:** Respect applicable safety requirements and the selected provider's rules. For clearly adult subjects, preserve requested non-explicit fashion, glamour, sensual styling, revealing wardrobe, lingerie-inspired fashion, and confident poses. Do not automatically rewrite these into unrelated conservative clothing or erase the requested mood. Do not use euphemisms to evade provider restrictions; if a provider rejects a request, report that accurately. Use creative context to avoid misinterpreting artistic expression as harmful content.
 
 **Project Details:**
 -   **Project Type:** ${projectData.projectType}
@@ -1910,7 +1907,9 @@ export function sanitizeImagePrompt(rawPrompt: string): string {
     if (!rawPrompt) return "";
     let sanitized = rawPrompt;
     
-    // Replace extreme / sensitive / violent / graphic / NSFW triggers with cinematic artistic equivalents
+    // Keep prompt cleanup narrowly scoped. Adult fashion/glamour vocabulary is part of
+    // the user's creative intent and must not be silently rewritten into unrelated clothing.
+    // This is not a provider-policy override: each image provider still applies its own rules.
     const replacements: Array<[RegExp, string]> = [
         [/\b(blood|bloody|bloodstain|bloodstained)\b/gi, 'crimson glow'],
         [/\b(wound|wounds|wounded|gash|injuries)\b/gi, 'dramatic marking'],
@@ -1919,8 +1918,6 @@ export function sanitizeImagePrompt(rawPrompt: string): string {
         [/\b(dead|death|corpse|deceased)\b/gi, 'fallen cinematic figure'],
         [/\b(suicide|suicidal)\b/gi, 'deep emotional sorrow'],
         [/\b(knife|knives|blade|dagger|sword)\b/gi, 'glowing cinematic relic'],
-        [/\b(nude|naked|nudity|topless|unclothed)\b/gi, 'elegant silhouette in stylish attire'],
-        [/\b(sexy|erotic|sensual|provocative)\b/gi, 'charismatic and aesthetically elegant'],
         [/\b(drug|drugs|cocaine|heroin|weed)\b/gi, 'mysterious glowing essence'],
         [/\b(gore|gory|mutilate|decapitate)\b/gi, 'dramatic high-contrast shadows']
     ];
@@ -2529,40 +2526,12 @@ export const generateSceneImage = async (
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
 
-        // Only an explicit safety/prohibited-content reason should trigger prompt sanitization.
-        // IMAGE_OTHER and NO_IMAGE are handled above as retryable generation failures.
+        // Respect explicit provider policy decisions: do not retry the same request with altered wording
+        // or route a blocked prompt to another image provider.
         const isBlocked = /safety|blocked|recitation|prohibited content|blocklist/i.test(errorMessage);
-        
         if (isBlocked) {
-            const cleanSanitized = sanitizeImagePrompt(prompt);
-            addLog(`Image prompt flagged by model safety filter (${error.message}). Auto-sanitizing trigger keywords...`, 'warning');
-            try {
-                // Fallback 1: Sanitized prompt + references
-                const fallbackParts1 = [...referenceParts, { text: fullPrompt.replace(prompt, cleanSanitized) }];
-                return await doGenerate(fallbackParts1);
-            } catch (fallbackError1: any) {
-                const fallbackErrorMessage = String(fallbackError1?.message || fallbackError1 || 'Unknown retry error');
-                const isTransientFallback = fallbackErrorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:');
-                const isBlocked1 = /safety|blocked|recitation|prohibited content|blocklist/i.test(fallbackErrorMessage);
-
-                if (isTransientFallback && referenceParts.length > 0) {
-                    const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
-                    throw new Error(
-                        `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output on the sanitized retry. All ${referenceImageCount} selected reference image(s) were preserved. Review the scene prompt, or retry/use another reference-capable image model.`
-                    );
-                } else if (isTransientFallback) {
-                    addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
-                    return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-                }
-
-                if (isBlocked1 && referenceParts.length > 0) {
-                    throw new Error(`The model rejected both the original and sanitized prompts with the selected reference images. MV Director did not retry without references because that could change the character's face. Adjust the scene prompt or use another reference-capable image model. Original error: ${fallbackError1.message}`);
-                } else if (isBlocked1) {
-                    addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                    return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-                }
-                throw fallbackError1;
-            }
+            addLog("The selected image provider declined this request under its content policy. No alternate-provider fallback was attempted.", 'warning');
+            throw new Error(`Image generation was blocked by the selected provider's content policy. Review the prompt and that provider's rules. Original error: ${errorMessage}`);
         }
         throw error;
     }
@@ -2984,40 +2953,12 @@ Your task is to generate a new scene based EXACTLY on the text description provi
             return await fallbackToPollinations(activePrompt || prompt, aspectRatio, addLog);
         }
 
-        // Sanitize only explicit safety/recitation/policy failures, not IMAGE_OTHER.
+        // Do not rewrite or reroute a prompt after an explicit provider policy block.
         const normalizedError = errorMessage.toLowerCase();
-        const isBlocked = normalizedError.includes("safety")
-            || normalizedError.includes("blocked")
-            || normalizedError.includes("recitation");
-
+        const isBlocked = /safety|blocked|recitation|prohibited content|blocklist|image_safety|image_prohibited_content/.test(normalizedError);
         if (isBlocked) {
-            const cleanSanitized = sanitizeImagePrompt(activePrompt || prompt);
-            addLog(`Image prompt flagged by model safety filter (${errorMessage}). Auto-sanitizing trigger keywords...`, 'warning');
-            try {
-                const sanitizedFullPrompt = finalPrompt.replace(activePrompt || prompt, cleanSanitized);
-                const fallbackParts = orderedVisualReferences.length > 0
-                    ? [{ text: sanitizedFullPrompt }, ...parts.filter(part => !part.text || !part.text.startsWith('Generate an image.'))]
-                    : [{ text: cleanSanitized }];
-                return await doGenerate(fallbackParts);
-            } catch (fallbackError: any) {
-                const fallbackErrorMessage = String(fallbackError?.message || fallbackError || 'Unknown retry error');
-                if (fallbackErrorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:')) {
-                    const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
-                    if (orderedVisualReferences.length > 0) {
-                        throw new Error(
-                            `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output after three retries of the sanitized prompt. All ${orderedVisualReferences.length} selected reference image(s) were preserved. Retry this image or select another reference-capable model.`
-                        );
-                    }
-                    addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
-                    return await fallbackToPollinations(cleanSanitized || activePrompt || prompt, aspectRatio, addLog);
-                }
-
-                if (orderedVisualReferences.length > 0) {
-                    throw new Error(`The image model rejected both the original and sanitized prompt with the selected references. MV Director did not remove the references or switch to a prompt-only generator because that could change the character's face. Adjust the scene prompt or choose another reference-capable model. Original error: ${fallbackErrorMessage}`);
-                }
-                addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                return await fallbackToPollinations(cleanSanitized || activePrompt || prompt, aspectRatio, addLog);
-            }
+            addLog("The selected image provider declined this request under its content policy. No alternate-provider fallback was attempted.", 'warning');
+            throw new Error(`Image generation was blocked by the selected provider's content policy. Review the prompt and that provider's rules. Original error: ${errorMessage}`);
         }
         throw error;
     }
@@ -3164,17 +3105,11 @@ export const generateChatImage = async (
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
 
-        const isBlocked = error.message === "IMAGE_OTHER" || error.message.includes("safety") || error.message.includes("blocked") || error.message.includes("recitation") || error.message.includes("SAFETY");
+        const normalizedError = String(error?.message || error || '').toLowerCase();
+        const isBlocked = /safety|blocked|recitation|prohibited content|blocklist|image_safety|image_prohibited_content|image_other/.test(normalizedError);
         if (isBlocked) {
-            const cleanSanitized = sanitizeImagePrompt(prompt);
-            addLog(`Image generation blocked by safety policy (${error.message}). Retrying with sanitized prompt...`, 'warning');
-            try {
-                const fallbackParts = [{ text: cleanSanitized }];
-                return await doGenerate(fallbackParts);
-            } catch (fallbackError: any) {
-                addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-            }
+            addLog("The selected image provider did not return an image or declined the request. No alternate-provider fallback was attempted.", 'warning');
+            throw new Error(`Image generation did not complete with the selected provider (${error?.message || 'no image returned'}). Review the prompt and provider response before retrying.`);
         }
         throw error;
     }
@@ -3253,8 +3188,8 @@ export const enhanceAndSanitizePrompt = async (prompt: string, projectData: Proj
     - **Lighting & Atmosphere:** Specify lighting conditions (e.g., volumetric rays, neon glow, chiaroscuro shadows, rim lighting).
     - **Artistic Texture (NANO BANANA PRINCIPLE):** Describe physical realities, specific geometry, colors, and lighting effects rather than vague adjectives or empty praise. Do NOT use buzzwords like "hyperrealistic," "masterpiece," "8k," "razor-sharp focus," "clean color grading," or list camera hardware. Instead, describe the *effect* of those things (e.g., "extremely shallow depth of field rendering the eyes in precise clarity", "visible subtle skin pores and fine textures", "polished studio aesthetic", "clean balanced color palette").
 2.  **Incorporate Style:** Seamlessly integrate the master art style: "${projectData.artStyle}".
-3.  **Sanitize:** Rephrase any potentially sensitive content to be safe for generation, while preserving the original artistic intent.
-4.  **Wardrobe Rule:** If a character is wearing a suit, jacket, blazer, or open coat, you MUST explicitly ensure they are wearing an appropriate inner garment (e.g., dress shirt, t-shirt, blouse, turtleneck, tie) underneath unless the prompt specifically asks for them to be bare-chested. AVOID phrases like "deep V-neckline" when describing suits, as this causes the image generator to omit the inner shirt. Always explicitly describe the shirt underneath the suit.
+3.  **Preserve Fashion Intent:** Preserve the user's intended mature, non-explicit adult fashion and glamour direction, including sensual styling, revealing outfits, lingerie-inspired fashion, body-conscious silhouettes, and confident poses when subjects are clearly adults. Do not turn these into unrelated modest clothing or remove the intended mood. Do not attempt to bypass provider restrictions; the selected image provider remains authoritative about what it will generate.
+4.  **Wardrobe Rule:** For conventional business or formal suits, describe appropriate layering when it matches the user's brief. If the prompt requests mature fashion/editorial styling, an open jacket, a deep neckline, or a deliberately revealing look on a clearly adult subject, preserve that styling instead of automatically adding coverage.
 5.  **Static Image Focus (CRITICAL):** The prompt is for generating a single, STATIC image. Focus purely on describing a single frozen moment in time. NEVER describe movement occurring over time (e.g., DO NOT use phrases like "slowly turns her head", "shifting to", "the camera pans", "starts to walk"). Instead, translate any motion into a static description of the frozen state or pose (e.g., "looking over her shoulder", "hand frozen mid-reach", "with a subtle nervous expression", "caught mid-stride").
 6.  **Reflection Avoidance (CRITICAL):** Do NOT include phrasing that generates reflections (e.g., mirrors, glossy floors, puddles, water reflections). The image generator is currently struggling with them, so ensure the prompt strictly describes matte environments.
 7.  **Multi-Character Separation (CRITICAL):** If multiple characters are present in the same scene, you MUST structurally separate them in your spatial description (e.g., 'On the left is X, on the far right is Y'). To prevent the image generator from blending them or swapping faces, you MUST explicitly restate their gender, distinct clothing colors, and hair styles directly in the prompt. Avoid grouping them together physically unless absolutely necessary, and always describe their unique visual traits.
@@ -4091,7 +4026,7 @@ export const autoStyleCharacterDNA = async (currentDna: any, name: string, apiKe
 
     const textPart = {
         text: `You are an expert character designer and stylist. I have a character named "${name}" with the following partial profile. Please fill in any missing details, and specifically invent highly detailed, fashionable, and cohesive options for their hairstyle, clothing style, and makeup/styling if they are not already detailed. 
-CRITICAL WARDROBE RULE: If you give the character a suit, jacket, blazer, or open coat, you MUST explicitly include an appropriate inner garment (e.g., dress shirt, t-shirt, blouse, turtleneck, tie) in the clothing description. AVOID phrases like "deep V-neckline" when describing suits.
+WARDROBE GUIDANCE: For conventional business/formal looks, include appropriate layering when it matches the brief. For clearly adult fashion/editorial looks, preserve the requested neckline, open-jacket styling, and intended level of coverage rather than adding layers automatically.
 Return the complete, enhanced profile using the provided JSON schema.\n\nCurrent Profile:\n${JSON.stringify(currentDna, null, 2)}`
     };
 
@@ -4119,7 +4054,7 @@ export const generateCharacterDNAFromText = async (prompt: string, apiKey?: stri
 
     const textPart = {
         text: `Based on the following character concept, generate a detailed physical and personality profile using the provided JSON schema. Be highly descriptive and creative, filling in any missing details to create a complete character.
-CRITICAL WARDROBE RULE: If you give the character a suit, jacket, blazer, or open coat, you MUST explicitly include an appropriate inner garment (e.g., dress shirt, t-shirt, blouse, turtleneck, tie) in the clothing description. AVOID phrases like "deep V-neckline" when describing suits.
+WARDROBE GUIDANCE: For conventional business/formal looks, include appropriate layering when it matches the brief. For clearly adult fashion/editorial looks, preserve the requested neckline, open-jacket styling, and intended level of coverage rather than adding layers automatically.
 \n\nCharacter Concept: "${prompt}"`
     };
 

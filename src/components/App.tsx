@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ArtStylePresetsModal } from '@/components/ArtStylePresetsModal';
 import { YouTubeImportModal } from '@/components/YouTubeImportModal';
 import { ProjectData, DirectorPlan, Scene, LogEntry, ApiKeys, AspectRatio, CharacterProfile, ReferenceImage, ExportedProject, ApiKeySource, AppSettings, InstructionPreset, ArtStylePreset } from '@/types';
-import { createDirectorPlan, continueDirectorPlan, generateSceneImage, enhanceAndSanitizePrompt, enhanceMotionPrompt, extractCharacterDNA, generateCharacterDNAFromText, autoStyleCharacterDNA, setTextModel as setTextModelInService, setImageModel as setImageModelInService, getCurrentImageModel, setCustomOpenAISettings, setKieSettings, changeReferenceBackground, getEffectiveGeminiApiKey, cleanGeminiApiKey, resolveValidGeminiModel } from '@/services/gemini';
+import { createDirectorPlan, continueDirectorPlan, generateSceneImage, enhanceAndSanitizePrompt, enhanceMotionPrompt, extractCharacterDNA, generateCharacterDNAFromText, autoStyleCharacterDNA, setTextModel as setTextModelInService, setImageModel as setImageModelInService, getCurrentImageModel, setCustomOpenAISettings, setKieSettings, changeReferenceBackground, getEffectiveGeminiApiKey, cleanGeminiApiKey, setActiveGeminiApiKey, resolveValidGeminiModel } from '@/services/gemini';
 import { generateSunoCover, checkSunoTaskStatus, generateSunoCoverArt } from '@/services/kie';
 import { saveProjectToDB, loadProjectFromDB, savePlanToDB, loadPlanFromDB, clearDB } from '@/services/db';
 import { exportAllChatData, importChatData } from '@/services/studioChatStorage';
@@ -598,6 +598,7 @@ export const App: React.FC = () => {
 
         setApiKeys(initialKeys);
         apiKeysRef.current = initialKeys;
+        setActiveGeminiApiKey(resolvedGoogleKey);
         setCustomOpenAISettings(initialKeys.openaiBaseUrl, initialKeys.openaiApiKey, initialKeys.openaiModel);
         setKieSettings(initialKeys.kie, initialKeys.kieCustomModel);
 
@@ -775,6 +776,7 @@ export const App: React.FC = () => {
     const updatedKeys: ApiKeys = { ...keys, google: cleanedGoogle };
     const effectiveSource: ApiKeySource = cleanedGoogle ? 'custom' : source;
 
+    setActiveGeminiApiKey(cleanedGoogle);
     setApiKeys(updatedKeys);
     setApiKeySource(effectiveSource);
     setTextModel(model);
@@ -789,11 +791,9 @@ export const App: React.FC = () => {
     try {
       localStorage.setItem('mv_api_keys', JSON.stringify(updatedKeys));
       localStorage.setItem('mv_api_key_source', effectiveSource);
-      if (cleanedGoogle) {
-        localStorage.setItem('gemini_api_key', cleanedGoogle);
-        localStorage.setItem('google_api_key', cleanedGoogle);
-        localStorage.setItem('mv_gemini_api_key', cleanedGoogle);
-      }
+      const legacyKeys = ['gemini_api_key', 'google_api_key', 'mv_gemini_api_key'];
+      if (cleanedGoogle) legacyKeys.forEach(storageKey => localStorage.setItem(storageKey, cleanedGoogle));
+      else legacyKeys.forEach(storageKey => localStorage.removeItem(storageKey));
       localStorage.setItem('mv_text_model', model);
       localStorage.setItem('mv_image_model', imgModel);
     } catch (_) {}

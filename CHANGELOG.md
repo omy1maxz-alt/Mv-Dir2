@@ -1,6 +1,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **Gemini API-key rotation**: Keep the selected API key authoritative in memory and synchronize legacy key aliases when saving or clearing Settings. Invalidate model-discovery caches on rotation and route Watch & Listen/video analysis through the active credential.
+- **Quota diagnostics**: Preserve quota/rate-limit failures instead of hiding them with retries across models or a proxy that may use stale credentials.
 - **Frontend credential exposure**: Removed Vite compile-time substitutions for `process.env.API_KEY`, `process.env.GEMINI_API_KEY`, and `process.env.KIE_API_KEY`. Runtime server secrets must stay on the server; client-supplied provider keys remain user-controlled settings.
 - **Veo generation reliability and URL secrecy**: Added a 10-minute polling deadline to stop stalled video jobs from waiting forever, and stopped appending the API key to the returned video URI.
 
