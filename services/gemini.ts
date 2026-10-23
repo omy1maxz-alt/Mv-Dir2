@@ -473,7 +473,7 @@ export const enhanceAndSanitizePrompt = async (
     -   'wound', 'injury' -> 'special effects makeup for a horror film', 'cinematic prosthetic'
     -   'fight', 'battle', 'war' -> 'dramatic theatrical performance', 'intense choreographed scene for a film'
     -   'gun', 'rifle', 'pistol' -> 'prop movie pistol', 'futuristic energy weapon', 'stylized toy gun'
-    -   'nude', 'naked' -> 'artistic figure study in the style of Rembrandt', 'classical marble statue', 'anatomy sketch'
+     -   Preserve the requested non-explicit adult fashion/glamour styling and wording (for example: sensual editorial styling, revealing fashion, body-conscious silhouettes, or confident poses) when the subject is clearly an adult. Do not transform it into a statue, sketch, or unrelated conservative outfit. Do not use euphemisms to evade the image provider's rules; preserve intent and let the provider apply its own policy.
     
     CONTEXTUALIZE:
     -   Always ensure the prompt starts with a safe artistic frame, e.g., "A movie set still...", "An oil painting of...", "A cinematic shot for an action movie...".
