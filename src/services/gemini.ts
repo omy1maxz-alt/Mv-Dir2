@@ -2465,7 +2465,9 @@ export const generateSceneImage = async (
 
         const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
-            // No automatic provider switch here. KIE remains available when explicitly selected.\n\n            const allowFreeFallback = typeof window !== 'undefined' && (
+            // No automatic provider switch here. KIE remains available when explicitly selected.
+
+            const allowFreeFallback = typeof window !== 'undefined' && (
                 localStorage.getItem('mv_allow_free_image_fallback') === 'true' ||
                 localStorage.getItem('mv_allow_prompt_fallback_on_quota') === 'true'
             );
@@ -2861,7 +2863,9 @@ Your task is to generate a new scene based EXACTLY on the text description provi
 
         const isQuotaOrAuth = errorMessage.includes('Quota') || errorMessage.includes('403') || errorMessage.includes('Permission Denied') || errorMessage.includes('429') || errorMessage.includes('limit');
         if (isQuotaOrAuth) {
-            // No automatic provider switch here. KIE remains available when explicitly selected.\n\n            const allowFreeFallback = typeof window !== 'undefined' && (
+            // No automatic provider switch here. KIE remains available when explicitly selected.
+
+            const allowFreeFallback = typeof window !== 'undefined' && (
                 localStorage.getItem('mv_allow_free_image_fallback') === 'true' ||
                 localStorage.getItem('mv_allow_prompt_fallback_on_quota') === 'true'
             );
