@@ -1388,7 +1388,7 @@ const buildSystemPrompt = (projectData: ProjectData, selectedImageModel: string 
 6.  **Character Consistency:** If characters are defined, ONLY incorporate them into a scene if they are explicitly mentioned or strictly logically required by the user's input (lyrics or technical instructions). DO NOT arbitrarily insert characters into the storyboard if they are not part of the starter prompt. For characters that *are* included: if a character's profile is missing details like hairstyle, outfit, makeup, or styling, you MUST invent highly detailed, fashionable, and cohesive options for them and include them directly in the 'imagePrompt' for each scene they appear in. CRITICAL: If a character's description includes a reference tag (e.g., "REF_1", "Based on REF_2"), DO NOT describe their facial features or identity in the prompt, and DO NOT write the REF tag in the prompt either. The image generation engine already knows which reference image belongs to which character. Describing their face or adding tags in text will cause the AI to generate a new, random character. Only describe their styling (hair, makeup, clothing), action, emotion, and the environment. ALWAYS use the character's full name in the prompt.
 7.  **ANTI-REPETITION & UNLIMITED VARIATION (CRITICAL):** Do NOT fall into repetitive patterns. Unless explicitly requested to hold a scene, every new scene must introduce entirely new elements: a new location, setting, time of day, lighting condition, camera angle, wardrobe/styling, and distinct action/emotion. Ensure absolute and unlimited variation across the storyboard to prevent visual fatigue.
 8.  **Multi-Perspective Review Protocol (Internal):** Before finalizing the scene array, you must internally convene a panel of expert personas (Continuity Director, Composition Critic, and Prompt Engineer). Have them silently review your draft scenes to catch continuity errors, repetitive camera angles, and weak prompt descriptions. Synthesize their feedback and output ONLY the final, flawless JSON storyboard.
-9.  **Safety & Sanitization:** Ensure all generated prompts are safe and free of content that would violate typical AI safety policies. Rephrase any potentially problematic user input into a safe equivalent. If the user provides a creative context/manifesto, use it to understand their intent and avoid misinterpreting artistic expression as harmful content.
+9.  **Safety & Sanitization:** Respect applicable safety requirements and the selected provider's rules. For clearly adult subjects, preserve requested non-explicit fashion, glamour, sensual styling, revealing wardrobe, lingerie-inspired fashion, and confident poses. Do not automatically rewrite these into unrelated conservative clothing or erase the requested mood. Do not use euphemisms to evade provider restrictions; if a provider rejects a request, report that accurately. Use creative context to avoid misinterpreting artistic expression as harmful content.
 
 **Project Details:**
 -   **Project Type:** ${projectData.projectType}
@@ -1910,7 +1910,9 @@ export function sanitizeImagePrompt(rawPrompt: string): string {
     if (!rawPrompt) return "";
     let sanitized = rawPrompt;
     
-    // Replace extreme / sensitive / violent / graphic / NSFW triggers with cinematic artistic equivalents
+    // Keep prompt cleanup narrowly scoped. Adult fashion/glamour vocabulary is part of
+    // the user's creative intent and must not be silently rewritten into unrelated clothing.
+    // This is not a provider-policy override: each image provider still applies its own rules.
     const replacements: Array<[RegExp, string]> = [
         [/\b(blood|bloody|bloodstain|bloodstained)\b/gi, 'crimson glow'],
         [/\b(wound|wounds|wounded|gash|injuries)\b/gi, 'dramatic marking'],
@@ -1919,8 +1921,6 @@ export function sanitizeImagePrompt(rawPrompt: string): string {
         [/\b(dead|death|corpse|deceased)\b/gi, 'fallen cinematic figure'],
         [/\b(suicide|suicidal)\b/gi, 'deep emotional sorrow'],
         [/\b(knife|knives|blade|dagger|sword)\b/gi, 'glowing cinematic relic'],
-        [/\b(nude|naked|nudity|topless|unclothed)\b/gi, 'elegant silhouette in stylish attire'],
-        [/\b(sexy|erotic|sensual|provocative)\b/gi, 'charismatic and aesthetically elegant'],
         [/\b(drug|drugs|cocaine|heroin|weed)\b/gi, 'mysterious glowing essence'],
         [/\b(gore|gory|mutilate|decapitate)\b/gi, 'dramatic high-contrast shadows']
     ];
@@ -3253,7 +3253,7 @@ export const enhanceAndSanitizePrompt = async (prompt: string, projectData: Proj
     - **Lighting & Atmosphere:** Specify lighting conditions (e.g., volumetric rays, neon glow, chiaroscuro shadows, rim lighting).
     - **Artistic Texture (NANO BANANA PRINCIPLE):** Describe physical realities, specific geometry, colors, and lighting effects rather than vague adjectives or empty praise. Do NOT use buzzwords like "hyperrealistic," "masterpiece," "8k," "razor-sharp focus," "clean color grading," or list camera hardware. Instead, describe the *effect* of those things (e.g., "extremely shallow depth of field rendering the eyes in precise clarity", "visible subtle skin pores and fine textures", "polished studio aesthetic", "clean balanced color palette").
 2.  **Incorporate Style:** Seamlessly integrate the master art style: "${projectData.artStyle}".
-3.  **Sanitize:** Rephrase any potentially sensitive content to be safe for generation, while preserving the original artistic intent.
+3.  **Preserve Fashion Intent:** Preserve the user's intended mature, non-explicit adult fashion and glamour direction, including sensual styling, revealing outfits, lingerie-inspired fashion, body-conscious silhouettes, and confident poses when subjects are clearly adults. Do not turn these into unrelated modest clothing or remove the intended mood. Do not attempt to bypass provider restrictions; the selected image provider remains authoritative about what it will generate.
 4.  **Wardrobe Rule:** If a character is wearing a suit, jacket, blazer, or open coat, you MUST explicitly ensure they are wearing an appropriate inner garment (e.g., dress shirt, t-shirt, blouse, turtleneck, tie) underneath unless the prompt specifically asks for them to be bare-chested. AVOID phrases like "deep V-neckline" when describing suits, as this causes the image generator to omit the inner shirt. Always explicitly describe the shirt underneath the suit.
 5.  **Static Image Focus (CRITICAL):** The prompt is for generating a single, STATIC image. Focus purely on describing a single frozen moment in time. NEVER describe movement occurring over time (e.g., DO NOT use phrases like "slowly turns her head", "shifting to", "the camera pans", "starts to walk"). Instead, translate any motion into a static description of the frozen state or pose (e.g., "looking over her shoulder", "hand frozen mid-reach", "with a subtle nervous expression", "caught mid-stride").
 6.  **Reflection Avoidance (CRITICAL):** Do NOT include phrasing that generates reflections (e.g., mirrors, glossy floors, puddles, water reflections). The image generator is currently struggling with them, so ensure the prompt strictly describes matte environments.
