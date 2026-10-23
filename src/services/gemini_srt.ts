@@ -680,24 +680,23 @@ function deduplicateAndMergeBlocks(
         // If incoming block ends before overlap interval began, skip
         if (inc.endMs < overlapStartMs) continue;
 
-        // Check if this cue's text duplicates any of the last few existing cues
+        // Restrict duplicate checks to the actual chunk-overlap region. Applying a global
+        // "recent cue" match can delete repeated words/chorus lines that legitimately recur.
         const incNorm = normalizeTextForMatch(inc.textLines.join(' '));
         if (!incNorm) continue;
 
-        const recentBlocks = result.slice(-8);
-        const matchIdx = recentBlocks.findIndex(prev => {
+        const matchIdx = result.findIndex(prev => {
+            if (prev.startMs < overlapStartMs - 6000) return false;
             const prevNorm = normalizeTextForMatch(prev.textLines.join(' '));
             if (!prevNorm) return false;
             const textMatches = incNorm === prevNorm || (incNorm.length > 5 && (prevNorm.includes(incNorm) || incNorm.includes(prevNorm)));
             if (!textMatches) return false;
-            // Only deduplicate if the cues are actually in temporal proximity / overlap window,
-            // preventing the accidental deletion of repeating chorus lines, song refrains, or dialogue repetitions.
-            const temporalOverlap = Math.abs(inc.startMs - prev.startMs) < 5000 || (inc.startMs < prev.endMs + 800 && inc.endMs > prev.startMs);
-            return temporalOverlap;
+            return Math.abs(inc.startMs - prev.startMs) < 5000 ||
+                (inc.startMs < prev.endMs + 800 && inc.endMs > prev.startMs);
         });
 
         if (matchIdx !== -1) {
-            // Already present in previous chunk/pass, discard duplicate from overlap window
+            // Duplicate in the actual overlap interval only.
             continue;
         }
 
