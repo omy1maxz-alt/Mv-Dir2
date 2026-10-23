@@ -11,6 +11,10 @@ assert.equal(srt.includes("shiftSubtitleBlocks(\n            chunkBlocks"), true
   "long-file chunks should use canonical timestamp offset handling");
 assert.equal(srt.includes("Successful transcription request model:"), true,
   "runtime logs should record the actual model");
+assert.equal(srt.includes("const recentBlocks = result.slice(-8)"), false,
+  "deduplication must not delete repeated captions outside the overlap interval");
+assert.equal(srt.includes("inc.startMs = lastBlock.endMs + 50"), false,
+  "merging must not shift speech start times independently of their text");
 assert.equal(gemini.includes("Map fictional/aliased 3.x UI model names to real Gemini 2.5 models when live discovery is unavailable"), false,
   "model resolution must not silently rewrite the selected model when discovery fails");
 
