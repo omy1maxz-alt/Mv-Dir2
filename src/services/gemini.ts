@@ -2529,40 +2529,12 @@ export const generateSceneImage = async (
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
 
-        // Only an explicit safety/prohibited-content reason should trigger prompt sanitization.
-        // IMAGE_OTHER and NO_IMAGE are handled above as retryable generation failures.
+        // Respect explicit provider policy decisions: do not retry the same request with altered wording
+        // or route a blocked prompt to another image provider.
         const isBlocked = /safety|blocked|recitation|prohibited content|blocklist/i.test(errorMessage);
-        
         if (isBlocked) {
-            const cleanSanitized = sanitizeImagePrompt(prompt);
-            addLog(`Image prompt flagged by model safety filter (${error.message}). Auto-sanitizing trigger keywords...`, 'warning');
-            try {
-                // Fallback 1: Sanitized prompt + references
-                const fallbackParts1 = [...referenceParts, { text: fullPrompt.replace(prompt, cleanSanitized) }];
-                return await doGenerate(fallbackParts1);
-            } catch (fallbackError1: any) {
-                const fallbackErrorMessage = String(fallbackError1?.message || fallbackError1 || 'Unknown retry error');
-                const isTransientFallback = fallbackErrorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:');
-                const isBlocked1 = /safety|blocked|recitation|prohibited content|blocklist/i.test(fallbackErrorMessage);
-
-                if (isTransientFallback && referenceParts.length > 0) {
-                    const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
-                    throw new Error(
-                        `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output on the sanitized retry. All ${referenceImageCount} selected reference image(s) were preserved. Review the scene prompt, or retry/use another reference-capable image model.`
-                    );
-                } else if (isTransientFallback) {
-                    addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
-                    return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-                }
-
-                if (isBlocked1 && referenceParts.length > 0) {
-                    throw new Error(`The model rejected both the original and sanitized prompts with the selected reference images. MV Director did not retry without references because that could change the character's face. Adjust the scene prompt or use another reference-capable image model. Original error: ${fallbackError1.message}`);
-                } else if (isBlocked1) {
-                    addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                    return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-                }
-                throw fallbackError1;
-            }
+            addLog("The selected image provider declined this request under its content policy. No alternate-provider fallback was attempted.", 'warning');
+            throw new Error(`Image generation was blocked by the selected provider's content policy. Review the prompt and that provider's rules. Original error: ${errorMessage}`);
         }
         throw error;
     }
@@ -2984,40 +2956,12 @@ Your task is to generate a new scene based EXACTLY on the text description provi
             return await fallbackToPollinations(activePrompt || prompt, aspectRatio, addLog);
         }
 
-        // Sanitize only explicit safety/recitation/policy failures, not IMAGE_OTHER.
+        // Do not rewrite or reroute a prompt after an explicit provider policy block.
         const normalizedError = errorMessage.toLowerCase();
-        const isBlocked = normalizedError.includes("safety")
-            || normalizedError.includes("blocked")
-            || normalizedError.includes("recitation");
-
+        const isBlocked = /safety|blocked|recitation|prohibited content|blocklist|image_safety|image_prohibited_content/.test(normalizedError);
         if (isBlocked) {
-            const cleanSanitized = sanitizeImagePrompt(activePrompt || prompt);
-            addLog(`Image prompt flagged by model safety filter (${errorMessage}). Auto-sanitizing trigger keywords...`, 'warning');
-            try {
-                const sanitizedFullPrompt = finalPrompt.replace(activePrompt || prompt, cleanSanitized);
-                const fallbackParts = orderedVisualReferences.length > 0
-                    ? [{ text: sanitizedFullPrompt }, ...parts.filter(part => !part.text || !part.text.startsWith('Generate an image.'))]
-                    : [{ text: cleanSanitized }];
-                return await doGenerate(fallbackParts);
-            } catch (fallbackError: any) {
-                const fallbackErrorMessage = String(fallbackError?.message || fallbackError || 'Unknown retry error');
-                if (fallbackErrorMessage.startsWith('GEMINI_TRANSIENT_IMAGE_FAILURE:')) {
-                    const reason = fallbackErrorMessage.slice('GEMINI_TRANSIENT_IMAGE_FAILURE:'.length) || 'NO_IMAGE';
-                    if (orderedVisualReferences.length > 0) {
-                        throw new Error(
-                            `Gemini returned a safety-related response to the original prompt, then returned ${reason} without image output after three retries of the sanitized prompt. All ${orderedVisualReferences.length} selected reference image(s) were preserved. Retry this image or select another reference-capable model.`
-                        );
-                    }
-                    addLog('Gemini returned no image after retrying the sanitized prompt. Switching to the creative fallback generator.', 'warning');
-                    return await fallbackToPollinations(cleanSanitized || activePrompt || prompt, aspectRatio, addLog);
-                }
-
-                if (orderedVisualReferences.length > 0) {
-                    throw new Error(`The image model rejected both the original and sanitized prompt with the selected references. MV Director did not remove the references or switch to a prompt-only generator because that could change the character's face. Adjust the scene prompt or choose another reference-capable model. Original error: ${fallbackErrorMessage}`);
-                }
-                addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                return await fallbackToPollinations(cleanSanitized || activePrompt || prompt, aspectRatio, addLog);
-            }
+            addLog("The selected image provider declined this request under its content policy. No alternate-provider fallback was attempted.", 'warning');
+            throw new Error(`Image generation was blocked by the selected provider's content policy. Review the prompt and that provider's rules. Original error: ${errorMessage}`);
         }
         throw error;
     }
@@ -3164,17 +3108,11 @@ export const generateChatImage = async (
             return await fallbackToPollinations(prompt, aspectRatio, addLog);
         }
 
-        const isBlocked = error.message === "IMAGE_OTHER" || error.message.includes("safety") || error.message.includes("blocked") || error.message.includes("recitation") || error.message.includes("SAFETY");
+        const normalizedError = String(error?.message || error || '').toLowerCase();
+        const isBlocked = /safety|blocked|recitation|prohibited content|blocklist|image_safety|image_prohibited_content|image_other/.test(normalizedError);
         if (isBlocked) {
-            const cleanSanitized = sanitizeImagePrompt(prompt);
-            addLog(`Image generation blocked by safety policy (${error.message}). Retrying with sanitized prompt...`, 'warning');
-            try {
-                const fallbackParts = [{ text: cleanSanitized }];
-                return await doGenerate(fallbackParts);
-            } catch (fallbackError: any) {
-                addLog("Safety filter active. Seamlessly switching to creative fallback image generator...", 'warning');
-                return await fallbackToPollinations(cleanSanitized || prompt, aspectRatio, addLog);
-            }
+            addLog("The selected image provider did not return an image or declined the request. No alternate-provider fallback was attempted.", 'warning');
+            throw new Error(`Image generation did not complete with the selected provider (${error?.message || 'no image returned'}). Review the prompt and provider response before retrying.`);
         }
         throw error;
     }
