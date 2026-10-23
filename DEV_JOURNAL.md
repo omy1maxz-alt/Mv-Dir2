@@ -1,3 +1,11 @@
+### 232. Remove build-time credential injection and bound Veo polling (23 Oct 2026)
+
+- **Risk found**: `vite.config.ts` used Vite `define` to replace `process.env.API_KEY`, `process.env.GEMINI_API_KEY`, and `process.env.KIE_API_KEY` with environment values. These substitutions can embed private environment credentials into shipped browser JavaScript.
+- **Fix**: Removed the compile-time substitutions. Server-side handlers must read server credentials at runtime; bring-your-own keys should be provided through the existing Settings vault and not treated as server secrets.
+- **Risk found**: `services/gemini.ts::generateSceneVideo` polled Veo with no deadline and returned `videoUri&key=<API key>`.
+- **Fix**: Added a 10-minute polling deadline and now return the provider URI without appending a key. A deployment that needs browser playback should implement a protected server-side media retrieval route rather than embedding credentials in the URI.
+- **Validation**: Reviewed the current source and committed this focused change on `fix/security-and-video-timeout`. Automated build/tests were not run in this connector session; verify with `npm run lint` and `npm run build` before merging.
+
 ### 231. Fix `gemini-2.5-flash-image` Regression Caused by `resolveValidGeminiModel` Rewriting Image Models to Text Models (`gemini.ts`, `gemini_srt.ts`, `ApiKeyVault.tsx`, `App.tsx`) (23 Oct 2026)
 - **User Request & Reported Issues:**
   - *"i pull edit from github,but the app won't start"*
