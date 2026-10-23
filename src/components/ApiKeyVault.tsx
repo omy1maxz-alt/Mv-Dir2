@@ -397,11 +397,9 @@ export const ApiKeyVault: React.FC<ApiKeyVaultProps> = ({ isOpen, onClose, curre
     const updatedKeys = { ...keys, google: cleanedGoogle };
     const effectiveSource = cleanedGoogle ? 'custom' : source;
     try {
-      if (cleanedGoogle) {
-        localStorage.setItem('gemini_api_key', cleanedGoogle);
-        localStorage.setItem('google_api_key', cleanedGoogle);
-        localStorage.setItem('mv_gemini_api_key', cleanedGoogle);
-      }
+      const legacyKeys = ['gemini_api_key', 'google_api_key', 'mv_gemini_api_key'];
+      if (cleanedGoogle) legacyKeys.forEach(storageKey => localStorage.setItem(storageKey, cleanedGoogle));
+      else legacyKeys.forEach(storageKey => localStorage.removeItem(storageKey));
       localStorage.setItem('mv_allow_free_image_fallback', allowFreeFallback ? 'true' : 'false');
     } catch (_) {}
     onSave(updatedKeys, effectiveSource, textModel, imageModel);
