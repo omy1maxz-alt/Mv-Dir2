@@ -419,6 +419,32 @@ export const cleanGeminiApiKey = (raw?: any): string => {
 
 export const AISTUDIO_PLACEHOLDER_KEY = 'AIzaSyCnx3oHaOAtIcttEtJDlfq7YxBGeoTu0Co';
 
+// Model discovery caches are cleared whenever the current API key changes.
+const LIVE_MODELS_CACHE_KEY = 'mv_live_gemini_models_v1';
+const LIVE_MODELS_CACHE_TTL_MS = 30 * 60 * 1000;
+const memoryModelCache = new Map<string, { timestamp: number; models: DiscoveredGeminiModel[] }>();
+const inFlightDiscovery = new Map<string, Promise<DiscoveredGeminiModel[]>>();
+const sessionNotFoundModels = new Set<string>();
+let selectedGeminiApiKey = '';
+
+export const setActiveGeminiApiKey = (raw?: string): string => {
+    selectedGeminiApiKey = cleanGeminiApiKey(raw);
+    memoryModelCache.clear();
+    inFlightDiscovery.clear();
+    sessionNotFoundModels.clear();
+    if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+            const keysToRemove: string[] = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const storageKey = localStorage.key(i);
+                if (storageKey?.startsWith(`${LIVE_MODELS_CACHE_KEY}_`)) keysToRemove.push(storageKey);
+            }
+            keysToRemove.forEach(storageKey => localStorage.removeItem(storageKey));
+        } catch (_) {}
+    }
+    return selectedGeminiApiKey;
+};
+
 export const isRealGeminiKey = (key?: string): boolean => {
   if (!key || typeof key !== 'string') return false;
   const trimmed = cleanGeminiApiKey(key);
@@ -426,62 +452,37 @@ export const isRealGeminiKey = (key?: string): boolean => {
 };
 
 export const getEffectiveGeminiApiKey = (explicitKey?: string): string => {
+    // Explicit call/current Settings key always wins over persisted values.
     const cleanedExplicit = cleanGeminiApiKey(explicitKey);
-    if (cleanedExplicit && isRealGeminiKey(cleanedExplicit)) {
-        return cleanedExplicit;
-    }
+    if (cleanedExplicit && isRealGeminiKey(cleanedExplicit)) return cleanedExplicit;
+    if (selectedGeminiApiKey && isRealGeminiKey(selectedGeminiApiKey)) return selectedGeminiApiKey;
     try {
         if (typeof window !== 'undefined' && window.localStorage) {
-            // 1. Check mv_api_keys JSON vault (primary store)
-            const vaultKeys = localStorage.getItem('mv_api_keys');
-            if (vaultKeys) {
-                try {
-                    const parsed = JSON.parse(vaultKeys);
-                    const candidate = cleanGeminiApiKey(
-                        parsed?.google || 
-                        parsed?.gemini || 
-                        parsed?.apiKey || 
-                        parsed?.googleApiKey || 
-                        parsed?.geminiApiKey
-                    );
-                    if (candidate && isRealGeminiKey(candidate)) {
-                        return candidate;
-                    }
-                } catch (_) {}
-            }
-
-            // 2. Check direct standalone localStorage keys
-            const commonKeys = [
-                'gemini_api_key',
-                'google_api_key',
-                'mv_gemini_api_key',
-                'GEMINI_API_KEY',
-                'GOOGLE_API_KEY',
-                'api_key',
-                'ai_sub_api_key'
-            ];
-
-            for (const key of commonKeys) {
+            for (const key of ['gemini_api_key', 'google_api_key', 'mv_gemini_api_key']) {
                 const directVal = cleanGeminiApiKey(localStorage.getItem(key));
                 if (directVal === AISTUDIO_PLACEHOLDER_KEY) {
                     try { localStorage.removeItem(key); } catch (_) {}
                     continue;
                 }
-                if (directVal && isRealGeminiKey(directVal)) {
-                    // Sync back to primary keys so all modules find it uniformly
-                    try {
-                        localStorage.setItem('gemini_api_key', directVal);
-                        localStorage.setItem('google_api_key', directVal);
-                    } catch (_) {}
-                    return directVal;
-                }
+                if (directVal && isRealGeminiKey(directVal)) return directVal;
+            }
+            const vaultKeys = localStorage.getItem('mv_api_keys');
+            if (vaultKeys) {
+                try {
+                    const parsed = JSON.parse(vaultKeys);
+                    const candidate = cleanGeminiApiKey(parsed?.google || parsed?.gemini || parsed?.apiKey || parsed?.googleApiKey || parsed?.geminiApiKey);
+                    if (candidate && isRealGeminiKey(candidate)) return candidate;
+                } catch (_) {}
+            }
+            for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'api_key', 'ai_sub_api_key']) {
+                const directVal = cleanGeminiApiKey(localStorage.getItem(key));
+                if (directVal && isRealGeminiKey(directVal)) return directVal;
             }
         }
     } catch (_) {}
     if (cleanedExplicit) return cleanedExplicit;
     // @ts-ignore
-    const envKey = cleanGeminiApiKey((typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '');
-    return envKey;
+    return cleanGeminiApiKey((typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_GEMINI_API_KEY) || '');
 };
 
 export const getMaskedGeminiApiKey = (explicitKey?: string): string => {
@@ -519,11 +520,7 @@ export interface DiscoveredGeminiModel {
     supportedGenerationMethods: string[];
 }
 
-const LIVE_MODELS_CACHE_KEY = 'mv_live_gemini_models_v1';
-const LIVE_MODELS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const memoryModelCache = new Map<string, { timestamp: number; models: DiscoveredGeminiModel[] }>();
-const inFlightDiscovery = new Map<string, Promise<DiscoveredGeminiModel[]>>();
-const sessionNotFoundModels = new Set<string>();
+// Cache state is declared with active-key rotation handling above.
 
 export const recordGeminiModelNotFound = (modelId: string) => {
     if (!modelId) return;
@@ -826,7 +823,7 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
             return await operation();
         } catch (error: any) {
             const errorMessage = error?.message || '';
-            const isQuotaExceeded = errorMessage.includes('Quota exceeded') || errorMessage.includes('exceeded your current quota');
+            const isQuotaExceeded = /quota (?:has been )?exceeded|exceeded your current quota|daily quota|per.day quota/i.test(errorMessage);
             const isRateLimit = isQuotaExceeded || error?.status === 429 || errorMessage.includes('429') || errorMessage.includes('RESOURCE_EXHAUSTED');
             const isPermissionDenied = error?.status === 403 || errorMessage.includes('403') || errorMessage.includes('PERMISSION_DENIED');
             const isServerError = error?.status === 500 || error?.status === 502 || error?.status === 503 || error?.status === 504 ||
@@ -841,9 +838,9 @@ export const withRetry = async <T>(operation: () => Promise<T>, maxRetries = 3, 
                 console.warn(`${isRateLimit ? 'Rate limit / Quota (429)' : isPermissionDenied ? 'Permission Denied (403)' : 'Internal/Server Error (500/503)'} hit. Retrying in ${Math.round(delay)}ms... (Attempt ${retries} of ${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             } else if (isQuotaExceeded) {
-                throw new Error("API Quota Exceeded. The API key has reached its per-minute or daily limit. Please wait a moment and try again, or switch API keys in Settings.");
+                throw new Error("Gemini reported a quota limit for this request. Check the quota metric and Google Cloud project attached to the active API key; changing models will not help if that project's shared quota is exhausted.");
             } else if (isRateLimit) {
-                throw new Error("API Rate Limit (429) hit too many times. Please wait a moment and try again, or check your API key quota.");
+                throw new Error("Gemini returned HTTP 429 (rate limit or quota). The response did not clearly identify daily quota exhaustion; retry after the indicated interval and verify the active key and project if it persists.");
             } else if (isPermissionDenied) {
                 throw new Error("Permission Denied (403). Your API key may be invalid, or it may not have access to the requested model.");
             } else {
@@ -980,12 +977,12 @@ export const normalizeDirectorScenes = (parsed: any): any[] => {
 };
 
 export const analyzeFramesWithGemini = async (base64Images: string[], apiKey?: string) => {
-    const keyToUse = apiKey;
+    const keyToUse = getEffectiveGeminiApiKey(apiKey);
     if (!keyToUse) {
         throw new Error('No API key available.');
     }
     
-    const genAI = new GoogleGenAI({ apiKey: keyToUse });
+    const genAI = getGenAI(keyToUse);
     
     try {
         const parts = [
@@ -1013,12 +1010,12 @@ export const analyzeFramesWithGemini = async (base64Images: string[], apiKey?: s
 };
 
 export const analyzeVideoAgentic = async (youtubeUrl: string, apiKey?: string) => {
-    const keyToUse = apiKey || import.meta.env.VITE_GEMINI_API_KEY;
+    const keyToUse = getEffectiveGeminiApiKey(apiKey);
     if (!keyToUse) {
         throw new Error('No API key available.');
     }
     
-    const genAI = new GoogleGenAI({ apiKey: keyToUse });
+    const genAI = getGenAI(keyToUse);
     
     try {
         const parts = [
