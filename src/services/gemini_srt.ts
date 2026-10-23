@@ -701,17 +701,11 @@ function deduplicateAndMergeBlocks(
             continue;
         }
 
-        // Adjust start time if it starts slightly before the last block ends
-        const lastBlock = result[result.length - 1];
-        if (lastBlock && inc.startMs < lastBlock.endMs) {
-            if (inc.endMs > lastBlock.endMs + 300) {
-                inc.startMs = lastBlock.endMs + 50;
-                inc.startTs = msToTime(inc.startMs);
-                result.push(inc);
-            }
-        } else {
-            result.push(inc);
-        }
+        // Keep the model's cue boundaries intact. Moving only startMs (without
+        // re-aligning the text against audio) can make the caption appear late/early.
+        // Preserve overlaps for the Stage 1 timeline validator rather than changing
+        // speech alignment based on the preceding cue's duration.
+        result.push(inc);
     }
 
     return result;
